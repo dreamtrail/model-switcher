@@ -67,6 +67,17 @@ mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port ${PORT}"
 
 Only one model runs at a time.
 
+## Output
+
+Log output is color-coded in the terminal for readability:
+- **Green** — INFO events (startup, health ready)
+- **Yellow** — WARNING events
+- **Red** — ERROR events
+- **Cyan** — Model swap/start events
+- **Magenta** — Model stop (SIGTERM)
+
+Colors auto-disable when output is piped or `NO_COLOR` is set.
+
 ## Shutdown
 
 Send `SIGINT` or `SIGTERM` to the switcher. It will gracefully stop the active upstream model (SIGTERM + 3s grace, then SIGKILL).
