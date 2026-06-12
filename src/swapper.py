@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -13,6 +14,7 @@ from aiohttp import web
 
 from src.config import Config, ModelConfig
 from src.health import wait_for_ready
+from src.port_rewrite import create_temp_dir, cleanup_temp_dir, rewrite_command
 from src.process_manager import (
     ProcessHandle,
     is_running,
@@ -51,6 +53,12 @@ class Swapper:
         self._lock = asyncio.Lock()
         self._queue: deque[asyncio.Future] = deque()
         self._swapping = False
+        self._temp_dir: Path | None = None
+
+        # Create temp dir for rewritten script copies
+        self._temp_dir = create_temp_dir()
+        # Rewrite all model commands to use auto-assigned ports
+        self._rewrite_commands()
 
     @property
     def active_model(self) -> str | None:
@@ -263,7 +271,7 @@ class Swapper:
         )
 
     async def shutdown(self) -> None:
-        """Stop the currently running model and close shared client."""
+        """Stop the currently running model, close client, clean temp dir."""
         # Drain queued requests so waiters don't hang forever
         await self._drain_queue()
         if self._current and is_running(self._current):
@@ -275,3 +283,22 @@ class Swapper:
         if self._client:
             await self._client.close()
             self._client = None
+
+        # Clean up temp scripts
+        if self._temp_dir:
+            cleanup_temp_dir(self._temp_dir)
+            self._temp_dir = None
+
+    def _rewrite_commands(self) -> None:
+        """Rewrite all model commands to use auto-assigned ports.
+
+        For script files, copies to temp dir and rewrites port flags.
+        For direct commands, replaces port flags in the command string.
+        """
+        if self._temp_dir is None:
+            return
+        for mc in self.config.models.values():
+            rewritten_cmd, _temp_path = rewrite_command(
+                mc.cmd, mc.port, temp_dir=self._temp_dir
+            )
+            mc.cmd = rewritten_cmd

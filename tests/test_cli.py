@@ -92,10 +92,10 @@ class TestMainRuntime:
     async def test_main_config_value_error_exits_1(self, tmp_path):
         """_main exits with code 1 when config has invalid content.
 
-        Tests the ValueError path (e.g., missing ${PORT}) → sys.exit(1).
+        Tests the ValueError path (e.g., non-dict YAML) → sys.exit(1).
         """
         bad_config = tmp_path / "bad.yaml"
-        bad_config.write_text("model-a: echo hello\n")  # missing ${PORT}
+        bad_config.write_text("- model-a\n- model-b\n")  # list, not mapping
         with pytest.raises(SystemExit) as exc:
             await _main(["--config", str(bad_config)])
         assert exc.value.code == 1

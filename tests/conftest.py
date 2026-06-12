@@ -45,6 +45,19 @@ def dict_config(tmp_config):
 
 
 @pytest.fixture
+def swapper_with_temp(tmp_config):
+    """Return a Swapper with temp dir for testing command rewriting."""
+    path = tmp_config({
+        "model-a": "echo hello --port 8000",
+    })
+    from src.config import load_config
+    from src.swapper import Swapper
+    config = load_config(path)
+    swapper = Swapper(config)
+    return swapper
+
+
+@pytest.fixture
 def pytester_config():
     """Return pytest.ini content for asyncio mode."""
     return {"asyncio_mode": "auto"}
