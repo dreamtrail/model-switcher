@@ -10,12 +10,12 @@ import tempfile
 from pathlib import Path
 
 # Conservative port flag patterns (lookbehind-anchored to avoid false positives).
-# Matches: --port 8000, --port=8000, --listen-port 8000
+# Matches: --port 8000, --port=8000, --port "8000", --port '8000', --listen-port 8000
 # Does NOT match: --some--port 8000, --listen-port (single dash before port)
 _PORT_FLAGS_RE = re.compile(
-    r"(?<!\w)--(?:listen-)?port\s*=\s*\d+"
+    r"(?<!\w)--(?:listen-)?port\s*=\s*[\"']?\d+[\"']?"
     r"|"
-    r"(?<!\w)--(?:listen-)?port\s+\d+"
+    r"(?<!\w)--(?:listen-)?port\s+[\"']?\d+[\"']?"
 )
 
 

@@ -65,6 +65,18 @@ class TestRewriteCommandDirect:
         assert cmd == "cmd --listen-port 9999"
         assert temp is None
 
+    def test_port_double_quoted_replaced(self):
+        """--port \"8000\" is replaced (vLLM style)."""
+        cmd, temp = rewrite_command('cmd --port "8000"', 9999)
+        assert cmd == 'cmd --port "9999"'
+        assert temp is None
+
+    def test_port_single_quoted_replaced(self):
+        """--port '8000' is replaced."""
+        cmd, temp = rewrite_command("cmd --port '8000'", 9999)
+        assert cmd == "cmd --port '9999'"
+        assert temp is None
+
     def test_no_port_flag_appended(self):
         """No port flag: --port <N> is appended."""
         cmd, temp = rewrite_command("cmd --model foo", 9999)
