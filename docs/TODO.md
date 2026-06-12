@@ -8,4 +8,5 @@
 
 ## Done
 
+- [P-20260612-05] Add color-coded log output — DONE 2026-06-12 11:19 UTC
 - [P-20260612-01] Build model switcher — reverse proxy with automatic model swapping — DONE 2026-06-12 01:59 UTC

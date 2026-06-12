@@ -12,6 +12,7 @@ import aiohttp
 from aiohttp import web
 
 from src import __version__
+from src.color_formatter import ColorFormatter
 from src.config import load_config
 from src.swapper import Swapper
 
@@ -86,11 +87,14 @@ async def _main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
     # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        ColorFormatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
     )
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
 
     # Load config
     try:
