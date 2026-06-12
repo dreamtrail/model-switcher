@@ -1,0 +1,19 @@
+[project]
+name = "model-switcher"
+version = "0.1.0"
+description = "Automatic model swapping reverse proxy for local AI servers"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+model-switcher = "src.cli:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"

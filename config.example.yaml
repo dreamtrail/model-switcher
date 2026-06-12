@@ -1,0 +1,11 @@
+# Model Switcher Configuration
+# Each key is a model name used in API requests.
+# Each value is the command to start that model's server.
+# Use ${PORT} as a placeholder — the switcher assigns a free port at runtime.
+
+llama-3.1-8b: "llama-server --model /path/to/llama-3.1-8b.gguf --port ${PORT} --ctx-size 8192"
+
+mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port ${PORT} --ctx-size 4096"
+
+# You can also use scripts instead of direct commands:
+# my-model: "/path/to/start-model.sh"

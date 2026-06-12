@@ -1,0 +1,144 @@
+"""CLI argument parsing and entry point."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import signal
+import sys
+
+import aiohttp
+from aiohttp import web
+
+from src import __version__
+from src.config import load_config
+from src.swapper import Swapper
+
+logger = logging.getLogger(__name__)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        prog="model-switcher",
+        description="Automatic model swapping reverse proxy",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument(
+        "--config",
+        required=True,
+        help="Path to YAML config file",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Listen port (default: 8080)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=60,
+        help="Swap/request timeout in seconds (default: 60)",
+    )
+    return parser.parse_args(argv)
+
+
+async def _run_server(
+    host: str,
+    port: int,
+    swapper: Swapper,
+    shutdown_event: asyncio.Event,
+) -> None:
+    """Run the aiohttp server."""
+    app = web.Application()
+    app.router.add_route("*", "/{path:.*}", swapper.handle_request)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host, port)
+    await site.start()
+
+    logger.info("Listening on %s:%d", host, port)
+    logger.info(
+        "Available models: %s",
+        ", ".join(swapper.config.models.keys()),
+    )
+
+    await shutdown_event.wait()
+
+    await runner.cleanup()
+    logger.info("Server stopped")
+
+
+async def _main(argv: list[str] | None = None) -> None:
+    """Async main entry point."""
+    args = parse_args(argv)
+
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # Load config
+    try:
+        config = load_config(args.config)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error("Config error: %s", exc)
+        sys.exit(1)
+
+    logger.info(
+        "Loaded %d model(s): %s",
+        len(config.models),
+        list(config.models.keys()),
+    )
+
+    # Create shared client session for upstream requests
+    client_timeout = aiohttp.ClientTimeout(total=args.timeout)
+    client = aiohttp.ClientSession(timeout=client_timeout)
+
+    # Create swapper
+    swapper = Swapper(config, timeout=args.timeout, client=client)
+
+    # Shutdown coordination
+    shutdown_event = asyncio.Event()
+
+    def _signal_handler() -> None:
+        logger.info("Shutdown signal received")
+        shutdown_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _signal_handler)
+        except NotImplementedError:
+            pass
+
+    try:
+        await _run_server(args.host, args.port, swapper, shutdown_event)
+    finally:
+        await swapper.shutdown()
+
+
+def main() -> None:
+    """Sync entry point for console script."""
+    try:
+        asyncio.run(_main())
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

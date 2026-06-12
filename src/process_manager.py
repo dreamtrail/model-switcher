@@ -1,0 +1,161 @@
+"""Upstream process lifecycle management."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import shlex
+import signal
+from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
+
+GRACE_PERIOD = 3  # seconds to wait after SIGTERM before SIGKILL
+
+
+@dataclass
+class ProcessHandle:
+    """Wrapper around a running upstream process."""
+
+    model_name: str
+    port: int
+    process: asyncio.subprocess.Process
+    _stdout_task: asyncio.Task | None = None
+    _stderr_task: asyncio.Task | None = None
+
+
+async def _drain_stream(
+    reader: asyncio.StreamReader,
+    prefix: str,
+    log_func: logging.Callable[..., None],
+) -> None:
+    """Read lines from a stream and log them with a prefix."""
+    try:
+        while True:
+            line = await reader.readline()
+            if not line:
+                break
+            text = line.decode("utf-8", errors="replace").rstrip("\n\r")
+            if text:
+                log_func("%s: %s", prefix, text)
+    except asyncio.CancelledError:
+        pass
+
+
+async def start_process(
+    model_name: str, cmd: str, port: int
+) -> ProcessHandle:
+    """Start an upstream process and pipe its output.
+
+    Args:
+        model_name: Human-readable model identifier (for log prefix).
+        cmd: Shell command to execute.
+        port: Port the process should listen on.
+
+    Returns:
+        ProcessHandle wrapping the running process.
+
+    Raises:
+        subprocess.SubprocessError: if the process fails to start.
+    """
+    args = shlex.split(cmd)
+    prefix = model_name
+
+    logger.info("Starting %s on port %d: %s", prefix, port, cmd)
+
+    process = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    stdout_task = asyncio.create_task(
+        _drain_stream(process.stdout, prefix, logger.info),
+        name=f"stdout-{prefix}",
+    )
+    stderr_task = asyncio.create_task(
+        _drain_stream(process.stderr, prefix, logger.warning),
+        name=f"stderr-{prefix}",
+    )
+
+    handle = ProcessHandle(
+        model_name=model_name,
+        port=port,
+        process=process,
+        _stdout_task=stdout_task,
+        _stderr_task=stderr_task,
+    )
+    return handle
+
+
+async def stop_process(handle: ProcessHandle) -> None:
+    """Stop a running upstream process.
+
+    Sends SIGTERM, waits up to GRACE_PERIOD seconds, then SIGKILL.
+    """
+    proc = handle.process
+    pid = proc.pid
+
+    if proc.returncode is not None:
+        logger.info(
+            "%s (pid %s) already exited with code %d",
+            handle.model_name,
+            pid,
+            proc.returncode,
+        )
+        # Still cancel log tasks even if process already exited
+        for task in (handle._stdout_task, handle._stderr_task):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        return
+
+    logger.info("Stopping %s (pid %s) with SIGTERM", handle.model_name, pid)
+    proc.terminate()
+
+    # Wait for process to exit using polling (avoid proc.wait() cancellation issues)
+    terminated = False
+    end_time = asyncio.get_running_loop().time() + GRACE_PERIOD
+    while asyncio.get_running_loop().time() < end_time:
+        if proc.returncode is not None:
+            terminated = True
+            break
+        await asyncio.sleep(0.1)
+
+    if not terminated:
+        logger.warning(
+            "%s (pid %s) did not exit in %ds, sending SIGKILL",
+            handle.model_name,
+            pid,
+            GRACE_PERIOD,
+        )
+        proc.kill()
+        # Wait for SIGKILL to take effect
+        end_time = asyncio.get_running_loop().time() + 5
+        while asyncio.get_running_loop().time() < end_time:
+            if proc.returncode is not None:
+                break
+            await asyncio.sleep(0.1)
+        if proc.returncode is None:
+            logger.error(
+                "%s (pid %s) could not be killed", handle.model_name, pid
+            )
+
+    # Cancel log-draining tasks
+    for task in (handle._stdout_task, handle._stderr_task):
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    logger.info("%s stopped", handle.model_name)
+
+
+def is_running(handle: ProcessHandle) -> bool:
+    """Check if the process is still alive."""
+    return handle.process.returncode is None
