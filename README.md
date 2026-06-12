@@ -14,7 +14,7 @@ cp config.example.yaml config.yaml
 # edit config.yaml with your model paths
 
 # Run
-.venv/bin/python -m src --config config.yaml --host 0.0.0.0 --port 8080
+./run.sh --config config.yaml --host 0.0.0.0 --port 8080
 ```
 
 Point your client at `http://localhost:8080` and use model names from your config:
