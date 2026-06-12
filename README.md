@@ -80,4 +80,4 @@ Colors auto-disable when output is piped or `NO_COLOR` is set.
 
 ## Shutdown
 
-Send `SIGINT` or `SIGTERM` to the switcher. It will gracefully stop the active upstream model (SIGTERM + 3s grace, then SIGKILL).
+Send `SIGINT` or `SIGTERM` to the switcher. It will gracefully stop the active upstream model process group (SIGTERM + 3s grace, then SIGKILL), including servers launched through wrapper scripts.

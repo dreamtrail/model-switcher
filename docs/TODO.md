@@ -8,6 +8,7 @@
 
 ## Done
 
+- [P-20260612-08] Stop model process groups before swaps — DONE 2026-06-12 15:32 UTC
 - [P-20260612-07] Auto-assign ports with temp script rewriting — DONE 2026-06-12 11:45 UTC
 - [P-20260612-06] Flexible port resolution (auto-detect + explicit) — DONE 2026-06-12 11:30 UTC
 - [P-20260612-05] Add color-coded log output — DONE 2026-06-12 11:19 UTC

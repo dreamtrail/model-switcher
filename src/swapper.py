@@ -93,8 +93,9 @@ class Swapper:
         if mc is None:
             raise ValueError(f"Unknown model: {model_name}")
 
-        # Stop current model if different
-        if self._current and is_running(self._current):
+        # Stop current model if different. Call stop_process even if the
+        # tracked parent has exited; wrapper children may still be alive.
+        if self._current:
             logger.info(
                 "Swapping from %s to %s", self._current_model, model_name
             )
@@ -274,7 +275,7 @@ class Swapper:
         """Stop the currently running model, close client, clean temp dir."""
         # Drain queued requests so waiters don't hang forever
         await self._drain_queue()
-        if self._current and is_running(self._current):
+        if self._current:
             await stop_process(self._current)
         self._current = None
         self._current_model = None

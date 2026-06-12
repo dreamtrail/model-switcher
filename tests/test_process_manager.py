@@ -8,7 +8,9 @@ Derived from plan acceptance criteria:
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
+import sys
 
 import pytest
 
@@ -32,6 +34,8 @@ class TestStartProcess:
             assert handle.port == 0
             assert handle.process is not None
             assert handle.process.returncode is None
+            if os.name == "posix":
+                assert handle.process_group_id == handle.process.pid
         finally:
             await stop_process(handle)
 
@@ -120,6 +124,71 @@ class TestStopProcess:
         assert stdout_task.done()
         assert stderr_task.done()
 
+    async def test_stop_kills_child_process_from_wrapper_script(self, tmp_path):
+        """stop_process kills child processes in the model process group."""
+        wrapper = tmp_path / "wrapper.py"
+        child_pid_file = tmp_path / "child.pid"
+        wrapper.write_text(
+            "import pathlib, subprocess, sys\n"
+            "pid_file = pathlib.Path(sys.argv[1])\n"
+            "child = subprocess.Popen([\n"
+            "    sys.executable, '-c', 'import time; time.sleep(60)'\n"
+            "])\n"
+            "pid_file.write_text(str(child.pid))\n"
+            "print('ready', flush=True)\n"
+            "child.wait()\n"
+        )
+
+        handle = await start_process(
+            "wrapper-model",
+            f"{sys.executable} {wrapper} {child_pid_file}",
+            0,
+        )
+        try:
+            child_pid = await _wait_for_pid_file(child_pid_file)
+            assert _pid_exists(child_pid)
+            await stop_process(handle)
+            assert handle.process.returncode is not None
+            assert await _wait_for_pid_gone(child_pid)
+        finally:
+            if is_running(handle):
+                await stop_process(handle)
+
+    @pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups")
+    async def test_stop_kills_child_when_wrapper_already_exited(self, tmp_path):
+        """Already-exited wrapper still tears down surviving child group."""
+        wrapper = tmp_path / "wrapper_exits.py"
+        child_pid_file = tmp_path / "child.pid"
+        wrapper.write_text(
+            "import pathlib, subprocess, sys\n"
+            "pid_file = pathlib.Path(sys.argv[1])\n"
+            "child = subprocess.Popen([\n"
+            "    sys.executable, '-c', 'import time; time.sleep(60)'\n"
+            "])\n"
+            "pid_file.write_text(str(child.pid))\n"
+            "print('child-started', flush=True)\n"
+        )
+
+        handle = await start_process(
+            "exited-wrapper-model",
+            f"{sys.executable} {wrapper} {child_pid_file}",
+            0,
+        )
+        child_pid = await _wait_for_pid_file(child_pid_file)
+        try:
+            await handle.process.wait()
+            assert handle.process.returncode is not None
+            assert _pid_exists(child_pid)
+
+            await stop_process(handle)
+
+            assert await _wait_for_pid_gone(child_pid)
+        finally:
+            if _pid_exists(child_pid):
+                os.kill(child_pid, signal.SIGKILL)
+            if is_running(handle):
+                await stop_process(handle)
+
 
 class TestIsRunning:
 
@@ -175,3 +244,34 @@ class TestLogPiping:
             "my-model" in record.message and "error from model" in record.message
             for record in caplog.records
         )
+
+
+async def _wait_for_pid_file(path, timeout: float = 3) -> int:
+    """Wait for a test process to write a child PID file."""
+    loop = asyncio.get_running_loop()
+    end_time = loop.time() + timeout
+    while loop.time() < end_time:
+        if path.exists():
+            return int(path.read_text())
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"PID file was not written: {path}")
+
+
+def _pid_exists(pid: int) -> bool:
+    """Return True if a PID exists."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+async def _wait_for_pid_gone(pid: int, timeout: float = 3) -> bool:
+    """Wait until a PID no longer exists."""
+    loop = asyncio.get_running_loop()
+    end_time = loop.time() + timeout
+    while loop.time() < end_time:
+        if not _pid_exists(pid):
+            return True
+        await asyncio.sleep(0.05)
+    return not _pid_exists(pid)

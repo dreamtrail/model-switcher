@@ -267,6 +267,95 @@ class TestSwapFlow:
             await proxy_server.close()
 
 
+class TestSwapperTeardown:
+
+    async def test_swap_calls_stop_for_already_exited_parent(self, monkeypatch):
+        """Swapping calls stop_process even if tracked parent exited."""
+        from src.process_manager import ProcessHandle
+        import src.swapper as swapper_module
+
+        class FakeProcess:
+            def __init__(self, returncode):
+                self.returncode = returncode
+                self.pid = 12345
+
+        config = Config(models={})
+        config.models["model-a"] = ModelConfig(
+            name="model-a", cmd="echo a --port ${PORT}", port=1111
+        )
+        config.models["model-b"] = ModelConfig(
+            name="model-b", cmd="echo b --port ${PORT}", port=2222
+        )
+        swapper = Swapper(config)
+
+        old_handle = ProcessHandle(
+            model_name="model-a",
+            port=1111,
+            process=FakeProcess(returncode=0),
+        )
+        new_handle = ProcessHandle(
+            model_name="model-b",
+            port=2222,
+            process=FakeProcess(returncode=None),
+        )
+        stop_calls = []
+
+        async def fake_stop_process(handle):
+            stop_calls.append(handle)
+
+        async def fake_start_process(model_name, cmd, port):
+            return new_handle
+
+        async def fake_wait_for_ready(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(swapper_module, "stop_process", fake_stop_process)
+        monkeypatch.setattr(swapper_module, "start_process", fake_start_process)
+        monkeypatch.setattr(swapper_module, "wait_for_ready", fake_wait_for_ready)
+
+        swapper._current = old_handle
+        swapper._current_model = "model-a"
+        swapper._healthy = False
+
+        try:
+            handle = await swapper._ensure_model("model-b")
+            assert handle is new_handle
+            assert stop_calls == [old_handle]
+        finally:
+            swapper._current = None
+            await swapper.shutdown()
+
+    async def test_shutdown_calls_stop_for_already_exited_parent(
+        self, simple_config: Config, monkeypatch
+    ):
+        """Shutdown calls stop_process even if tracked parent exited."""
+        from src.process_manager import ProcessHandle
+        import src.swapper as swapper_module
+
+        class FakeProcess:
+            returncode = 0
+            pid = 12345
+
+        swapper = Swapper(simple_config)
+        handle = ProcessHandle(
+            model_name="model-a",
+            port=1234,
+            process=FakeProcess(),
+        )
+        stop_calls = []
+
+        async def fake_stop_process(stopped_handle):
+            stop_calls.append(stopped_handle)
+
+        monkeypatch.setattr(swapper_module, "stop_process", fake_stop_process)
+
+        swapper._current = handle
+        await swapper.shutdown()
+
+        assert stop_calls == [handle]
+        assert swapper._current is None
+
+
 class TestSwapTimeout:
 
     async def test_returns_504_on_timeout(self):
