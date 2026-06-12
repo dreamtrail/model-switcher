@@ -48,6 +48,7 @@ mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port ${PORT}"
 | `--host` | `127.0.0.1` | Bind address |
 | `--port` | `8080` | Listen port |
 | `--timeout` | `60` | Swap/request timeout (seconds) |
+| `--idle-timeout` | `15m` | Unload idle model after duration (`900`, `900s`, `15m`, `1h`; `0` disables) |
 | `--version` | — | Print version |
 
 ## API Endpoints
@@ -66,6 +67,17 @@ mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port ${PORT}"
 6. Streaming responses (SSE) are passed through in real-time.
 
 Only one model runs at a time.
+
+## Idle VRAM Release
+
+By default, the switcher unloads the active model after **15 minutes** without proxied model traffic, releasing VRAM while keeping the switcher running. Configure this with `--idle-timeout`:
+
+```bash
+./run.sh --config config.yaml --idle-timeout 15m
+./run.sh --config config.yaml --idle-timeout 0    # disable idle unload
+```
+
+Accepted durations are bare seconds or integer `s`/`m`/`h` suffixes, such as `900`, `900s`, `15m`, or `1h`. The idle timer starts after the last in-flight upstream request finishes; local model-list endpoints (`GET /v1/models`, `GET /models`) do not keep a model loaded.
 
 ## Output
 

@@ -22,6 +22,13 @@
 - **SIGTERM + 3s grace → SIGKILL** — clean shutdown with fast fallback. 3s chosen over 10s for responsiveness.
 - **No auto-restart on crash** — return 502 to client. Operator sees the error and investigates. Switcher marks model as stopped; next request triggers fresh start.
 
+### Idle Unload
+- **Default idle unload: 15m** — stop the active model after 15 minutes without upstream/model traffic to release VRAM.
+- **Configurable via `--idle-timeout`** — accepts bare seconds or integer `s`/`m`/`h` suffixes (`900`, `900s`, `15m`, `1h`); `0` disables.
+- **Idle begins after the last in-flight model request finishes** — prevents unloading during long or streaming responses.
+- **Only proxied model traffic counts as activity** — explicit model requests and no-model requests routed to the active upstream reset idle; switcher-local `/v1/models` and `/models` do not.
+- **Idle unload clears active model state** — a later no-model request returns the existing 400; a later request with `model` restarts normally.
+
 ### Observability
 - **Stdout only** — proxy logs + upstream logs (prefixed `[model-name]`). User can redirect at shell level. No file/JSON logging in v1.
 
@@ -32,8 +39,8 @@
 - **`aiohttp` only** (single dep) — provides both async HTTP server and client. No need for FastAPI-level features.
 
 ### CLI
-- `--config` (required), `--host` (default `127.0.0.1`), `--port` (default `8080`), `--timeout` (default `60`), `--version`
-- No auth, no TLS, no extra flags in v1.
+- `--config` (required), `--host` (default `127.0.0.1`), `--port` (default `8080`), `--timeout` (default `60`), `--idle-timeout` (default `15m`), `--version`
+- No auth or TLS flags in v1.
 
 ### Project Structure
 - `src/` package layout per project conventions (not `model_switcher/`).
@@ -43,7 +50,6 @@
 - API key auth / TLS
 - Docker/Podman `cmdStop`
 - Model aliases
-- TTL auto-unload
 - Request filters (stripParams, setParams)
 - Web UI
 - Metrics endpoint

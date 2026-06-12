@@ -6,13 +6,13 @@ import asyncio
 import json
 import logging
 from collections import deque
+from contextlib import suppress
 from pathlib import Path
-from typing import Any
 
 import aiohttp
 from aiohttp import web
 
-from src.config import Config, ModelConfig
+from src.config import Config
 from src.health import wait_for_ready
 from src.port_rewrite import create_temp_dir, cleanup_temp_dir, rewrite_command
 from src.process_manager import (
@@ -42,10 +42,12 @@ class Swapper:
         config: Config,
         *,
         timeout: float = 60,
+        idle_timeout: float = 900,
         client: aiohttp.ClientSession | None = None,
     ):
         self.config = config
         self.timeout = timeout
+        self.idle_timeout = idle_timeout
         self._client = client
         self._current: ProcessHandle | None = None
         self._current_model: str | None = None
@@ -53,6 +55,10 @@ class Swapper:
         self._lock = asyncio.Lock()
         self._queue: deque[asyncio.Future] = deque()
         self._swapping = False
+        self._idle_task: asyncio.Task | None = None
+        self._idle_timer_expired = False
+        self._idle_generation = 0
+        self._active_requests = 0
         self._temp_dir: Path | None = None
 
         # Create temp dir for rewritten script copies
@@ -96,6 +102,8 @@ class Swapper:
         # Stop current model if different. Call stop_process even if the
         # tracked parent has exited; wrapper children may still be alive.
         if self._current:
+            self._idle_generation += 1
+            self._cancel_idle_timer()
             logger.info(
                 "Swapping from %s to %s", self._current_model, model_name
             )
@@ -172,12 +180,20 @@ class Swapper:
         model_name = extract_model(request, body)
 
         if model_name is None:
-            if self._current and is_running(self._current) and self._healthy:
-                port = self._current.port
-                upstream = f"http://127.0.0.1:{port}"
-                return await proxy_request(
-                    request, upstream, body,
-                    timeout=self.timeout, client=self._client,
+            async with self._lock:
+                if self._current and is_running(self._current) and self._healthy:
+                    handle = self._current
+                    active_model = self._current_model or "active"
+                    self._begin_activity()
+                else:
+                    handle = None
+
+            if handle is not None:
+                return await self._proxy_with_recorded_activity(
+                    request,
+                    active_model,
+                    body,
+                    handle,
                 )
             return web.json_response(
                 _openai_error(
@@ -199,7 +215,8 @@ class Swapper:
             # After swap completes, ensure correct model for this request
             async with self._lock:
                 handle = await self._ensure_model(model_name)
-            return await self._proxy_for_model(
+                self._begin_activity()
+            return await self._proxy_with_recorded_activity(
                 request, model_name, body, handle
             )
 
@@ -208,6 +225,7 @@ class Swapper:
             self._swapping = True
             try:
                 handle = await self._ensure_model(model_name)
+                self._begin_activity()
             except ValueError:
                 self._swapping = False
                 await self._drain_queue()
@@ -226,7 +244,35 @@ class Swapper:
                 self._swapping = False
                 await self._drain_queue()
 
-        return await self._proxy_for_model(request, model_name, body, handle)
+        return await self._proxy_with_recorded_activity(
+            request, model_name, body, handle
+        )
+
+    def _begin_activity(self) -> None:
+        """Mark a model request active and cancel pending idle unload."""
+        self._active_requests += 1
+        self._idle_generation += 1
+        self._cancel_idle_timer()
+
+    def _end_activity(self) -> None:
+        """Mark a model request complete and arm idle unload if needed."""
+        self._active_requests -= 1
+        self._schedule_idle_timer()
+
+    async def _proxy_with_recorded_activity(
+        self,
+        request: web.Request,
+        model_name: str,
+        body: bytes | None,
+        handle: ProcessHandle,
+    ) -> web.Response:
+        """Proxy a request already recorded as active model usage."""
+        try:
+            return await self._proxy_for_model(
+                request, model_name, body, handle
+            )
+        finally:
+            self._end_activity()
 
     async def _proxy_for_model(
         self,
@@ -271,8 +317,76 @@ class Swapper:
             timeout=self.timeout, client=self._client,
         )
 
+    def _schedule_idle_timer(self) -> None:
+        """Arm idle unload when enabled and no model requests are active."""
+        if self.idle_timeout <= 0 or self._active_requests > 0:
+            return
+        if not (self._current and self._healthy and is_running(self._current)):
+            return
+
+        self._idle_generation += 1
+        generation = self._idle_generation
+        self._cancel_idle_timer()
+        self._idle_timer_expired = False
+        self._idle_task = asyncio.create_task(
+            self._idle_unload_after_timeout(generation),
+            name="idle-unload",
+        )
+
+    def _cancel_idle_timer(self, *, force: bool = False) -> asyncio.Task | None:
+        """Cancel the pending idle timer if it has not started unloading."""
+        task = self._idle_task
+        if task is None:
+            return None
+        if task.done():
+            self._idle_task = None
+            return None
+        if force or not self._idle_timer_expired:
+            self._idle_task = None
+            task.cancel()
+            return task
+        return None
+
+    async def _idle_unload_after_timeout(self, generation: int) -> None:
+        """Stop the active model when it has been idle long enough."""
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self.idle_timeout)
+            self._idle_timer_expired = True
+            async with self._lock:
+                if generation != self._idle_generation:
+                    return
+                if self._active_requests > 0:
+                    return
+                if not (
+                    self._current and self._healthy and is_running(self._current)
+                ):
+                    return
+
+                handle = self._current
+                model_name = self._current_model
+                logger.info(
+                    "Idle timeout reached for %s; unloading model",
+                    model_name,
+                )
+                await stop_process(handle)
+                self._current = None
+                self._current_model = None
+                self._healthy = False
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._idle_timer_expired = False
+            if self._idle_task is current_task:
+                self._idle_task = None
+
     async def shutdown(self) -> None:
         """Stop the currently running model, close client, clean temp dir."""
+        idle_task = self._cancel_idle_timer(force=True)
+        if idle_task:
+            with suppress(asyncio.CancelledError):
+                await idle_task
+
         # Drain queued requests so waiters don't hang forever
         await self._drain_queue()
         if self._current:

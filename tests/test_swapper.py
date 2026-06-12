@@ -5,6 +5,7 @@ Derived from plan acceptance criteria:
 - /v1/models returns static config list
 - Upstream crash returns 502
 - Swap timeout (60s default) returns 504
+- Idle timeout unloads inactive models only after proxied requests finish
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from aiohttp.test_utils import TestServer, TestClient
 import pytest
 
 from src.config import Config, ModelConfig
-from src.process_manager import stop_process
+from src.process_manager import ProcessHandle, stop_process
 from src.swapper import Swapper, MAX_QUEUE
 
 
@@ -979,7 +980,550 @@ class TestProxyForModelHandleNone:
             await proxy_server.close()
 
 
+class TestIdleUnload:
+
+    async def test_idle_unload_stops_active_model_and_clears_state(
+        self, simple_config: Config, monkeypatch
+    ):
+        """Idle timeout unloads the active model via stop_process."""
+        import src.swapper as swapper_module
+
+        stop_calls = []
+        stopped = asyncio.Event()
+
+        async def fake_stop_process(handle):
+            stop_calls.append(handle)
+            handle.process.returncode = 0
+            stopped.set()
+
+        monkeypatch.setattr(swapper_module, "stop_process", fake_stop_process)
+
+        swapper = Swapper(simple_config, idle_timeout=0.02)
+        handle = _fake_handle("model-a", port=1234)
+        swapper._current = handle
+        swapper._current_model = "model-a"
+        swapper._healthy = True
+
+        swapper._schedule_idle_timer()
+        await asyncio.wait_for(stopped.wait(), timeout=1)
+
+        assert stop_calls == [handle]
+        assert swapper._current is None
+        assert swapper._current_model is None
+        assert swapper._healthy is False
+        assert swapper.active_model is None
+
+    async def test_idle_timeout_zero_disables_unload(
+        self, simple_config: Config, monkeypatch
+    ):
+        """idle_timeout=0 never schedules idle unload."""
+        import src.swapper as swapper_module
+
+        stop_calls = []
+
+        async def fake_stop_process(handle):
+            stop_calls.append(handle)
+            handle.process.returncode = 0
+
+        monkeypatch.setattr(swapper_module, "stop_process", fake_stop_process)
+
+        swapper = Swapper(simple_config, idle_timeout=0)
+        handle = _fake_handle("model-a", port=1234)
+        swapper._current = handle
+        swapper._current_model = "model-a"
+        swapper._healthy = True
+
+        swapper._schedule_idle_timer()
+        await asyncio.sleep(0.03)
+
+        assert swapper._idle_task is None
+        assert stop_calls == []
+        assert swapper.active_model == "model-a"
+        swapper._current = None
+
+    async def test_expired_idle_unload_loses_to_recorded_activity(
+        self, simple_config: Config, monkeypatch
+    ):
+        """An expired idle task cannot unload after new activity is recorded."""
+        import src.swapper as swapper_module
+
+        idle_waiting_for_lock = asyncio.Event()
+        allow_idle_to_check_state = asyncio.Event()
+        proxy_started = asyncio.Event()
+        release_proxy = asyncio.Event()
+
+        class BlockingIdleLock:
+            def __init__(self):
+                self._lock = asyncio.Lock()
+
+            async def __aenter__(self):
+                if asyncio.current_task().get_name() == "idle-unload":
+                    idle_waiting_for_lock.set()
+                    await allow_idle_to_check_state.wait()
+                await self._lock.acquire()
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                self._lock.release()
+
+        stop_calls = []
+
+        async def fake_stop_process(handle):
+            stop_calls.append(handle)
+            handle.process.returncode = 0
+
+        async def fake_proxy_request(*args, **kwargs):
+            assert swapper._active_requests == 1
+            assert swapper.active_model == "model-a"
+            proxy_started.set()
+            await release_proxy.wait()
+            return aiohttp.web.json_response({"ok": True})
+
+        monkeypatch.setattr(swapper_module, "stop_process", fake_stop_process)
+        monkeypatch.setattr(swapper_module, "proxy_request", fake_proxy_request)
+
+        swapper = Swapper(simple_config, idle_timeout=0.001)
+        swapper._lock = BlockingIdleLock()
+        handle = _fake_handle("model-a", port=1234)
+        swapper._current = handle
+        swapper._current_model = "model-a"
+        swapper._healthy = True
+
+        swapper._schedule_idle_timer()
+        stale_idle_task = swapper._idle_task
+        assert stale_idle_task is not None
+        await asyncio.wait_for(idle_waiting_for_lock.wait(), timeout=1)
+
+        async def handler(request):
+            return await swapper.handle_request(request)
+
+        app = aiohttp.web.Application()
+        app.router.add_route("*", "/{path:.*}", handler)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            async with TestClient(server) as client:
+                response_task = asyncio.create_task(client.post(
+                    "/v1/chat/completions",
+                    json={"model": "model-a"},
+                ))
+                await asyncio.wait_for(proxy_started.wait(), timeout=1)
+
+                allow_idle_to_check_state.set()
+                await asyncio.wait_for(stale_idle_task, timeout=1)
+                assert stop_calls == []
+                assert swapper.active_model == "model-a"
+
+                release_proxy.set()
+                resp = await response_task
+                assert resp.status == 200
+                resp.release()
+                assert stop_calls == []
+                assert swapper.active_model == "model-a"
+        finally:
+            release_proxy.set()
+            await swapper.shutdown()
+            await server.close()
+
+    async def test_idle_unload_waits_for_in_flight_request(
+        self, simple_config: Config, monkeypatch
+    ):
+        """Idle timer starts after the proxied upstream request finishes."""
+        import src.swapper as swapper_module
+
+        request_started = asyncio.Event()
+        release_response = asyncio.Event()
+        stop_calls = []
+
+        async def handle_chat(request):
+            request_started.set()
+            await release_response.wait()
+            return aiohttp.web.json_response({"id": "model-a"})
+
+        async def fake_stop_process(handle):
+            stop_calls.append(handle)
+            handle.process.returncode = 0
+
+        monkeypatch.setattr(swapper_module, "stop_process", fake_stop_process)
+
+        upstream_app = aiohttp.web.Application()
+        upstream_app.router.add_post("/v1/chat/completions", handle_chat)
+        upstream_server = TestServer(upstream_app)
+        await upstream_server.start_server()
+
+        swapper = Swapper(simple_config, idle_timeout=0.03)
+        handle = _fake_handle("model-a", port=upstream_server.port)
+        swapper._current = handle
+        swapper._current_model = "model-a"
+        swapper._healthy = True
+
+        async def handler(request):
+            return await swapper.handle_request(request)
+
+        proxy_app = aiohttp.web.Application()
+        proxy_app.router.add_route("*", "/{path:.*}", handler)
+        proxy_server = TestServer(proxy_app)
+        await proxy_server.start_server()
+
+        try:
+            async with TestClient(proxy_server) as client:
+                response_task = asyncio.create_task(client.post(
+                    "/v1/chat/completions",
+                    json={"model": "model-a"},
+                ))
+                await request_started.wait()
+                await asyncio.sleep(0.06)
+                assert stop_calls == []
+                assert swapper.active_model == "model-a"
+
+                release_response.set()
+                resp = await response_task
+                assert resp.status == 200
+                resp.release()
+
+                await asyncio.sleep(0.06)
+                assert stop_calls == [handle]
+                assert swapper.active_model is None
+        finally:
+            await swapper.shutdown()
+            await proxy_server.close()
+            await upstream_server.close()
+
+    async def test_idle_unload_waits_for_in_flight_streaming_request(
+        self, simple_config: Config, monkeypatch
+    ):
+        """Idle timeout does not stop a model while streaming is active."""
+        import src.swapper as swapper_module
+
+        stream_started = asyncio.Event()
+        release_stream = asyncio.Event()
+        stop_calls = []
+
+        async def handle_chat(request):
+            resp = aiohttp.web.StreamResponse(
+                status=200,
+                headers={"Content-Type": "text/event-stream"},
+            )
+            await resp.prepare(request)
+            stream_started.set()
+            await release_stream.wait()
+            await resp.write(b'data: {"id": "model-a"}\n\n')
+            await resp.write_eof()
+            return resp
+
+        async def fake_stop_process(handle):
+            stop_calls.append(handle)
+            handle.process.returncode = 0
+
+        monkeypatch.setattr(swapper_module, "stop_process", fake_stop_process)
+
+        upstream_app = aiohttp.web.Application()
+        upstream_app.router.add_post("/v1/chat/completions", handle_chat)
+        upstream_server = TestServer(upstream_app)
+        await upstream_server.start_server()
+
+        swapper = Swapper(simple_config, idle_timeout=0.03)
+        handle = _fake_handle("model-a", port=upstream_server.port)
+        swapper._current = handle
+        swapper._current_model = "model-a"
+        swapper._healthy = True
+
+        async def handler(request):
+            return await swapper.handle_request(request)
+
+        proxy_app = aiohttp.web.Application()
+        proxy_app.router.add_route("*", "/{path:.*}", handler)
+        proxy_server = TestServer(proxy_app)
+        await proxy_server.start_server()
+
+        try:
+            async with TestClient(proxy_server) as client:
+                response_task = asyncio.create_task(client.post(
+                    "/v1/chat/completions",
+                    json={"model": "model-a", "stream": True},
+                ))
+                await stream_started.wait()
+                await asyncio.sleep(0.06)
+                assert stop_calls == []
+                assert swapper.active_model == "model-a"
+
+                release_stream.set()
+                resp = await response_task
+                assert resp.status == 200
+                assert 'data: {"id": "model-a"}' in await resp.text()
+
+                await asyncio.sleep(0.06)
+                assert stop_calls == [handle]
+                assert swapper.active_model is None
+        finally:
+            await swapper.shutdown()
+            await proxy_server.close()
+            await upstream_server.close()
+
+    async def test_same_model_request_resets_existing_idle_timer(
+        self, simple_config: Config, monkeypatch
+    ):
+        """A second explicit same-model request restarts the idle countdown."""
+        import src.swapper as swapper_module
+
+        stop_calls = []
+        stopped = asyncio.Event()
+
+        async def fake_stop_process(handle):
+            stop_calls.append(handle)
+            handle.process.returncode = 0
+            stopped.set()
+
+        monkeypatch.setattr(swapper_module, "stop_process", fake_stop_process)
+
+        upstream_app, _ = _make_upstream_with_config("model-a")
+        upstream_server = TestServer(upstream_app)
+        await upstream_server.start_server()
+
+        swapper = Swapper(simple_config, idle_timeout=0.12)
+        handle = _fake_handle("model-a", port=upstream_server.port)
+        swapper._current = handle
+        swapper._current_model = "model-a"
+        swapper._healthy = True
+
+        async def handler(request):
+            return await swapper.handle_request(request)
+
+        proxy_app = aiohttp.web.Application()
+        proxy_app.router.add_route("*", "/{path:.*}", handler)
+        proxy_server = TestServer(proxy_app)
+        await proxy_server.start_server()
+
+        try:
+            async with TestClient(proxy_server) as client:
+                resp1 = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": "model-a"},
+                )
+                assert resp1.status == 200
+
+                await asyncio.sleep(0.07)
+
+                resp2 = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": "model-a"},
+                )
+                assert resp2.status == 200
+
+                await asyncio.sleep(0.07)
+                assert stop_calls == []
+                assert swapper.active_model == "model-a"
+
+                await asyncio.wait_for(stopped.wait(), timeout=1)
+                assert stop_calls == [handle]
+                assert swapper.active_model is None
+        finally:
+            await swapper.shutdown()
+            await proxy_server.close()
+            await upstream_server.close()
+
+    async def test_proxied_request_without_model_resets_idle_timer(
+        self, simple_config: Config, monkeypatch
+    ):
+        """A request proxied to the active model without a model resets idle."""
+        import src.swapper as swapper_module
+
+        stop_calls = []
+
+        async def fake_stop_process(handle):
+            stop_calls.append(handle)
+            handle.process.returncode = 0
+
+        monkeypatch.setattr(swapper_module, "stop_process", fake_stop_process)
+
+        upstream_app, _ = _make_upstream_with_config("model-a")
+        upstream_server = TestServer(upstream_app)
+        await upstream_server.start_server()
+
+        swapper = Swapper(simple_config, idle_timeout=0.12)
+        handle = _fake_handle("model-a", port=upstream_server.port)
+        swapper._current = handle
+        swapper._current_model = "model-a"
+        swapper._healthy = True
+
+        async def handler(request):
+            return await swapper.handle_request(request)
+
+        proxy_app = aiohttp.web.Application()
+        proxy_app.router.add_route("*", "/{path:.*}", handler)
+        proxy_server = TestServer(proxy_app)
+        await proxy_server.start_server()
+
+        try:
+            async with TestClient(proxy_server) as client:
+                resp1 = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": "model-a"},
+                )
+                assert resp1.status == 200
+
+                await asyncio.sleep(0.07)
+
+                resp2 = await client.post(
+                    "/v1/chat/completions",
+                    json={"prompt": "no explicit model"},
+                )
+                assert resp2.status == 200
+
+                await asyncio.sleep(0.07)
+                assert stop_calls == []
+                assert swapper.active_model == "model-a"
+
+                await asyncio.sleep(0.08)
+                assert stop_calls == [handle]
+                assert swapper.active_model is None
+        finally:
+            await swapper.shutdown()
+            await proxy_server.close()
+            await upstream_server.close()
+
+    @pytest.mark.parametrize("path", ["/v1/models", "/models"])
+    async def test_models_endpoints_do_not_reset_idle_timer(
+        self, simple_config: Config, monkeypatch, path: str
+    ):
+        """Switcher-local model listings do not count as model activity."""
+        import src.swapper as swapper_module
+
+        async def fake_stop_process(handle):
+            handle.process.returncode = 0
+
+        monkeypatch.setattr(swapper_module, "stop_process", fake_stop_process)
+
+        swapper = Swapper(simple_config, idle_timeout=60)
+        handle = _fake_handle("model-a", port=1234)
+        swapper._current = handle
+        swapper._current_model = "model-a"
+        swapper._healthy = True
+        swapper._schedule_idle_timer()
+        idle_task = swapper._idle_task
+
+        async def handler(request):
+            return await swapper.handle_request(request)
+
+        app = aiohttp.web.Application()
+        app.router.add_route("*", "/{path:.*}", handler)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            async with TestClient(server) as client:
+                resp = await client.get(path)
+                assert resp.status == 200
+                assert swapper._idle_task is idle_task
+        finally:
+            await swapper.shutdown()
+            await server.close()
+
+    async def test_request_after_idle_unload_restarts_model(
+        self, simple_config: Config, monkeypatch
+    ):
+        """A later model request starts a new model after idle unload."""
+        import src.swapper as swapper_module
+
+        old_handle = _fake_handle("model-a", port=1111)
+        new_handle = _fake_handle("model-a", port=2222)
+        start_calls = []
+
+        async def fake_stop_process(handle):
+            handle.process.returncode = 0
+
+        async def fake_start_process(model_name, cmd, port):
+            start_calls.append(model_name)
+            return new_handle
+
+        async def fake_wait_for_ready(*args, **kwargs):
+            return None
+
+        async def fake_proxy_request(*args, **kwargs):
+            return aiohttp.web.json_response({"ok": True})
+
+        monkeypatch.setattr(swapper_module, "stop_process", fake_stop_process)
+        monkeypatch.setattr(swapper_module, "start_process", fake_start_process)
+        monkeypatch.setattr(swapper_module, "wait_for_ready", fake_wait_for_ready)
+        monkeypatch.setattr(swapper_module, "proxy_request", fake_proxy_request)
+
+        swapper = Swapper(simple_config, idle_timeout=0.02)
+        swapper._current = old_handle
+        swapper._current_model = "model-a"
+        swapper._healthy = True
+        swapper._schedule_idle_timer()
+        await asyncio.sleep(0.05)
+        assert swapper.active_model is None
+
+        async def handler(request):
+            return await swapper.handle_request(request)
+
+        app = aiohttp.web.Application()
+        app.router.add_route("*", "/{path:.*}", handler)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            async with TestClient(server) as client:
+                no_model_resp = await client.post(
+                    "/v1/chat/completions",
+                    json={"prompt": "no model after idle unload"},
+                )
+                assert no_model_resp.status == 400
+                assert start_calls == []
+
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": "model-a"},
+                )
+                assert resp.status == 200
+                assert start_calls == ["model-a"]
+                assert swapper._current is new_handle
+                assert swapper.active_model == "model-a"
+        finally:
+            await swapper.shutdown()
+            await server.close()
+
+    async def test_shutdown_cancels_idle_timer(
+        self, simple_config: Config, monkeypatch
+    ):
+        """Shutdown cancels pending idle unload cleanly."""
+        import src.swapper as swapper_module
+
+        async def fake_stop_process(handle):
+            handle.process.returncode = 0
+
+        monkeypatch.setattr(swapper_module, "stop_process", fake_stop_process)
+
+        swapper = Swapper(simple_config, idle_timeout=60)
+        handle = _fake_handle("model-a", port=1234)
+        swapper._current = handle
+        swapper._current_model = "model-a"
+        swapper._healthy = True
+        swapper._schedule_idle_timer()
+        idle_task = swapper._idle_task
+        assert idle_task is not None
+
+        await swapper.shutdown()
+
+        assert idle_task.done()
+        assert swapper._idle_task is None
+        assert swapper._current is None
+
+
 # --- Helpers ---
+
+class _FakeProcess:
+    def __init__(self, returncode=None):
+        self.returncode = returncode
+        self.pid = 12345
+
+
+def _fake_handle(model_name="model-a", port=1234):
+    return ProcessHandle(
+        model_name=model_name,
+        port=port,
+        process=_FakeProcess(),
+    )
+
 
 async def _drain(reader, prefix):
     """Drain a stream (for fake process handle)."""

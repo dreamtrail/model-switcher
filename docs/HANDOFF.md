@@ -1,15 +1,16 @@
 ## Handoff Card
 
-- As-Of: 2026-06-12 15:40 UTC (2026-06-12 15:40 Z)
-- Branch/HEAD: master @ 627e3c7
+- As-Of: 2026-06-12 16:05 UTC (2026-06-12 16:05 Z)
+- Branch/HEAD: master @ 757ddc7 (pre-commit)
 - Mode: FINISHED
 - Working On: P-20260612-02
-- Completed Since Last: P-20260612-08
-- Verification: pytest 148 passed in 7.70s
-- Env Hints: .venv active; Python 3.13.5
+- Completed Since Last: P-20260613-01
+- Verification: .venv/bin/python -m pytest --tb=short -q — 177 passed in 8.54s
+- Env Hints: .venv available; Python 3.13.5
 - Doc Anchors:
-  - README.md — section: Shutdown
+  - README.md — section: Idle VRAM Release
   - docs/TODO.md — section: Next
-- Commands: .venv/bin/python -m pytest --tb=short -q; ./run.sh --config config.yaml
+  - docs/DECISIONS.md — section: Idle Unload
+- Commands: .venv/bin/python -m pytest --tb=short -q
 - Risks/Blockers: unrelated local `.pi/settings.json` remains modified
 - Source of Truth: docs/TODO.md

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import re
 import signal
 import sys
 
@@ -17,6 +18,25 @@ from src.config import load_config
 from src.swapper import Swapper
 
 logger = logging.getLogger(__name__)
+
+
+_DURATION_RE = re.compile(r"^([0-9]+)([smh]?)$")
+_DURATION_MULTIPLIERS = {"": 1, "s": 1, "m": 60, "h": 3600}
+
+
+def parse_duration(value: str) -> int:
+    """Parse a CLI duration into seconds.
+
+    Accepts bare integer seconds or integer s/m/h suffixes.
+    """
+    match = _DURATION_RE.fullmatch(value)
+    if not match:
+        raise argparse.ArgumentTypeError(
+            "duration must be a non-negative integer with optional "
+            "s, m, or h suffix"
+        )
+    amount, unit = match.groups()
+    return int(amount) * _DURATION_MULTIPLIERS[unit]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -51,6 +71,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=60,
         help="Swap/request timeout in seconds (default: 60)",
+    )
+    parser.add_argument(
+        "--idle-timeout",
+        type=parse_duration,
+        default=parse_duration("15m"),
+        metavar="DURATION",
+        help="Unload idle model after duration (default: 15m; 0 disables)",
     )
     return parser.parse_args(argv)
 
@@ -114,7 +141,12 @@ async def _main(argv: list[str] | None = None) -> None:
     client = aiohttp.ClientSession(timeout=client_timeout)
 
     # Create swapper
-    swapper = Swapper(config, timeout=args.timeout, client=client)
+    swapper = Swapper(
+        config,
+        timeout=args.timeout,
+        idle_timeout=args.idle_timeout,
+        client=client,
+    )
 
     # Shutdown coordination
     shutdown_event = asyncio.Event()
