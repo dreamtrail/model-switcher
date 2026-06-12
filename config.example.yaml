@@ -1,11 +1,29 @@
 # Model Switcher Configuration
 # Each key is a model name used in API requests.
 # Each value is the command to start that model's server.
-# Use ${PORT} as a placeholder — the switcher assigns a free port at runtime.
+#
+# Port resolution (first match wins):
+#   1. ${PORT} placeholder — switcher assigns a free port automatically
+#   2. Explicit port: key — you specify the port directly
+#   3. --port flag in command — switcher extracts the port from the command
 
+# --- Mode 1: ${PORT} placeholder (recommended) ---
+# Switcher finds a free port and substitutes it into the command.
 llama-3.1-8b: "llama-server --model /path/to/llama-3.1-8b.gguf --port ${PORT} --ctx-size 8192"
 
-mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port ${PORT} --ctx-size 4096"
+# --- Mode 2: Explicit port ---
+# Use when the server uses non-standard flags or you want a fixed port.
+mistral-7b:
+  cmd: "llama-server --model /path/to/mistral-7b.gguf --listen-port 8080 --ctx-size 4096"
+  port: 8080
 
-# You can also use scripts instead of direct commands:
-# my-model: "/path/to/start-model.sh"
+# --- Mode 3: Auto-detect from --port flag ---
+# Switcher parses --port <N> from the command string.
+# Works for: --port 8000, --port "8000", --port '8000'
+gemma-7b: "llama-server --model /path/to/gemma-7b.gguf --port 9000"
+
+# You can also use scripts:
+# my-model: "./start-model.sh"           # auto-detects --port from script args
+# my-model:                              # or explicit port with script
+#   cmd: "./start-model.sh"
+#   port: 7070
