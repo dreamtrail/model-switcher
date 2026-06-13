@@ -22,3 +22,6 @@ htmlcov/
 
 # Plan artifacts (internal)
 docs/.plan/
+
+# Pi agent settings
+.pi/settings.json
