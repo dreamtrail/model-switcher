@@ -75,9 +75,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--idle-timeout",
         type=parse_duration,
-        default=parse_duration("15m"),
+        default=parse_duration("30m"),
         metavar="DURATION",
-        help="Unload idle model after duration (default: 15m; 0 disables)",
+        help="Unload idle model after duration (default: 30m; 0 disables)",
     )
     return parser.parse_args(argv)
 

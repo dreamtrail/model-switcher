@@ -66,9 +66,9 @@ class TestParseArgs:
         assert args.timeout == 120
 
     def test_default_idle_timeout(self):
-        """Default idle timeout is 15 minutes."""
+        """Default idle timeout is 30 minutes."""
         args = parse_args(["--config", "config.yaml"])
-        assert args.idle_timeout == 900
+        assert args.idle_timeout == 1800
 
     @pytest.mark.parametrize(
         ("value", "expected"),
@@ -123,7 +123,7 @@ class TestMainRuntime:
     @pytest.mark.parametrize(
         ("extra_args", "expected_idle_timeout"),
         [
-            ([], 900),
+            ([], 1800),
             (["--idle-timeout", "1h"], 3600),
             (["--idle-timeout", "0"], 0),
         ],

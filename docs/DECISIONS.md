@@ -23,7 +23,7 @@
 - **No auto-restart on crash** — return 502 to client. Operator sees the error and investigates. Switcher marks model as stopped; next request triggers fresh start.
 
 ### Idle Unload
-- **Default idle unload: 15m** — stop the active model after 15 minutes without upstream/model traffic to release VRAM.
+- **Default idle unload: 30m** — stop the active model after 30 minutes without upstream/model traffic to release VRAM.
 - **Configurable via `--idle-timeout`** — accepts bare seconds or integer `s`/`m`/`h` suffixes (`900`, `900s`, `15m`, `1h`); `0` disables.
 - **Idle begins after the last in-flight model request finishes** — prevents unloading during long or streaming responses.
 - **Only proxied model traffic counts as activity** — explicit model requests and no-model requests routed to the active upstream reset idle; switcher-local `/v1/models` and `/models` do not.
@@ -39,7 +39,7 @@
 - **`aiohttp` only** (single dep) — provides both async HTTP server and client. No need for FastAPI-level features.
 
 ### CLI
-- `--config` (required), `--host` (default `127.0.0.1`), `--port` (default `8080`), `--timeout` (default `60`), `--idle-timeout` (default `15m`), `--version`
+- `--config` (required), `--host` (default `127.0.0.1`), `--port` (default `8080`), `--timeout` (default `60`), `--idle-timeout` (default `30m`), `--version`
 - No auth or TLS flags in v1.
 
 ### Project Structure
