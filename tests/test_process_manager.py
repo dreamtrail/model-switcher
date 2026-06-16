@@ -228,10 +228,10 @@ class TestLogPiping:
             for record in caplog.records
         )
 
-    async def test_stderr_is_captured(self, caplog):
-        """Process stderr is captured and logged with model prefix."""
+    async def test_stderr_is_captured_as_info_by_default(self, caplog):
+        """Process stderr is captured as INFO with model prefix."""
         import logging
-        caplog.set_level(logging.WARNING)
+        caplog.set_level(logging.INFO)
         handle = await start_process(
             "my-model",
             "python -c \"import sys; sys.stderr.write('error from model\\n')\"",
@@ -241,7 +241,27 @@ class TestLogPiping:
         await stop_process(handle)
         # Verify both the prefix and the actual upstream output
         assert any(
-            "my-model" in record.message and "error from model" in record.message
+            record.levelno == logging.INFO
+            and "my-model" in record.message
+            and "error from model" in record.message
+            for record in caplog.records
+        )
+
+    async def test_stderr_warning_marker_is_captured_as_warning(self, caplog):
+        """Upstream warning markers are logged as WARNING."""
+        import logging
+        caplog.set_level(logging.INFO)
+        handle = await start_process(
+            "my-model",
+            "python -c \"import sys; "
+            "sys.stderr.write('13.31.779.183 W slot update_slots\\n')\"",
+            0,
+        )
+        await asyncio.sleep(0.3)
+        await stop_process(handle)
+        assert any(
+            record.levelno == logging.WARNING
+            and record.message == "my-model: 13.31.779.183 W slot update_slots"
             for record in caplog.records
         )
 

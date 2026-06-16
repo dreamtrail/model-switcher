@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shlex
 import signal
 from dataclasses import dataclass, field
@@ -12,6 +13,12 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 GRACE_PERIOD = 3  # seconds to wait after SIGTERM before SIGKILL
+
+_UPSTREAM_LEVEL_RE = re.compile(
+    r"^\s*(?:(?:\d+\.)+\d+\s+)?"
+    r"(?P<level>I|W|E|F|INFO|WARN|WARNING|ERROR|FATAL|CRITICAL)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -29,7 +36,6 @@ class ProcessHandle:
 async def _drain_stream(
     reader: asyncio.StreamReader,
     prefix: str,
-    log_func: logging.Callable[..., None],
 ) -> None:
     """Read lines from a stream and log them with a prefix."""
     try:
@@ -39,9 +45,29 @@ async def _drain_stream(
                 break
             text = line.decode("utf-8", errors="replace").rstrip("\n\r")
             if text:
-                log_func("%s: %s", prefix, text)
+                _log_upstream_line(prefix, text)
     except asyncio.CancelledError:
         pass
+
+
+def _log_upstream_line(prefix: str, text: str) -> None:
+    """Log an upstream output line at the level indicated by the line."""
+    level = _upstream_log_level(text)
+    logger.log(level, "%s: %s", prefix, text)
+
+
+def _upstream_log_level(text: str) -> int:
+    """Infer an upstream log level from common severity markers."""
+    match = _UPSTREAM_LEVEL_RE.match(text)
+    if not match:
+        return logging.INFO
+
+    marker = match.group("level").upper()
+    if marker in {"W", "WARN", "WARNING"}:
+        return logging.WARNING
+    if marker in {"E", "F", "ERROR", "FATAL", "CRITICAL"}:
+        return logging.ERROR
+    return logging.INFO
 
 
 async def start_process(
@@ -77,11 +103,11 @@ async def start_process(
     )
 
     stdout_task = asyncio.create_task(
-        _drain_stream(process.stdout, prefix, logger.info),
+        _drain_stream(process.stdout, prefix),
         name=f"stdout-{prefix}",
     )
     stderr_task = asyncio.create_task(
-        _drain_stream(process.stderr, prefix, logger.warning),
+        _drain_stream(process.stderr, prefix),
         name=f"stderr-{prefix}",
     )
 

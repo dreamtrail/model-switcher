@@ -117,7 +117,7 @@ async def _main(argv: list[str] | None = None) -> None:
     handler = logging.StreamHandler()
     handler.setFormatter(
         ColorFormatter(
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            "%(asctime)s [%(levelname)s] %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
     )

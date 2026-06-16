@@ -88,6 +88,8 @@ Log output is color-coded in the terminal for readability:
 - **Cyan** — Model swap/start events
 - **Magenta** — Model stop (SIGTERM)
 
+Upstream model logs keep the model-name prefix (for example, `llama-3.1-8b: ...`) and omit Python logger names such as `src.process_manager`. Output written to stderr is not automatically treated as a warning; severity is inferred from common upstream markers when possible, and otherwise defaults to INFO.
+
 Colors auto-disable when output is piped or `NO_COLOR` is set.
 
 ## Shutdown

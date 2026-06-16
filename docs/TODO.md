@@ -8,6 +8,7 @@
 
 ## Done
 
+- [P-20260616-01] Clean up upstream process log levels and format — DONE 2026-06-16 01:30 UTC
 - [P-20260613-01] Release VRAM by unloading idle models — DONE 2026-06-12 16:05 UTC
 - [P-20260612-08] Stop model process groups before swaps — DONE 2026-06-12 15:32 UTC
 - [P-20260612-07] Auto-assign ports with temp script rewriting — DONE 2026-06-12 11:45 UTC

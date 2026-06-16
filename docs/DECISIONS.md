@@ -30,7 +30,10 @@
 - **Idle unload clears active model state** — a later no-model request returns the existing 400; a later request with `model` restarts normally.
 
 ### Observability
-- **Stdout only** — proxy logs + upstream logs (prefixed `[model-name]`). User can redirect at shell level. No file/JSON logging in v1.
+- **Stdout only** — proxy logs + upstream logs. User can redirect at shell level. No file/JSON logging in v1.
+- **User-facing CLI format omits Python logger names** — log lines include timestamp, level, and message, without module names such as `src.process_manager`.
+- **Upstream logs keep model prefixes** — captured upstream output is emitted as `model-name: message` so multiple models remain distinguishable.
+- **Stderr does not imply warning** — upstream stdout/stderr lines default to INFO unless common severity markers indicate WARNING or ERROR.
 
 ### Streaming
 - **Chunked SSE passthrough** — only correct choice for chat completions. Read/write chunks in real-time via aiohttp async streaming.
