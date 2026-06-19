@@ -31,7 +31,12 @@ def _make_formatter() -> ColorFormatter:
     return ColorFormatter(DEFAULT_FMT, DEFAULT_DATEFMT)
 
 
-def _make_record(level: int, message: str) -> logging.LogRecord:
+def _make_record(
+    level: int,
+    message: str,
+    *,
+    plain_upstream: bool = False,
+) -> logging.LogRecord:
     """Create a LogRecord for testing."""
     record = logging.LogRecord(
         name="test",
@@ -42,6 +47,8 @@ def _make_record(level: int, message: str) -> logging.LogRecord:
         args=(),
         exc_info=None,
     )
+    if plain_upstream:
+        record.plain_upstream = True
     return record
 
 
@@ -89,6 +96,69 @@ class TestLevelBasedColoring:
         assert _C.GREEN not in output
         assert _C.YELLOW not in output
         assert _C.RED not in output
+
+
+class TestPlainUpstreamFormatting:
+
+    def test_plain_upstream_info_keeps_timestamp_and_message_only(self):
+        """Plain upstream INFO omits level, logger name, and ANSI color."""
+        formatter = _make_formatter()
+        formatter._enabled = True
+        record = _make_record(
+            logging.INFO,
+            "my-model: normal server output",
+            plain_upstream=True,
+        )
+        expected_time = formatter.formatTime(record, DEFAULT_DATEFMT)
+
+        output = formatter.format(record)
+
+        assert output == f"{expected_time} my-model: normal server output"
+        assert "[INFO]" not in output
+        assert "test:" not in output
+        assert "\033[" not in output
+
+    def test_switcher_info_still_uses_standard_format_and_color(self):
+        """Non-upstream INFO records keep the switcher log format."""
+        formatter = _make_formatter()
+        formatter._enabled = True
+        record = _make_record(logging.INFO, "Loaded 1 model(s)")
+
+        output = formatter.format(record)
+
+        assert "[INFO]" in output
+        assert "test: Loaded 1 model(s)" in output
+        assert _C.GREEN in output
+
+    def test_upstream_warning_is_not_plain(self):
+        """Unmarked upstream warnings keep normal WARNING formatting."""
+        formatter = _make_formatter()
+        formatter._enabled = True
+        record = _make_record(
+            logging.WARNING,
+            "my-model: 13.31.779.183 W slot update_slots",
+        )
+
+        output = formatter.format(record)
+
+        assert "[WARNING]" in output
+        assert "my-model: 13.31.779.183 W slot update_slots" in output
+        assert _C.YELLOW in output
+
+    def test_upstream_error_is_not_plain(self):
+        """Unmarked upstream errors keep normal ERROR formatting."""
+        formatter = _make_formatter()
+        formatter._enabled = True
+        record = _make_record(
+            logging.ERROR,
+            "my-model: 13.31.779.183 E load failed",
+        )
+
+        output = formatter.format(record)
+
+        assert "[ERROR]" in output
+        assert "my-model: 13.31.779.183 E load failed" in output
+        assert _C.RED in output
 
 
 class TestKeyEventColoring:

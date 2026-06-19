@@ -224,17 +224,19 @@ class TestLogPiping:
         await stop_process(handle)
         # Verify both the prefix and the actual upstream output
         assert any(
-            "my-model" in record.message and "hello from model" in record.message
+            record.levelno == logging.INFO
+            and getattr(record, "plain_upstream", False) is True
+            and record.message == "my-model: hello from model"
             for record in caplog.records
         )
 
     async def test_stderr_is_captured_as_info_by_default(self, caplog):
-        """Process stderr is captured as INFO with model prefix."""
+        """Process stderr is captured as plain INFO with model prefix."""
         import logging
         caplog.set_level(logging.INFO)
         handle = await start_process(
             "my-model",
-            "python -c \"import sys; sys.stderr.write('error from model\\n')\"",
+            "python -c \"import sys; sys.stderr.write('plain from model\\n')\"",
             0,
         )
         await asyncio.sleep(0.3)
@@ -242,13 +244,13 @@ class TestLogPiping:
         # Verify both the prefix and the actual upstream output
         assert any(
             record.levelno == logging.INFO
-            and "my-model" in record.message
-            and "error from model" in record.message
+            and getattr(record, "plain_upstream", False) is True
+            and record.message == "my-model: plain from model"
             for record in caplog.records
         )
 
     async def test_stderr_warning_marker_is_captured_as_warning(self, caplog):
-        """Upstream warning markers are logged as WARNING."""
+        """Upstream warning markers are logged as formatted WARNING."""
         import logging
         caplog.set_level(logging.INFO)
         handle = await start_process(
@@ -261,7 +263,27 @@ class TestLogPiping:
         await stop_process(handle)
         assert any(
             record.levelno == logging.WARNING
+            and getattr(record, "plain_upstream", False) is False
             and record.message == "my-model: 13.31.779.183 W slot update_slots"
+            for record in caplog.records
+        )
+
+    async def test_stderr_error_marker_is_captured_as_error(self, caplog):
+        """Upstream error markers are logged as formatted ERROR."""
+        import logging
+        caplog.set_level(logging.INFO)
+        handle = await start_process(
+            "my-model",
+            "python -c \"import sys; "
+            "sys.stderr.write('13.31.779.183 E load failed\\n')\"",
+            0,
+        )
+        await asyncio.sleep(0.3)
+        await stop_process(handle)
+        assert any(
+            record.levelno == logging.ERROR
+            and getattr(record, "plain_upstream", False) is False
+            and record.message == "my-model: 13.31.779.183 E load failed"
             for record in caplog.records
         )
 

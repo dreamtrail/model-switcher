@@ -67,6 +67,12 @@ class ColorFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         """Format the log record with optional ANSI color wrapping."""
+        if getattr(record, "plain_upstream", False):
+            return (
+                f"{self.formatTime(record, self.datefmt)} "
+                f"{record.getMessage()}"
+            )
+
         color = self._color_for_record(record)
         formatted = super().format(record)
         if color:

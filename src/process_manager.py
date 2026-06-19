@@ -53,6 +53,15 @@ async def _drain_stream(
 def _log_upstream_line(prefix: str, text: str) -> None:
     """Log an upstream output line at the level indicated by the line."""
     level = _upstream_log_level(text)
+    if level == logging.INFO:
+        logger.log(
+            level,
+            "%s: %s",
+            prefix,
+            text,
+            extra={"plain_upstream": True},
+        )
+        return
     logger.log(level, "%s: %s", prefix, text)
 
 
