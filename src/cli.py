@@ -19,6 +19,8 @@ from src.swapper import Swapper
 
 logger = logging.getLogger(__name__)
 
+SERVER_SHUTDOWN_TIMEOUT = 2.0
+
 
 _DURATION_RE = re.compile(r"^([0-9]+)([smh]?)$")
 _DURATION_MULTIPLIERS = {"": 1, "s": 1, "m": 60, "h": 3600}
@@ -92,7 +94,7 @@ async def _run_server(
     app = web.Application()
     app.router.add_route("*", "/{path:.*}", swapper.handle_request)
 
-    runner = web.AppRunner(app)
+    runner = web.AppRunner(app, shutdown_timeout=SERVER_SHUTDOWN_TIMEOUT)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
     await site.start()
@@ -150,9 +152,19 @@ async def _main(argv: list[str] | None = None) -> None:
 
     # Shutdown coordination
     shutdown_event = asyncio.Event()
+    main_task = asyncio.current_task()
+    shutdown_requested = False
 
     def _signal_handler() -> None:
+        nonlocal shutdown_requested
+        if shutdown_requested:
+            logger.info("Shutdown signal received again; forcing shutdown")
+            if main_task is not None:
+                main_task.cancel()
+            return
+
         logger.info("Shutdown signal received")
+        shutdown_requested = True
         shutdown_event.set()
 
     loop = asyncio.get_running_loop()
@@ -172,7 +184,7 @@ def main() -> None:
     """Sync entry point for console script."""
     try:
         asyncio.run(_main())
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         pass
 
 

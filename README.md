@@ -94,4 +94,4 @@ Colors auto-disable when output is piped or `NO_COLOR` is set.
 
 ## Shutdown
 
-Send `SIGINT` or `SIGTERM` to the switcher. It will gracefully stop the active upstream model process group (SIGTERM + 3s grace, then SIGKILL), including servers launched through wrapper scripts.
+Send `SIGINT` or `SIGTERM` to the switcher. On the first signal, it gracefully stops the active upstream model process group (SIGTERM + 3s grace, then SIGKILL), including servers launched through wrapper scripts. If shutdown appears stuck, send a second `SIGINT` or `SIGTERM` to force shutdown by cancelling the main server task.

@@ -134,6 +134,13 @@ class Swapper:
                 model_name,
                 handle.port,
             )
+            await stop_process(handle)
+            self._current = None
+            self._current_model = None
+            self._healthy = False
+            raise
+        except asyncio.CancelledError:
+            await stop_process(handle)
             self._current = None
             self._current_model = None
             self._healthy = False

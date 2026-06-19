@@ -356,6 +356,90 @@ class TestSwapperTeardown:
         assert stop_calls == [handle]
         assert swapper._current is None
 
+    async def test_startup_timeout_stops_new_handle_and_clears_state(
+        self, simple_config: Config, monkeypatch
+    ):
+        """A model that never becomes ready is stopped before state is cleared."""
+        import src.swapper as swapper_module
+
+        class FakeProcess:
+            returncode = None
+            pid = 12345
+
+        handle = ProcessHandle(
+            model_name="model-a",
+            port=1234,
+            process=FakeProcess(),
+        )
+        stop_calls = []
+        swapper = Swapper(simple_config)
+
+        async def fake_start_process(model_name, cmd, port):
+            return handle
+
+        async def fake_wait_for_ready(*args, **kwargs):
+            raise TimeoutError("not ready")
+
+        async def fake_stop_process(stopped_handle):
+            stop_calls.append(stopped_handle)
+
+        monkeypatch.setattr(swapper_module, "start_process", fake_start_process)
+        monkeypatch.setattr(swapper_module, "wait_for_ready", fake_wait_for_ready)
+        monkeypatch.setattr(swapper_module, "stop_process", fake_stop_process)
+
+        try:
+            with pytest.raises(TimeoutError):
+                await swapper._ensure_model("model-a")
+
+            assert stop_calls == [handle]
+            assert swapper._current is None
+            assert swapper._current_model is None
+            assert swapper._healthy is False
+        finally:
+            await swapper.shutdown()
+
+    async def test_startup_cancellation_stops_new_handle_and_reraises(
+        self, simple_config: Config, monkeypatch
+    ):
+        """Cancelling readiness waits stops the new process and propagates."""
+        import src.swapper as swapper_module
+
+        class FakeProcess:
+            returncode = None
+            pid = 12345
+
+        handle = ProcessHandle(
+            model_name="model-a",
+            port=1234,
+            process=FakeProcess(),
+        )
+        stop_calls = []
+        swapper = Swapper(simple_config)
+
+        async def fake_start_process(model_name, cmd, port):
+            return handle
+
+        async def fake_wait_for_ready(*args, **kwargs):
+            raise asyncio.CancelledError
+
+        async def fake_stop_process(stopped_handle):
+            stop_calls.append(stopped_handle)
+
+        monkeypatch.setattr(swapper_module, "start_process", fake_start_process)
+        monkeypatch.setattr(swapper_module, "wait_for_ready", fake_wait_for_ready)
+        monkeypatch.setattr(swapper_module, "stop_process", fake_stop_process)
+
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await swapper._ensure_model("model-a")
+
+            assert stop_calls == [handle]
+            assert swapper._current is None
+            assert swapper._current_model is None
+            assert swapper._healthy is False
+        finally:
+            await swapper.shutdown()
+
 
 class TestSwapTimeout:
 

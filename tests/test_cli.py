@@ -7,6 +7,8 @@ Derived from plan acceptance criteria:
 
 from __future__ import annotations
 
+import asyncio
+import signal
 import sys
 
 import pytest
@@ -170,6 +172,88 @@ class TestMainRuntime:
         assert created_swappers[0].idle_timeout == expected_idle_timeout
         assert isinstance(created_swappers[0].client, FakeClientSession)
 
+    async def test_main_first_signal_starts_graceful_shutdown(
+        self, monkeypatch
+    ):
+        """First shutdown signal logs once and sets the shutdown event."""
+        registered_handlers = {}
+        shutdown_called = False
+
+        class FakeClientSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class FakeSwapper:
+            def __init__(self, config, *, timeout, idle_timeout, client):
+                self.config = config
+
+            async def shutdown(self):
+                nonlocal shutdown_called
+                shutdown_called = True
+
+        async def fake_run_server(host, port, swapper, shutdown_event):
+            assert shutdown_event.is_set() is False
+            registered_handlers[signal.SIGINT]()
+            assert shutdown_event.is_set() is True
+            assert asyncio.current_task().cancelling() == 0
+
+        def fake_add_signal_handler(sig, callback):
+            registered_handlers[sig] = callback
+
+        loop = asyncio.get_running_loop()
+        config = type("Config", (), {"models": {"model-a": object()}})()
+
+        monkeypatch.setattr(loop, "add_signal_handler", fake_add_signal_handler)
+        monkeypatch.setattr(cli_module, "load_config", lambda path: config)
+        monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)
+        monkeypatch.setattr(cli_module, "Swapper", FakeSwapper)
+        monkeypatch.setattr(cli_module, "_run_server", fake_run_server)
+
+        await cli_module._main(["--config", "config.yaml"])
+
+        assert signal.SIGINT in registered_handlers
+        assert signal.SIGTERM in registered_handlers
+        assert shutdown_called is True
+
+    async def test_main_second_signal_cancels_main_task(self, monkeypatch):
+        """A repeated shutdown signal escalates by cancelling _main."""
+        registered_handlers = {}
+        shutdown_called = False
+
+        class FakeClientSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class FakeSwapper:
+            def __init__(self, config, *, timeout, idle_timeout, client):
+                self.config = config
+
+            async def shutdown(self):
+                nonlocal shutdown_called
+                shutdown_called = True
+
+        async def fake_run_server(host, port, swapper, shutdown_event):
+            registered_handlers[signal.SIGINT]()
+            registered_handlers[signal.SIGINT]()
+            await asyncio.sleep(0)
+
+        def fake_add_signal_handler(sig, callback):
+            registered_handlers[sig] = callback
+
+        loop = asyncio.get_running_loop()
+        config = type("Config", (), {"models": {"model-a": object()}})()
+
+        monkeypatch.setattr(loop, "add_signal_handler", fake_add_signal_handler)
+        monkeypatch.setattr(cli_module, "load_config", lambda path: config)
+        monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)
+        monkeypatch.setattr(cli_module, "Swapper", FakeSwapper)
+        monkeypatch.setattr(cli_module, "_run_server", fake_run_server)
+
+        with pytest.raises(asyncio.CancelledError):
+            await cli_module._main(["--config", "config.yaml"])
+
+        assert shutdown_called is True
+
     async def test_main_config_error_exits_1(self):
         """_main exits with code 1 when config file does not exist.
 
@@ -189,3 +273,50 @@ class TestMainRuntime:
         with pytest.raises(SystemExit) as exc:
             await _main(["--config", str(bad_config)])
         assert exc.value.code == 1
+
+
+class TestRunServer:
+
+    async def test_run_server_uses_bounded_shutdown_timeout(self, monkeypatch):
+        """aiohttp graceful shutdown is bounded below its long default."""
+        captured = {}
+
+        class FakeRunner:
+            def __init__(self, app, **kwargs):
+                captured["runner_kwargs"] = kwargs
+
+            async def setup(self):
+                pass
+
+            async def cleanup(self):
+                captured["cleanup_called"] = True
+
+        class FakeSite:
+            def __init__(self, runner, host, port):
+                pass
+
+            async def start(self):
+                captured["site_started"] = True
+
+        class FakeSwapper:
+            config = type("Config", (), {"models": {"model-a": object()}})()
+
+            async def handle_request(self, request):
+                raise AssertionError("handler should not be called")
+
+        shutdown_event = asyncio.Event()
+        shutdown_event.set()
+
+        monkeypatch.setattr(cli_module.web, "AppRunner", FakeRunner)
+        monkeypatch.setattr(cli_module.web, "TCPSite", FakeSite)
+
+        await cli_module._run_server(
+            "127.0.0.1", 8080, FakeSwapper(), shutdown_event
+        )
+
+        assert captured["runner_kwargs"] == {
+            "shutdown_timeout": cli_module.SERVER_SHUTDOWN_TIMEOUT,
+        }
+        assert cli_module.SERVER_SHUTDOWN_TIMEOUT > 0
+        assert captured["site_started"] is True
+        assert captured["cleanup_called"] is True
