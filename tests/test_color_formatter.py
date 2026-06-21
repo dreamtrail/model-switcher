@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 from unittest import mock
 
@@ -26,9 +27,10 @@ DEFAULT_FMT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 DEFAULT_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 
-def _make_formatter() -> ColorFormatter:
+def _make_formatter(show_timestamp: bool = False, **extra) -> ColorFormatter:
     """Create a ColorFormatter with the same format as cli.py."""
-    return ColorFormatter(DEFAULT_FMT, DEFAULT_DATEFMT)
+    return ColorFormatter(DEFAULT_FMT, DEFAULT_DATEFMT,
+                          show_timestamp=show_timestamp, **extra)
 
 
 def _make_record(
@@ -102,7 +104,7 @@ class TestPlainUpstreamFormatting:
 
     def test_plain_upstream_info_keeps_timestamp_and_message_only(self):
         """Plain upstream INFO omits level, logger name, and ANSI color."""
-        formatter = _make_formatter()
+        formatter = _make_formatter(show_timestamp=True)
         formatter._enabled = True
         record = _make_record(
             logging.INFO,
@@ -354,3 +356,52 @@ class TestColorConstants:
             assert isinstance(pattern, re.Pattern)
             assert isinstance(color, str)
             assert color.startswith("\033[")
+
+
+class TestTimestampControl:
+
+    def test_default_no_timestamp_in_output(self):
+        """Default (show_timestamp=False) omits timestamp."""
+        formatter = _make_formatter()
+        formatter._enabled = False
+        record = _make_record(logging.INFO, "hello world")
+        output = formatter.format(record)
+        assert "[INFO]" in output
+        assert "hello world" in output
+        # Output should NOT start with a timestamp pattern
+        assert not re.match(r"\d{4}-\d{2}-\d{2}", output)
+
+    def test_show_timestamp_includes_timestamp(self):
+        """With show_timestamp=True, timestamp appears in output."""
+        formatter = _make_formatter(show_timestamp=True)
+        formatter._enabled = False
+        record = _make_record(logging.INFO, "hello world")
+        expected_time = formatter.formatTime(record, DEFAULT_DATEFMT)
+        output = formatter.format(record)
+        assert expected_time in output
+
+    def test_no_timestamp_plain_upstream(self):
+        """Plain upstream with show_timestamp=False omits timestamp."""
+        formatter = _make_formatter()
+        formatter._enabled = True
+        record = _make_record(
+            logging.INFO,
+            "my-model: server output",
+            plain_upstream=True,
+        )
+        output = formatter.format(record)
+        assert output == "my-model: server output"
+        assert not re.match(r"\d{4}-\d{2}-\d{2}", output)
+
+    def test_show_timestamp_plain_upstream(self):
+        """Plain upstream with show_timestamp=True includes timestamp."""
+        formatter = _make_formatter(show_timestamp=True)
+        formatter._enabled = True
+        record = _make_record(
+            logging.INFO,
+            "my-model: server output",
+            plain_upstream=True,
+        )
+        expected_time = formatter.formatTime(record, DEFAULT_DATEFMT)
+        output = formatter.format(record)
+        assert output == f"{expected_time} my-model: server output"

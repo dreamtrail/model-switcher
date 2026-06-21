@@ -81,6 +81,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="DURATION",
         help="Unload idle model after duration (default: 30m; 0 disables)",
     )
+    parser.add_argument(
+        "--timestamp",
+        action="store_true",
+        default=False,
+        help="Include timestamps in log output",
+    )
     return parser.parse_args(argv)
 
 
@@ -121,6 +127,7 @@ async def _main(argv: list[str] | None = None) -> None:
         ColorFormatter(
             "%(asctime)s [%(levelname)s] %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
+            show_timestamp=args.timestamp,
         )
     )
     logging.basicConfig(level=logging.INFO, handlers=[handler])

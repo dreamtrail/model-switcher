@@ -45,8 +45,13 @@ class ColorFormatter(logging.Formatter):
     the NO_COLOR environment variable is set.
     """
 
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(self, fmt: str, datefmt: str | None = None,
+                 show_timestamp: bool = False, **kwargs) -> None:
+        self._show_timestamp = show_timestamp
+        if not show_timestamp:
+            fmt = fmt.replace("%(asctime)s", "").strip()
+            datefmt = None
+        super().__init__(fmt, datefmt=datefmt, **kwargs)
         self._enabled = (
             sys.stdout.isatty() and not os.environ.get("NO_COLOR")
         )
@@ -68,10 +73,12 @@ class ColorFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         """Format the log record with optional ANSI color wrapping."""
         if getattr(record, "plain_upstream", False):
-            return (
-                f"{self.formatTime(record, self.datefmt)} "
-                f"{record.getMessage()}"
-            )
+            if self._show_timestamp:
+                return (
+                    f"{self.formatTime(record, self.datefmt)} "
+                    f"{record.getMessage()}"
+                )
+            return record.getMessage()
 
         color = self._color_for_record(record)
         formatted = super().format(record)
