@@ -13,9 +13,11 @@ import signal
 import sys
 
 import pytest
+import logging
 
 from src.process_manager import (
     GRACE_PERIOD,
+    _upstream_log_level,
     is_running,
     start_process,
     stop_process,
@@ -286,6 +288,116 @@ class TestLogPiping:
             and record.message == "my-model: 13.31.779.183 E load failed"
             for record in caplog.records
         )
+
+class TestUpstreamLogLevel:
+    """Unit tests for _upstream_log_level() regex matching."""
+
+    # --- vLLM format ---
+
+    def test_vllm_info_full_line(self):
+        level = _upstream_log_level(
+            "(EngineCore pid=16894) INFO 06-21 20:55:26 [gpu_model_runner.py:6585] message"
+        )
+        assert level == logging.INFO
+
+    def test_vllm_warning(self):
+        level = _upstream_log_level(
+            "(EngineCore pid=16894) WARNING 06-21 20:55:27 [model.py:1502] Default parameters"
+        )
+        assert level == logging.WARNING
+
+    def test_vllm_error(self):
+        level = _upstream_log_level(
+            "(EngineCore pid=16894) ERROR 06-21 20:55:26 [core.py:306] load failed"
+        )
+        assert level == logging.ERROR
+
+    def test_vllm_api_server_info(self):
+        level = _upstream_log_level(
+            "(APIServer pid=16821) INFO 06-21 20:55:26 [api_server.py:579] ready"
+        )
+        assert level == logging.INFO
+
+    def test_vllm_no_level_keyword(self):
+        """Line with component prefix but no level keyword defaults to INFO."""
+        level = _upstream_log_level(
+            "(EngineCore pid=16894) Loading model weights..."
+        )
+        assert level == logging.INFO
+
+    # --- llama.cpp format (regression) ---
+
+    def test_llama_warning_with_timestamp(self):
+        level = _upstream_log_level("13.31.779.183 W slot update_slots")
+        assert level == logging.WARNING
+
+    def test_llama_error_with_timestamp(self):
+        level = _upstream_log_level("13.31.779.183 E load failed")
+        assert level == logging.ERROR
+
+    def test_llama_info_with_timestamp(self):
+        level = _upstream_log_level("13.31.779.183 I model loaded")
+        assert level == logging.INFO
+
+    def test_llama_info_at_position_zero(self):
+        level = _upstream_log_level("INFO [init] initializing slots")
+        assert level == logging.INFO
+
+    def test_llama_warn_at_position_zero(self):
+        level = _upstream_log_level("WARN [update_slots] all slots are idle")
+        assert level == logging.WARNING
+
+    # --- edge cases ---
+
+    def test_plain_text_defaults_to_info(self):
+        level = _upstream_log_level("some plain text with no markers")
+        assert level == logging.INFO
+
+    def test_level_keyword_midline_not_matched(self):
+        """Level keyword in message body should not be matched."""
+        level = _upstream_log_level("This WARNING is part of the message")
+        assert level == logging.INFO
+
+    # --- missing severity markers ---
+
+    def test_f_single_letter_error(self):
+        """Single-letter F maps to ERROR."""
+        level = _upstream_log_level("F fatal error occurred")
+        assert level == logging.ERROR
+
+    def test_fatal_keyword(self):
+        """FATAL keyword maps to ERROR."""
+        level = _upstream_log_level("FATAL system crash")
+        assert level == logging.ERROR
+
+    def test_critical_keyword(self):
+        """CRITICAL keyword maps to ERROR."""
+        level = _upstream_log_level("CRITICAL disk failure")
+        assert level == logging.ERROR
+
+    # --- empty / whitespace inputs ---
+
+    def test_empty_string_defaults_to_info(self):
+        """Empty string defaults to INFO."""
+        level = _upstream_log_level("")
+        assert level == logging.INFO
+
+    def test_leading_whitespace_before_level(self):
+        """Leading whitespace before level keyword is handled."""
+        level = _upstream_log_level("  WARNING delayed startup")
+        assert level == logging.WARNING
+
+    # --- case insensitivity ---
+
+    def test_lowercase_level_after_vllm_prefix(self):
+        """Lowercase level keyword after vLLM prefix matches."""
+        level = _upstream_log_level("(EngineCore pid=1) info 06-21 20:55:26 [core.py] msg")
+        assert level == logging.INFO
+
+    def test_warn_after_vllm_prefix(self):
+        """WARN keyword (not WARNING) after vLLM prefix matches."""
+        level = _upstream_log_level("(EngineCore pid=1) WARN 06-21 20:55:27 [model.py] msg")
+        assert level == logging.WARNING
 
 
 async def _wait_for_pid_file(path, timeout: float = 3) -> int:

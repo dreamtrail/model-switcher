@@ -15,7 +15,11 @@ logger = logging.getLogger(__name__)
 GRACE_PERIOD = 3  # seconds to wait after SIGTERM before SIGKILL
 
 _UPSTREAM_LEVEL_RE = re.compile(
-    r"^\s*(?:(?:\d+\.)+\d+\s+)?"
+    r"^\s*(?:"
+    r"(?:\d+\.)+\d+\s+"  # llama.cpp: dotted timestamp (13.31.779.183)
+    r"|"
+    r"(?:\(\s*\w[\w\s=()]*\)\s+)"  # vLLM: (Component pid=X)
+    r")?"
     r"(?P<level>I|W|E|F|INFO|WARN|WARNING|ERROR|FATAL|CRITICAL)\b",
     re.IGNORECASE,
 )
@@ -67,7 +71,7 @@ def _log_upstream_line(prefix: str, text: str) -> None:
 
 def _upstream_log_level(text: str) -> int:
     """Infer an upstream log level from common severity markers."""
-    match = _UPSTREAM_LEVEL_RE.match(text)
+    match = _UPSTREAM_LEVEL_RE.search(text)
     if not match:
         return logging.INFO
 
