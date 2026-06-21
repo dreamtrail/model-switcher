@@ -405,3 +405,51 @@ class TestTimestampControl:
         expected_time = formatter.formatTime(record, DEFAULT_DATEFMT)
         output = formatter.format(record)
         assert output == f"{expected_time} my-model: server output"
+
+    def test_no_color_with_timestamp(self):
+        """NO_COLOR disables colors even with show_timestamp=True."""
+        with mock.patch.dict(os.environ, {"NO_COLOR": "1"}, clear=False):
+            formatter = _make_formatter(show_timestamp=True)
+            record = _make_record(logging.WARNING, "warn msg")
+            output = formatter.format(record)
+            assert _C.YELLOW not in output
+            assert "warn msg" in output
+
+    def test_non_tty_with_timestamp(self):
+        """Non-TTY disables colors even with show_timestamp=True."""
+        formatter = _make_formatter(show_timestamp=True)
+        formatter._enabled = False
+        record = _make_record(logging.ERROR, "error msg")
+        output = formatter.format(record)
+        assert _C.RED not in output
+        assert "error msg" in output
+
+    def test_colored_output_with_timestamp(self):
+        """Timestamps and colors coexist correctly."""
+        formatter = _make_formatter(show_timestamp=True)
+        formatter._enabled = True
+        record = _make_record(logging.ERROR, "error msg")
+        output = formatter.format(record)
+        assert _C.RED in output
+        assert "error msg" in output
+        assert re.search(r"\d{4}-\d{2}-\d{2}", output)
+
+    def test_warning_level_with_timestamp(self):
+        """WARNING level output includes timestamp and yellow color."""
+        formatter = _make_formatter(show_timestamp=True)
+        formatter._enabled = True
+        record = _make_record(logging.WARNING, "warn msg")
+        output = formatter.format(record)
+        assert _C.YELLOW in output
+        assert "warn msg" in output
+        assert re.search(r"\d{4}-\d{2}-\d{2}", output)
+
+    def test_event_pattern_override_with_timestamp(self):
+        """Event pattern overrides work alongside timestamps."""
+        formatter = _make_formatter(show_timestamp=True)
+        formatter._enabled = True
+        record = _make_record(logging.INFO, "Upstream on port 8080 is ready")
+        output = formatter.format(record)
+        assert _C.GREEN in output
+        assert "Upstream on port 8080 is ready" in output
+        assert re.search(r"\d{4}-\d{2}-\d{2}", output)
