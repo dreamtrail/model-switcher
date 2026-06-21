@@ -8,6 +8,8 @@
 
 ## Done
 
+- [P-20260621-01] Fix vLLM log level parsing — DONE 2026-06-21 20:00 UTC
+
 - [P-20260619-02] Render normal upstream output without INFO label — DONE 2026-06-19 04:44 UTC
 - [P-20260619-01] Fix Ctrl+C shutdown hang — DONE 2026-06-19 10:45 UTC
 - [P-20260616-01] Clean up upstream process log levels and format — DONE 2026-06-16 01:30 UTC
