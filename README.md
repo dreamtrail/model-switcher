@@ -49,6 +49,7 @@ mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port ${PORT}"
 | `--port` | `8080` | Listen port |
 | `--timeout` | `60` | Swap/request timeout (seconds) |
 | `--idle-timeout` | `30m` | Unload idle model after duration (`900`, `900s`, `15m`, `1h`; `0` disables) |
+| `--timestamp` | off | Include timestamps in log output |
 | `--version` | — | Print version |
 
 ## API Endpoints
@@ -88,7 +89,7 @@ Log output is color-coded in the terminal for readability:
 - **Cyan** — Model swap/start events
 - **Magenta** — Model stop (SIGTERM)
 
-Upstream model logs keep the timestamp and model-name prefix (for example, `2026-06-19 10:30:06 llama-3.1-8b: ...`) and omit Python logger names such as `src.process_manager`. Normal upstream output omits the switcher's `[INFO]` label and color; warning/error markers from upstream remain formatted as `[WARNING]` or `[ERROR]`. Output written to stderr is not automatically treated as a warning; severity is inferred from common upstream markers when possible, and otherwise uses the normal upstream format.
+Upstream model logs keep the model-name prefix (for example, `llama-3.1-8b: ...`) and omit Python logger names such as `src.process_manager`. Timestamps are hidden by default; enable them with `--timestamp`. Normal upstream output omits the switcher's `[INFO]` label and color; warning/error markers from upstream remain formatted as `[WARNING]` or `[ERROR]`. Output written to stderr is not automatically treated as a warning; severity is inferred from common upstream markers when possible, and otherwise uses the normal upstream format.
 
 Colors auto-disable when output is piped or `NO_COLOR` is set.
 
