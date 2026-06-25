@@ -1,8 +1,8 @@
 """Tests for src/process_manager.py — upstream process lifecycle.
 
 Derived from plan acceptance criteria:
-- Process manager: start/stop, SIGTERM+3s->SIGKILL, log prefix
-- Upstream logs prefixed with [model-name] on stdout
+- Process manager: start/stop, SIGTERM+3s->SIGKILL
+- Upstream logs captured without repeated model-name prefixes
 """
 
 from __future__ import annotations
@@ -214,7 +214,7 @@ class TestIsRunning:
 class TestLogPiping:
 
     async def test_stdout_is_captured(self, caplog):
-        """Process stdout is captured and logged with model prefix."""
+        """Process stdout is captured and logged without model prefix."""
         import logging
         caplog.set_level(logging.INFO)
         handle = await start_process(
@@ -224,16 +224,16 @@ class TestLogPiping:
         )
         await asyncio.sleep(0.3)
         await stop_process(handle)
-        # Verify both the prefix and the actual upstream output
+        # Verify the upstream output is logged plainly without model prefix.
         assert any(
             record.levelno == logging.INFO
             and getattr(record, "plain_upstream", False) is True
-            and record.message == "my-model: hello from model"
+            and record.message == "hello from model"
             for record in caplog.records
         )
 
     async def test_stderr_is_captured_as_info_by_default(self, caplog):
-        """Process stderr is captured as plain INFO with model prefix."""
+        """Process stderr is captured as plain INFO without model prefix."""
         import logging
         caplog.set_level(logging.INFO)
         handle = await start_process(
@@ -243,11 +243,11 @@ class TestLogPiping:
         )
         await asyncio.sleep(0.3)
         await stop_process(handle)
-        # Verify both the prefix and the actual upstream output
+        # Verify the upstream output is logged plainly without model prefix.
         assert any(
             record.levelno == logging.INFO
             and getattr(record, "plain_upstream", False) is True
-            and record.message == "my-model: plain from model"
+            and record.message == "plain from model"
             for record in caplog.records
         )
 
@@ -266,7 +266,7 @@ class TestLogPiping:
         assert any(
             record.levelno == logging.WARNING
             and getattr(record, "plain_upstream", False) is False
-            and record.message == "my-model: 13.31.779.183 W slot update_slots"
+            and record.message == "13.31.779.183 W slot update_slots"
             for record in caplog.records
         )
 
@@ -285,7 +285,7 @@ class TestLogPiping:
         assert any(
             record.levelno == logging.ERROR
             and getattr(record, "plain_upstream", False) is False
-            and record.message == "my-model: 13.31.779.183 E load failed"
+            and record.message == "13.31.779.183 E load failed"
             for record in caplog.records
         )
 

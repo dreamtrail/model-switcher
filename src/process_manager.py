@@ -37,11 +37,8 @@ class ProcessHandle:
     _stderr_task: asyncio.Task | None = None
 
 
-async def _drain_stream(
-    reader: asyncio.StreamReader,
-    prefix: str,
-) -> None:
-    """Read lines from a stream and log them with a prefix."""
+async def _drain_stream(reader: asyncio.StreamReader) -> None:
+    """Read lines from a stream and log them as upstream output."""
     try:
         while True:
             line = await reader.readline()
@@ -49,24 +46,18 @@ async def _drain_stream(
                 break
             text = line.decode("utf-8", errors="replace").rstrip("\n\r")
             if text:
-                _log_upstream_line(prefix, text)
+                _log_upstream_line(text)
     except asyncio.CancelledError:
         pass
 
 
-def _log_upstream_line(prefix: str, text: str) -> None:
+def _log_upstream_line(text: str) -> None:
     """Log an upstream output line at the level indicated by the line."""
     level = _upstream_log_level(text)
     if level == logging.INFO:
-        logger.log(
-            level,
-            "%s: %s",
-            prefix,
-            text,
-            extra={"plain_upstream": True},
-        )
+        logger.log(level, text, extra={"plain_upstream": True})
         return
-    logger.log(level, "%s: %s", prefix, text)
+    logger.log(level, text)
 
 
 def _upstream_log_level(text: str) -> int:
@@ -89,7 +80,7 @@ async def start_process(
     """Start an upstream process and pipe its output.
 
     Args:
-        model_name: Human-readable model identifier (for log prefix).
+        model_name: Human-readable model identifier for lifecycle logs.
         cmd: Shell command to execute.
         port: Port the process should listen on.
 
@@ -100,9 +91,8 @@ async def start_process(
         subprocess.SubprocessError: if the process fails to start.
     """
     args = shlex.split(cmd)
-    prefix = model_name
 
-    logger.info("Starting %s on port %d: %s", prefix, port, cmd)
+    logger.info("Starting %s on port %d: %s", model_name, port, cmd)
 
     start_kwargs = {}
     if os.name == "posix":
@@ -116,12 +106,12 @@ async def start_process(
     )
 
     stdout_task = asyncio.create_task(
-        _drain_stream(process.stdout, prefix),
-        name=f"stdout-{prefix}",
+        _drain_stream(process.stdout),
+        name=f"stdout-{model_name}",
     )
     stderr_task = asyncio.create_task(
-        _drain_stream(process.stderr, prefix),
-        name=f"stderr-{prefix}",
+        _drain_stream(process.stderr),
+        name=f"stderr-{model_name}",
     )
 
     handle = ProcessHandle(

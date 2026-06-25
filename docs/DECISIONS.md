@@ -32,7 +32,7 @@
 ### Observability
 - **Stdout only** — proxy logs + upstream logs. User can redirect at shell level. No file/JSON logging in v1.
 - **User-facing CLI format omits Python logger names** — log lines include timestamp, level, and message, without module names such as `src.process_manager`.
-- **Upstream logs keep model prefixes** — captured upstream output is emitted as `model-name: message` so multiple models remain distinguishable.
+- **Upstream logs omit repeated model prefixes** — captured upstream output is emitted as the server wrote it; model identity remains in lifecycle messages such as start/stop/swap events.
 - **Stderr does not imply warning** — upstream stdout/stderr lines default to INFO unless common severity markers indicate WARNING or ERROR.
 
 ### Streaming

@@ -108,14 +108,14 @@ class TestPlainUpstreamFormatting:
         formatter._enabled = True
         record = _make_record(
             logging.INFO,
-            "my-model: normal server output",
+            "normal server output",
             plain_upstream=True,
         )
         expected_time = formatter.formatTime(record, DEFAULT_DATEFMT)
 
         output = formatter.format(record)
 
-        assert output == f"{expected_time} my-model: normal server output"
+        assert output == f"{expected_time} normal server output"
         assert "[INFO]" not in output
         assert "test:" not in output
         assert "\033[" not in output
@@ -138,13 +138,13 @@ class TestPlainUpstreamFormatting:
         formatter._enabled = True
         record = _make_record(
             logging.WARNING,
-            "my-model: 13.31.779.183 W slot update_slots",
+            "13.31.779.183 W slot update_slots",
         )
 
         output = formatter.format(record)
 
         assert "[WARNING]" in output
-        assert "my-model: 13.31.779.183 W slot update_slots" in output
+        assert "13.31.779.183 W slot update_slots" in output
         assert _C.YELLOW in output
 
     def test_upstream_error_is_not_plain(self):
@@ -153,13 +153,13 @@ class TestPlainUpstreamFormatting:
         formatter._enabled = True
         record = _make_record(
             logging.ERROR,
-            "my-model: 13.31.779.183 E load failed",
+            "13.31.779.183 E load failed",
         )
 
         output = formatter.format(record)
 
         assert "[ERROR]" in output
-        assert "my-model: 13.31.779.183 E load failed" in output
+        assert "13.31.779.183 E load failed" in output
         assert _C.RED in output
 
 
@@ -386,11 +386,11 @@ class TestTimestampControl:
         formatter._enabled = True
         record = _make_record(
             logging.INFO,
-            "my-model: server output",
+            "server output",
             plain_upstream=True,
         )
         output = formatter.format(record)
-        assert output == "my-model: server output"
+        assert output == "server output"
         assert not re.match(r"\d{4}-\d{2}-\d{2}", output)
 
     def test_show_timestamp_plain_upstream(self):
@@ -399,12 +399,12 @@ class TestTimestampControl:
         formatter._enabled = True
         record = _make_record(
             logging.INFO,
-            "my-model: server output",
+            "server output",
             plain_upstream=True,
         )
         expected_time = formatter.formatTime(record, DEFAULT_DATEFMT)
         output = formatter.format(record)
-        assert output == f"{expected_time} my-model: server output"
+        assert output == f"{expected_time} server output"
 
     def test_no_color_with_timestamp(self):
         """NO_COLOR disables colors even with show_timestamp=True."""
