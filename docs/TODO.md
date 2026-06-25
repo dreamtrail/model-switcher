@@ -8,6 +8,7 @@
 
 ## Done
 
+- [P-20260625-01] Remove repeated model-name prefix from upstream logs — DONE 2026-06-25 02:04 UTC
 - [P-20260621-02] Add `--timestamp` CLI flag to conditionally show timestamps — DONE 2026-06-21 21:20 UTC
 - [P-20260621-01] Fix vLLM log level parsing — DONE 2026-06-21 20:00 UTC
 
