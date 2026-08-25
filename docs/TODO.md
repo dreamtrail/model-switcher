@@ -2,12 +2,12 @@
 
 ## Next
 
-- [P-20260612-02] Split `tests/test_swapper.py` (1572 LOC) into focused test modules
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to README
 
 ## Done
 
+- [P-20260612-02] Split `tests/test_swapper.py` (1572 LOC) into focused test modules — DONE 2026-08-25 08:56 UTC
 - [P-20260625-01] Remove repeated model-name prefix from upstream logs — DONE 2026-06-25 02:04 UTC
 - [P-20260621-02] Add `--timestamp` CLI flag to conditionally show timestamps — DONE 2026-06-21 21:20 UTC
 - [P-20260621-01] Fix vLLM log level parsing — DONE 2026-06-21 20:00 UTC
