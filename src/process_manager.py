@@ -33,6 +33,7 @@ class ProcessHandle:
     port: int
     process: asyncio.subprocess.Process
     process_group_id: int | None = None
+    stopped: bool = False
     _stdout_task: asyncio.Task | None = None
     _stderr_task: asyncio.Task | None = None
 
@@ -139,12 +140,21 @@ async def stop_process(handle: ProcessHandle) -> None:
     group_exists = _process_group_exists(handle.process_group_id)
 
     if parent_already_exited and not group_exists:
-        logger.info(
-            "%s (pid %s) already exited with code %d",
-            handle.model_name,
-            pid,
-            proc.returncode,
-        )
+        if handle.stopped:
+            logger.debug(
+                "%s (pid %s) already stopped (code %d); nothing to do",
+                handle.model_name,
+                pid,
+                proc.returncode,
+            )
+        else:
+            logger.info(
+                "%s (pid %s) already exited with code %d",
+                handle.model_name,
+                pid,
+                proc.returncode,
+            )
+        handle.stopped = True
         await _cancel_log_tasks(handle)
         return
 
@@ -185,6 +195,8 @@ async def stop_process(handle: ProcessHandle) -> None:
 
     if terminated:
         logger.info("%s stopped", handle.model_name)
+
+    handle.stopped = True
 
 
 def _signal_process_group(handle: ProcessHandle, sig: int) -> bool:
