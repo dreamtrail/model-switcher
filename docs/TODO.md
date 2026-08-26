@@ -4,9 +4,11 @@
 
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to README
+- [P-20260826-03] Remove stray blank line before `handle.stopped` in `stop_process` (deferred P2 from P-20260826-01 audit)
 
 ## Done
 
+- [P-20260826-02] Add setup guide with systemd user unit and linger requirement — DONE 2026-08-26 00:44 UTC
 - [P-20260826-01] Suppress duplicate "already exited" log on repeated stop — DONE 2026-08-26 00:42 UTC
 - [P-20260612-02] Split `tests/test_swapper.py` (1572 LOC) into focused test modules — DONE 2026-08-25 08:56 UTC
 - [P-20260625-01] Remove repeated model-name prefix from upstream logs — DONE 2026-06-25 02:04 UTC
