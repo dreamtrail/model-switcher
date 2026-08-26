@@ -17,6 +17,8 @@ cp config.example.yaml config.yaml
 ./run.sh --config config.yaml --host 0.0.0.0 --port 8080
 ```
 
+To run it as a background systemd service instead, see [docs/SETUP.md](docs/SETUP.md) — including the **linger** requirement that keeps user units alive across SSH disconnects.
+
 Point your client at `http://localhost:8080` and use model names from your config:
 
 ```bash
