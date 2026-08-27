@@ -1,18 +1,24 @@
 ## Handoff Card
 
-- As-Of: 2026-08-27 09:51 UTC (2026-08-27 18:51 KST)
-- Branch/HEAD: master @ P-20260827-01 task commit (see git log)
+- Goal: Keep model-switcher reliable for long-running local AI requests and ready for the next planned improvement.
+- As-Of: 2026-08-27 12:04 UTC (2026-08-27 12:04 Z)
+- Branch/HEAD: master @ d2d80a9
 - Mode: FINISHED
 - Working On: P-20260612-03
-- Doc Anchors:
-  - README.md — sections: CLI Reference, API Endpoints
-  - docs/DECISIONS.md — section: Streaming
-  - docs/TODO.md — sections: Next, Done
-- Commands:
-  - .venv/bin/python -m pytest tests/ --tb=short -q
-- Stop Point: docs/.plan/P-20260612-03.md:1 — next step is Discover/Plan for the full-lifecycle integration test (file does not exist yet)
-- Verification: 223/223 tests pass for P-20260827-01; source audit approved with zero findings; test audit approved at 9.6/10
-- Env Hints: .venv available; Python 3.13.5; host "ai": systemd user unit, linger enabled (misuzu)
+- Stop Point: docs/.plan/P-20260612-03.md:1 — plan file has not been created.
+- Next Step: Run Discover, then prepare the plan for P-20260612-03.
+- Key Decisions:
+  - Positive stream timeouts bound connection/read inactivity, not total lifetime.
+  - Non-positive timeout semantics remain unchanged and unspecified.
+  - Local aiohttp integration coverage replaces a costly live llama.cpp reproduction.
+- Key Files:
+  - src/proxy.py — streaming timeout policy.
+  - tests/test_proxy_stream_timeout.py — active/stalled stream regressions.
+  - docs/TODO.md — canonical task state.
+- Env Hints: `.venv` available; Python 3.13.5; host `ai` uses a systemd user unit with linger enabled.
+- Critical Context: Fix commit d2d80a9 is complete; the deployed service has not been restarted or live-verified.
 - Completed Since Last: P-20260827-01
-- Risks/Blockers: P-20260826-03 deferred P2 (whitespace); P-20260612-02 follow-ups open (duplicate queue test, stale test docstring, dead conftest fixtures, test_proxy.py 553 LOC)
-- Source of Truth: docs/TODO.md
+- Commands:
+  - `.venv/bin/python -m pytest tests/ --tb=short -q`
+- Verification: 223/223 tests passed; source audit approved; test audit 9.6/10.
+- Risks/Blockers: P-20260826-03 remains deferred; no current blocker.

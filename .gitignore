@@ -15,6 +15,20 @@ build/
 .coverage
 htmlcov/
 .pytest_cache/
+tests_temp/
+
+# Local config and secrets
+config.yaml
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Temporary files
+tmp/
+temp/
+*.tmp
 
 # IDE
 .vscode/
