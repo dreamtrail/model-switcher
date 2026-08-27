@@ -37,6 +37,8 @@
 
 ### Streaming
 - **Chunked SSE passthrough** — only correct choice for chat completions. Read/write chunks in real-time via aiohttp async streaming.
+- **No total deadline for active streams** — for positive `--timeout` values, streaming requests use no total wall-clock timeout; connection/pool acquisition and each wait for upstream data remain bounded by `--timeout`.
+- **Keep total deadlines for swaps and non-stream requests** — only streaming overrides the shared session timeout. This allows long generations while data flows without allowing stalled connections or reads to remain open indefinitely. Non-positive timeout semantics remain unchanged and unspecified.
 
 ### Framework
 - **`aiohttp` only** (single dep) — provides both async HTTP server and client. No need for FastAPI-level features.

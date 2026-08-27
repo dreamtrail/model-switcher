@@ -49,10 +49,12 @@ mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port ${PORT}"
 | `--config` | (required) | Path to YAML config |
 | `--host` | `127.0.0.1` | Bind address |
 | `--port` | `8080` | Listen port |
-| `--timeout` | `60` | Swap/request timeout (seconds) |
+| `--timeout` | `60` | For positive values: total swap/non-stream timeout and stream connection/read-inactivity timeout (seconds); streams have no total lifetime limit |
 | `--idle-timeout` | `30m` | Unload idle model after duration (`900`, `900s`, `15m`, `1h`; `0` disables) |
 | `--timestamp` | off | Include timestamps in log output |
 | `--version` | — | Print version |
+
+For positive `--timeout` values, model swaps and non-streaming requests must finish within the configured total duration. Streaming requests may continue for any total duration while data keeps arriving; establishing the upstream connection or waiting between chunks for longer than the configured duration ends the stream through the existing error path.
 
 ## API Endpoints
 

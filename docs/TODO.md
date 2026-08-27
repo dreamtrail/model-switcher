@@ -8,6 +8,7 @@
 
 ## Done
 
+- [P-20260827-01] Prevent total timeout of active streams — DONE 2026-08-27 09:51 UTC
 - [P-20260826-02] Add setup guide with systemd user unit and linger requirement — DONE 2026-08-26 00:44 UTC
 - [P-20260826-01] Suppress duplicate "already exited" log on repeated stop — DONE 2026-08-26 00:42 UTC
 - [P-20260612-02] Split `tests/test_swapper.py` (1572 LOC) into focused test modules — DONE 2026-08-25 08:56 UTC

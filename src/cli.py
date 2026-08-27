@@ -72,7 +72,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--timeout",
         type=int,
         default=60,
-        help="Swap/request timeout in seconds (default: 60)",
+        help=(
+            "For positive values: total swap/non-stream timeout and "
+            "stream connection/read-inactivity timeout in seconds; "
+            "streams have no total timeout (default: 60)"
+        ),
     )
     parser.add_argument(
         "--idle-timeout",

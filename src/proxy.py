@@ -193,6 +193,15 @@ async def stream_proxy(
         client_timeout = aiohttp.ClientTimeout(total=timeout)
         client = aiohttp.ClientSession(timeout=client_timeout)
 
+    if timeout > 0:
+        stream_timeout = aiohttp.ClientTimeout(
+            total=None,
+            connect=timeout,
+            sock_read=timeout,
+        )
+    else:
+        stream_timeout = client.timeout
+
     try:
         async with client.request(
             method=request.method,
@@ -200,6 +209,7 @@ async def stream_proxy(
             headers=headers,
             data=body,
             ssl=False,
+            timeout=stream_timeout,
         ) as upstream_resp:
 
             # Merge upstream headers with proxy-required headers
