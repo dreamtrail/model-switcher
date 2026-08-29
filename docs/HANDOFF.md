@@ -1,27 +1,25 @@
 ## Handoff Card
 
-- Goal: Keep model-switcher compatible with local AI servers, including ninfer, and ready for the next planned improvement.
-- As-Of: 2026-08-29 07:50 UTC (2026-08-29 07:50 Z)
-- Branch/HEAD: master @ 69dafd1 (before P-20260829-01 commit)
+- Goal: Keep model-switcher compatible with local AI servers and ready for the next planned improvement.
+- As-Of: 2026-08-29 08:05 UTC (2026-08-29 08:05 Z)
+- Branch/HEAD: master @ 8b5343c (before this handoff commit)
 - Mode: FINISHED
 - Working On: P-20260612-03
 - Stop Point: docs/.plan/P-20260612-03.md:1 — plan file has not been created.
-- Next Step: Run Discover, then prepare the plan for P-20260612-03.
+- Next Step: Run Discover, then prepare the plan for the Working On ID.
 - Key Decisions:
-  - NInfer uses the existing generic foreground-command backend contract; no adapter or new config schema is needed.
-  - NInfer artifact embedded IDs are used unchanged as config keys and request model IDs; do not pass `--model-id`.
-  - Groupwise and NVFP4 variants sharing an embedded 27B model ID cannot be configured simultaneously without aliases.
-  - NInfer JSON and SSE output remains opaque; its timestamped outer log marker controls switcher severity.
+  - NInfer uses the generic foreground-command contract and embedded model IDs; no adapter, aliases, or `--model-id`.
+  - NInfer API output remains opaque; timestamped outer log markers control displayed severity.
+  - Shared embedded IDs prevent simultaneously configuring both 27B weight variants.
 - Key Files:
-  - src/process_manager.py — ninfer log-level recognition.
-  - tests/test_ninfer_compat.py — ninfer config, routing, output, and log contract coverage.
-  - README.md and config.example.yaml — ninfer setup and embedded-ID guidance.
+  - src/process_manager.py — NInfer log recognition.
+  - tests/test_ninfer_compat.py — compatibility contract coverage.
   - docs/TODO.md — canonical task state.
-- Env Hints: `.venv` available; Python 3.13.5; real ninfer requires compatible RTX 5090/SM120a hardware, CUDA 13.1+, and a supported artifact.
-- Critical Context: Compatibility is based on ninfer commit fd48e2f and deterministic local contract tests; no live GPU-backed ninfer instance was exercised.
+- Env Hints: `.venv` available; Python 3.13.5; live NInfer requires compatible RTX 5090/SM120a hardware, CUDA 13.1+, and an artifact.
+- Critical Context: Compatibility targets NInfer commit fd48e2f; no live GPU-backed instance was exercised.
 - Completed Since Last: P-20260829-01
 - Commands:
   - `.venv/bin/python -m compileall -q src`
   - `.venv/bin/python -m pytest tests/ --tb=short -q`
 - Verification: 249/249 tests passed; source audit approved; test audit 9.2/10.
-- Risks/Blockers: Upstream ninfer IDs/schemas may evolve; P-20260826-03 remains deferred; no current blocker.
+- Risks/Blockers: Upstream NInfer IDs/schemas may evolve; P-20260826-03 remains deferred; no current blocker.

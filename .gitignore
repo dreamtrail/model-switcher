@@ -37,5 +37,5 @@ temp/
 # Plan artifacts (internal)
 docs/.plan/
 
-# Pi agent settings
-.pi/settings.json
+# Pi agent settings and generated research cache
+.pi/
