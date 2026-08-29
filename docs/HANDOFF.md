@@ -1,24 +1,27 @@
 ## Handoff Card
 
-- Goal: Keep model-switcher reliable for long-running local AI requests and ready for the next planned improvement.
-- As-Of: 2026-08-27 12:04 UTC (2026-08-27 12:04 Z)
-- Branch/HEAD: master @ d2d80a9
+- Goal: Keep model-switcher compatible with local AI servers, including ninfer, and ready for the next planned improvement.
+- As-Of: 2026-08-29 07:50 UTC (2026-08-29 07:50 Z)
+- Branch/HEAD: master @ 69dafd1 (before P-20260829-01 commit)
 - Mode: FINISHED
 - Working On: P-20260612-03
 - Stop Point: docs/.plan/P-20260612-03.md:1 — plan file has not been created.
 - Next Step: Run Discover, then prepare the plan for P-20260612-03.
 - Key Decisions:
-  - Positive stream timeouts bound connection/read inactivity, not total lifetime.
-  - Non-positive timeout semantics remain unchanged and unspecified.
-  - Local aiohttp integration coverage replaces a costly live llama.cpp reproduction.
+  - NInfer uses the existing generic foreground-command backend contract; no adapter or new config schema is needed.
+  - NInfer artifact embedded IDs are used unchanged as config keys and request model IDs; do not pass `--model-id`.
+  - Groupwise and NVFP4 variants sharing an embedded 27B model ID cannot be configured simultaneously without aliases.
+  - NInfer JSON and SSE output remains opaque; its timestamped outer log marker controls switcher severity.
 - Key Files:
-  - src/proxy.py — streaming timeout policy.
-  - tests/test_proxy_stream_timeout.py — active/stalled stream regressions.
+  - src/process_manager.py — ninfer log-level recognition.
+  - tests/test_ninfer_compat.py — ninfer config, routing, output, and log contract coverage.
+  - README.md and config.example.yaml — ninfer setup and embedded-ID guidance.
   - docs/TODO.md — canonical task state.
-- Env Hints: `.venv` available; Python 3.13.5; host `ai` uses a systemd user unit with linger enabled.
-- Critical Context: Fix commit d2d80a9 is complete; the deployed service has not been restarted or live-verified.
-- Completed Since Last: P-20260827-01
+- Env Hints: `.venv` available; Python 3.13.5; real ninfer requires compatible RTX 5090/SM120a hardware, CUDA 13.1+, and a supported artifact.
+- Critical Context: Compatibility is based on ninfer commit fd48e2f and deterministic local contract tests; no live GPU-backed ninfer instance was exercised.
+- Completed Since Last: P-20260829-01
 - Commands:
+  - `.venv/bin/python -m compileall -q src`
   - `.venv/bin/python -m pytest tests/ --tb=short -q`
-- Verification: 223/223 tests passed; source audit approved; test audit 9.6/10.
-- Risks/Blockers: P-20260826-03 remains deferred; no current blocker.
+- Verification: 249/249 tests passed; source audit approved; test audit 9.2/10.
+- Risks/Blockers: Upstream ninfer IDs/schemas may evolve; P-20260826-03 remains deferred; no current blocker.

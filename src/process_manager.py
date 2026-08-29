@@ -14,6 +14,12 @@ logger = logging.getLogger(__name__)
 
 GRACE_PERIOD = 3  # seconds to wait after SIGTERM before SIGKILL
 
+_NINFER_LEVEL_RE = re.compile(
+    r"^\s*\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\]\s+"
+    r"\[(?P<level>INFO|WARNING|ERROR)\]\s+ninfer-serve:",
+    re.IGNORECASE,
+)
+
 _UPSTREAM_LEVEL_RE = re.compile(
     r"^\s*(?:"
     r"(?:\d+\.)+\d+\s+"  # llama.cpp: dotted timestamp (13.31.779.183)
@@ -63,7 +69,7 @@ def _log_upstream_line(text: str) -> None:
 
 def _upstream_log_level(text: str) -> int:
     """Infer an upstream log level from common severity markers."""
-    match = _UPSTREAM_LEVEL_RE.search(text)
+    match = _NINFER_LEVEL_RE.search(text) or _UPSTREAM_LEVEL_RE.search(text)
     if not match:
         return logging.INFO
 

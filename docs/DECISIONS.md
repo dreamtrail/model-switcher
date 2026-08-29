@@ -58,3 +58,17 @@
 - Request filters (stripParams, setParams)
 - Web UI
 - Metrics endpoint
+
+## P-20260829-01 — NInfer Compatibility
+
+### Backend Integration
+- **Use the generic foreground-command contract** — NInfer already accepts an assigned `--port`, binds to loopback, reports post-warm-up readiness on `/health`, serves compatible HTTP APIs, and handles SIGTERM. A backend adapter or new config schema would add no required behavior.
+- **Use embedded model IDs unchanged** — each config key and request `model` must equal the artifact's public ID. Do not pass NInfer's optional `--model-id` override and do not rewrite request bodies.
+- **Treat the published IDs as version-sensitive documentation** — current IDs are documented for users but are not hard-coded as an allowlist, so future NInfer artifacts remain usable through the generic command interface.
+
+### Output Compatibility
+- **Proxy NInfer output opaquely** — Chat Completions JSON and `[DONE]` SSE, Responses API named SSE events, upstream errors, and response headers use the existing passthrough behavior without transformations.
+- **Classify NInfer logs by their outer marker** — preserve complete `[timestamp] [level] ninfer-serve: ...` lines while mapping `warning` and `error` markers to switcher severity. Words inside an outer `[info]` message do not promote its level.
+
+### Constraint
+- **One configured artifact per embedded ID** — NInfer's groupwise and NVFP4 artifacts for each 27B family share an ID. Without aliases, duplicate variants cannot be selected simultaneously; aliases and model rewriting remain out of scope.

@@ -8,6 +8,7 @@
 
 ## Done
 
+- [P-20260829-01] Add ninfer backend compatibility — DONE 2026-08-29 07:50 UTC
 - [P-20260827-01] Prevent total timeout of active streams — DONE 2026-08-27 09:51 UTC
 - [P-20260826-02] Add setup guide with systemd user unit and linger requirement — DONE 2026-08-26 00:44 UTC
 - [P-20260826-01] Suppress duplicate "already exited" log on repeated stop — DONE 2026-08-26 00:42 UTC
