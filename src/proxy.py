@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -46,6 +47,49 @@ _MODEL_ENDPOINTS = frozenset([
     "/sdapi/v1/txt2img",
     "/sdapi/v1/img2img",
 ])
+
+# Endpoints where stream_options injection is applied (OpenAI-canonical
+# paths served by llama.cpp and vLLM; stream_options is spec-valid on both).
+_STREAM_OPTIONS_ENDPOINTS = frozenset([
+    "/v1/chat/completions",
+    "/v1/completions",
+])
+
+
+def _int_or_none(value: Any) -> int | None:
+    """Return value if it is a plain int, else None."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def inject_stream_options(
+    request: web.Request,
+    body: bytes | None,
+    data: Any,
+) -> bytes | None:
+    """Return body with stream_options.include_usage added when eligible.
+
+    Guards: POST only; path in _STREAM_OPTIONS_ENDPOINTS; body parses as a
+    JSON dict; "stream" is truthy; "stream_options" absent (client-set
+    values are never modified). On any re-serialization failure the
+    original body is returned.
+    """
+    if request.method != "POST":
+        return body
+    if request.path not in _STREAM_OPTIONS_ENDPOINTS:
+        return body
+    if not body or not isinstance(data, dict):
+        return body
+    if not data.get("stream"):
+        return body
+    if "stream_options" in data:
+        return body
+    try:
+        data["stream_options"] = {"include_usage": True}
+        return json.dumps(data).encode()
+    except (TypeError, ValueError):
+        return body
 
 
 def extract_model(
@@ -91,8 +135,14 @@ def _openai_error(message: str, code: str = "internal_error") -> dict:
 
 
 def _forward_headers(request: web.Request) -> dict[str, str]:
-    """Copy request headers, excluding hop-by-hop headers."""
+    """Copy request headers, excluding hop-by-hop headers.
+
+    content-length is dropped: aiohttp recomputes it from the data= bytes,
+    which keeps the header consistent when the body is mutated (e.g.
+    stream_options injection).
+    """
     skip = set(_HOP_BY_HOP_HEADERS)
+    skip.add("content-length")
     connection_hdr = request.headers.get("connection", "").lower()
     if connection_hdr:
         # Connection header may list additional hop-by-hop headers
@@ -120,6 +170,60 @@ async def handle_models_list(
             "owned_by": "local",
         })
     return web.json_response({"object": "list", "data": data})
+
+
+def _extract_usage(body: bytes | None, outcome: Outcome) -> None:
+    """Populate Outcome token fields from an OpenAI-format usage object.
+
+    Silently ignores unparseable bodies and missing/invalid fields —
+    token metrics simply stay None for that request.
+    """
+    if not body:
+        return
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return
+    _apply_usage_dict(data, outcome)
+
+
+def _apply_usage_dict(data: Any, outcome: Outcome) -> None:
+    """Copy usage fields from a parsed OpenAI response/event dict."""
+    if not isinstance(data, dict):
+        return
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return
+    outcome.prompt_tokens = _int_or_none(usage.get("prompt_tokens"))
+    outcome.completion_tokens = _int_or_none(usage.get("completion_tokens"))
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        outcome.cached_tokens = _int_or_none(details.get("cached_tokens"))
+
+
+def _process_sse_line(line: bytes, outcome: Outcome) -> None:
+    """Parse one complete SSE data line and update the Outcome.
+
+    The first event with a non-empty choices list marks the first content
+    event; any event carrying a usage dict populates the token fields
+    (later events overwrite — the final usage chunk wins). Parse failures
+    are silently ignored ([DONE] sentinels, comments, partial events).
+    """
+    text = line.strip()
+    if not text.startswith(b"data:"):
+        return
+    payload = text[len(b"data:"):].strip()
+    if not payload or payload == b"[DONE]":
+        return
+    try:
+        event = json.loads(payload)
+    except (json.JSONDecodeError, TypeError):
+        return
+    if not isinstance(event, dict):
+        return
+    if event.get("choices") and outcome.first_token_at is None:
+        outcome.first_token_at = time.monotonic()
+    _apply_usage_dict(event, outcome)
 
 
 async def proxy_request(
@@ -161,6 +265,7 @@ async def proxy_request(
             response_body = await upstream_resp.read()
             if outcome is not None:
                 outcome.bytes_out = len(response_body)
+                _extract_usage(response_body, outcome)
             # Forward all upstream headers except hop-by-hop
             resp_headers = {}
             for k, v in upstream_resp.headers.items():
@@ -240,10 +345,20 @@ async def stream_proxy(
             await response.prepare(request)
 
             try:
+                buffer = b""
                 async for chunk in upstream_resp.content.iter_any():
                     await response.write(chunk)
                     if outcome is not None:
                         outcome.bytes_out += len(chunk)
+                        # Line-buffered SSE parsing: chunks can split lines,
+                        # so process complete lines and keep the remainder.
+                        buffer += chunk
+                        *lines, buffer = buffer.split(b"\n")
+                        for line in lines:
+                            _process_sse_line(line, outcome)
+                if outcome is not None and buffer.strip():
+                    # Final line without trailing newline (defensive).
+                    _process_sse_line(buffer, outcome)
             except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
                 logger.error("Stream proxy error: %s", exc)
                 if outcome is not None:

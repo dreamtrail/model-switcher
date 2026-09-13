@@ -26,6 +26,7 @@ from src.proxy import (
     _openai_error,
     extract_model,
     handle_models_list,
+    inject_stream_options,
     proxy_request,
     stream_proxy,
 )
@@ -329,7 +330,8 @@ class Swapper:
             return resp
         finally:
             self._end_activity()
-            latency_s = time.monotonic() - started
+            ended = time.monotonic()
+            latency_s = ended - started
             if resp is None:
                 # Exception escaped the proxy call — no response produced.
                 ok, kind = False, "error"
@@ -339,6 +341,12 @@ class Swapper:
                 ok, kind = False, str(resp.status)
             else:
                 ok, kind = True, None
+            # Streaming-only timing: from chokepoint start to the first
+            # content event (TTFT) and from there to stream end (decode).
+            ttft_s = decode_s = None
+            if ok and outcome.first_token_at is not None:
+                ttft_s = outcome.first_token_at - started
+                decode_s = ended - outcome.first_token_at
             self.stats.record_request(
                 model_name,
                 ok=ok,
@@ -346,6 +354,11 @@ class Swapper:
                 latency_s=latency_s,
                 bytes_in=len(body) if body else 0,
                 bytes_out=outcome.bytes_out,
+                prompt_tokens=outcome.prompt_tokens,
+                completion_tokens=outcome.completion_tokens,
+                cached_tokens=outcome.cached_tokens,
+                ttft_s=ttft_s,
+                decode_s=decode_s,
             )
 
     async def _proxy_for_model(
@@ -375,6 +388,7 @@ class Swapper:
 
         # Determine if this is a streaming request (single parse)
         is_stream = False
+        data = None
         try:
             if body:
                 data = json.loads(body)
@@ -383,6 +397,7 @@ class Swapper:
             pass
 
         if is_stream:
+            body = inject_stream_options(request, body, data)
             return await stream_proxy(
                 request, upstream, body,
                 timeout=self.timeout, client=self._client,

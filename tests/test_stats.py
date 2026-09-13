@@ -306,6 +306,7 @@ class TestStatsCollector:
         assert set(snap["requests"]) == {
             "total", "success", "failure", "success_rate", "errors",
             "latency_ms", "bytes_in", "bytes_out",
+            "tokens", "rates", "ttft_ms", "tpot_ms",
         }
         assert snap["requests"]["total"] == 0
         assert snap["requests"]["success"] == 0
@@ -315,6 +316,15 @@ class TestStatsCollector:
         assert snap["requests"]["latency_ms"] is None  # no samples
         assert snap["requests"]["bytes_in"] == 0
         assert snap["requests"]["bytes_out"] == 0
+        assert snap["requests"]["tokens"] == {
+            "prompt": 0, "completion": 0, "cached": 0,
+        }
+        assert snap["requests"]["rates"] == {
+            "prompt_tps": {"avg": None},
+            "generation_tps": {"avg": None, "last_60s": 0.0, "last_300s": 0.0},
+        }
+        assert snap["requests"]["ttft_ms"] is None  # no samples
+        assert snap["requests"]["tpot_ms"] is None  # no samples
         assert snap["throughput"] == {
             "last_60s": 0, "last_300s": 0, "avg_rpm": 0.0,
         }
@@ -411,6 +421,17 @@ class TestStatsEndpoints:
                 assert data["requests"]["success_rate"] is None
                 assert data["requests"]["latency_ms"] is None
                 assert data["requests"]["errors"] == {}
+                assert data["requests"]["tokens"] == {
+                    "prompt": 0, "completion": 0, "cached": 0,
+                }
+                assert data["requests"]["rates"] == {
+                    "prompt_tps": {"avg": None},
+                    "generation_tps": {
+                        "avg": None, "last_60s": 0.0, "last_300s": 0.0,
+                    },
+                }
+                assert data["requests"]["ttft_ms"] is None
+                assert data["requests"]["tpot_ms"] is None
                 assert data["throughput"]["avg_rpm"] == 0.0
                 assert data["swaps"] == {
                     "count": 0, "avg_ms": None, "p95_ms": None, "max_ms": None
@@ -1028,3 +1049,687 @@ class TestArchitectureBoundaries:
             if isinstance(node, ast.ImportFrom) and node.module == "src.stats":
                 imported = {alias.name for alias in node.names}
                 assert imported <= {"Outcome"}
+
+
+# ---------------------------------------------------------------------------
+# Unit: token metrics collector derivations (P-20260913-02, AC5, AC6, AC7)
+# ---------------------------------------------------------------------------
+
+
+class TestTokenMetricCollector:
+    """Collector-side derivations with synthetic values — exact math here.
+
+    Expected values are computed by hand from the plan's metric
+    definitions (§Metric definitions), never from the implementation.
+    """
+
+    @staticmethod
+    def _record_four_streamed(collector):
+        # (prompt, completion, cached, ttft_s, decode_s) per request.
+        rows = [
+            (100, 10, 2, 0.5, 2.0),
+            (200, 5, None, 1.0, 0.8),
+            (50, 2, None, 0.25, 0.2),
+            (300, 8, None, 0.75, 1.4),
+        ]
+        for prompt, completion, cached, ttft, decode in rows:
+            collector.record_request(
+                "m", ok=True, latency_s=1.0,
+                prompt_tokens=prompt, completion_tokens=completion,
+                cached_tokens=cached, ttft_s=ttft, decode_s=decode,
+            )
+
+    def test_ttft_percentile_math_with_synthetic_inputs(self):
+        # AC4: ttft_ms is a _latency_report over TTFT seconds -> ms.
+        collector = StatsCollector()
+        self._record_four_streamed(collector)
+
+        report = collector.snapshot()["requests"]["ttft_ms"]
+
+        # ttfts sorted: [0.25, 0.5, 0.75, 1.0]
+        assert report["count"] == 4
+        assert report["avg"] == pytest.approx(625.0)
+        assert report["p50"] == pytest.approx(500.0)   # ceil(2)-1 = 1
+        assert report["p95"] == pytest.approx(1000.0)  # ceil(3.8)-1 = 3
+        assert report["max"] == pytest.approx(1000.0)
+
+    def test_tpot_percentile_math_with_synthetic_inputs(self):
+        # AC5: per-request TPOT = decode_s / (completion_tokens - 1).
+        collector = StatsCollector()
+        self._record_four_streamed(collector)
+
+        report = collector.snapshot()["requests"]["tpot_ms"]
+
+        # Per-request tpots: 2.0/9, 0.8/4, 0.2/1, 1.4/7
+        #   = [0.2222, 0.2, 0.2, 0.2] sorted -> [0.2, 0.2, 0.2, 0.2222]
+        assert report["count"] == 4
+        assert report["avg"] == pytest.approx((0.6 + 2.0 / 9) / 4 * 1000.0)
+        assert report["p50"] == pytest.approx(200.0)
+        assert report["p95"] == pytest.approx(2.0 / 9 * 1000.0)  # ceil(3.8)-1=3
+        assert report["max"] == pytest.approx(2.0 / 9 * 1000.0)
+
+    def test_tps_aggregates_are_token_weighted(self):
+        # AC6: gen t/s = Σcompletion / Σdecode; prompt t/s = Σprompt / ΣTTFT.
+        # Mean-of-per-request rates would give 6.74 / 575 — distinct from
+        # the token-weighted expected values below.
+        collector = StatsCollector()
+        self._record_four_streamed(collector)
+
+        rates = collector.snapshot()["requests"]["rates"]
+
+        assert rates["generation_tps"]["avg"] == pytest.approx(25 / 4.4)
+        assert rates["prompt_tps"]["avg"] == pytest.approx(650 / 2.5)
+
+    def test_tps_null_with_no_contributors(self):
+        # AC6: both rates null when nothing contributed; empty windows 0.0.
+        rates = StatsCollector().snapshot()["requests"]["rates"]
+
+        assert rates["prompt_tps"]["avg"] is None
+        assert rates["generation_tps"]["avg"] is None
+        assert rates["generation_tps"]["last_60s"] == 0.0
+        assert rates["generation_tps"]["last_300s"] == 0.0
+
+    def test_tpot_null_when_completion_tokens_below_two(self):
+        # AC5: TPOT undefined for completion_tokens == 1 (no sample), but
+        # >= 1 still contributes to generation t/s (AC6).
+        collector = StatsCollector()
+        collector.record_request(
+            "m", ok=True, prompt_tokens=10, completion_tokens=1,
+            ttft_s=0.2, decode_s=0.3,
+        )
+
+        req = collector.snapshot()["requests"]
+
+        assert req["tpot_ms"] is None
+        assert req["rates"]["generation_tps"]["avg"] == pytest.approx(1 / 0.3)
+
+    def test_zero_completion_tokens_contributes_to_no_rate(self):
+        collector = StatsCollector()
+        collector.record_request(
+            "m", ok=True, prompt_tokens=0, completion_tokens=0,
+            ttft_s=0.5, decode_s=0.5,
+        )
+
+        req = collector.snapshot()["requests"]
+
+        assert req["rates"]["generation_tps"]["avg"] is None
+        assert req["rates"]["prompt_tps"]["avg"] is None
+        assert req["tpot_ms"] is None
+        assert req["tokens"] == {"prompt": 0, "completion": 0, "cached": 0}
+
+    def test_cached_tokens_summed_when_present(self):
+        # AC2/AC8: cached sums only when prompt_tokens_details is present.
+        collector = StatsCollector()
+        collector.record_request("m", ok=True, prompt_tokens=100,
+                                 cached_tokens=30)
+        collector.record_request("m", ok=True, prompt_tokens=50)
+
+        snap = collector.snapshot()
+
+        assert snap["requests"]["tokens"] == {
+            "prompt": 150, "completion": 0, "cached": 30,
+        }
+        assert snap["models"]["m"]["requests"]["tokens"]["cached"] == 30
+
+    def test_token_counters_recorded_regardless_of_status(self):
+        # Plan §Metric definitions: counters over all requests where usage
+        # was extractable, regardless of response status. Timing kwargs are
+        # None here (swapper only passes them for successful requests).
+        collector = StatsCollector()
+        collector.record_request("m", ok=False, kind="stream_error",
+                                 latency_s=0.2, prompt_tokens=10,
+                                 completion_tokens=4, cached_tokens=1)
+
+        req = collector.snapshot()["requests"]
+
+        assert req["tokens"] == {"prompt": 10, "completion": 4, "cached": 1}
+        assert req["errors"] == {"stream_error": 1}
+        assert req["ttft_ms"] is None
+        assert req["rates"]["generation_tps"]["avg"] is None
+        # The completion tokens still feed the windowed rate (decision 8).
+        assert req["rates"]["generation_tps"]["last_60s"] == \
+            pytest.approx(4 / 60)
+
+    def test_streamed_ok_without_usage_contributes_no_token_metrics(self):
+        # AC3 null rule: no usage -> tokens null, no t/s or TPOT
+        # contributions, and recording never raises. TTFT is still
+        # observable without usage (AC4: first content event seen).
+        collector = StatsCollector()
+        collector.record_request("m", ok=True, latency_s=0.4,
+                                 ttft_s=0.1, decode_s=0.2)
+
+        req = collector.snapshot()["requests"]
+
+        assert req["tokens"] == {"prompt": 0, "completion": 0, "cached": 0}
+        assert req["ttft_ms"]["count"] == 1  # observable without usage
+        assert req["tpot_ms"] is None  # needs usage + completion >= 2
+        assert req["rates"]["prompt_tps"]["avg"] is None
+        assert req["rates"]["generation_tps"]["avg"] is None
+        assert req["rates"]["generation_tps"]["last_60s"] == 0.0
+
+    def test_record_request_with_no_usage_fields_never_raises(self):
+        collector = StatsCollector()
+
+        collector.record_request("m", ok=True)
+        collector.record_request(None, ok=True)
+
+        req = collector.snapshot()["requests"]
+
+        assert req["total"] == 2
+        assert req["tokens"] == {"prompt": 0, "completion": 0, "cached": 0}
+        assert req["ttft_ms"] is None
+        assert req["tpot_ms"] is None
+        assert req["rates"]["generation_tps"]["avg"] is None
+
+    def test_tokens_without_model_are_global_only(self):
+        collector = StatsCollector()
+        collector.record_request(None, ok=True, prompt_tokens=5,
+                                 completion_tokens=2)
+
+        snap = collector.snapshot()
+
+        assert snap["requests"]["tokens"]["prompt"] == 5
+        assert snap["requests"]["tokens"]["completion"] == 2
+        assert snap["models"] == {}
+
+    def test_token_counters_and_timing_mirror_per_model(self):
+        collector = StatsCollector()
+        collector.record_request("m", ok=True, latency_s=0.3,
+                                 prompt_tokens=7, completion_tokens=3,
+                                 cached_tokens=1, ttft_s=0.2, decode_s=0.2)
+
+        snap = collector.snapshot()
+
+        row = snap["models"]["m"]["requests"]
+        assert row["tokens"] == snap["requests"]["tokens"]
+        assert row["ttft_ms"]["count"] == 1
+        assert row["tpot_ms"]["count"] == 1
+        assert row["rates"]["generation_tps"]["avg"] == pytest.approx(15.0)
+
+    def test_token_windows_math_and_retention_pruning(self):
+        # AC7: seeded _token_events in chronological order (oldest first —
+        # pruning pops from the left, tests/test_stats.py convention).
+        collector = StatsCollector()
+        now = time.monotonic()
+        collector.token_events.extend([
+            (now - 4000.0, 100),  # older than 3600s retention -> pruned
+            (now - 400.0, 50),    # retained, outside both windows
+            (now - 100.0, 20),    # last_300s only
+            (now - 20.0, 6),      # both windows
+            (now - 10.0, 4),      # both windows
+        ])
+
+        gen = collector.snapshot()["requests"]["rates"]["generation_tps"]
+
+        assert gen["last_60s"] == pytest.approx(10 / 60)
+        assert gen["last_300s"] == pytest.approx(30 / 300)
+        assert gen["avg"] is None  # no decode contributions
+        # snapshot() pruned the >3600s event.
+        assert len(collector.token_events) == 4
+
+    def test_token_window_events_inside_window_counted(self):
+        # Seeded safely inside the edges (snapshot re-reads the clock, so
+        # seeding exactly at the edge would be flaky).
+        collector = StatsCollector()
+        now = time.monotonic()
+        collector.token_events.extend([
+            (now - 59.0, 60),    # inside last_60s
+            (now - 299.0, 240),  # inside last_300s only
+        ])
+
+        gen = collector.snapshot()["requests"]["rates"]["generation_tps"]
+
+        assert gen["last_60s"] == pytest.approx(1.0)   # 60 / 60
+        assert gen["last_300s"] == pytest.approx(1.0)  # 300 / 300
+
+    def test_token_window_events_just_past_edge_excluded(self):
+        collector = StatsCollector()
+        now = time.monotonic()
+        collector.token_events.extend([
+            (now - 60.5, 600),    # just past the 60s window...
+            (now - 300.5, 3000),  # ...and just past the 300s window.
+        ])
+
+        gen = collector.snapshot()["requests"]["rates"]["generation_tps"]
+
+        # Both events are outside the 60s window -> honest zero rate.
+        assert gen["last_60s"] == 0.0
+        # Only the 60.5s-old event is inside the 300s window; if the
+        # 300.5s-old event leaked in, it would be (600+3000)/300 = 12.0.
+        assert gen["last_300s"] == pytest.approx(600 / 300)
+
+    def test_per_model_token_windows_seeded_chronologically(self):
+        # AC8: per-model rows carry their own windowed rates.
+        collector = StatsCollector()
+        now = time.monotonic()
+        ms = collector._model("m1")
+        ms.token_events.extend([
+            (now - 4000.0, 10),  # pruned by snapshot
+            (now - 70.0, 20),    # last_300s only
+            (now - 5.0, 30),     # both windows
+        ])
+
+        snap = collector.snapshot()
+
+        gen = snap["models"]["m1"]["requests"]["rates"]["generation_tps"]
+        assert gen["last_60s"] == pytest.approx(30 / 60)
+        assert gen["last_300s"] == pytest.approx(50 / 300)
+        assert len(ms.token_events) == 2  # pruned by snapshot
+        # Global window is independent of per-model seeding.
+        assert snap["requests"]["rates"]["generation_tps"]["last_60s"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Integration: token metrics through the real proxy path
+# (P-20260913-02, AC1-AC5, AC7, AC8, AC9)
+# ---------------------------------------------------------------------------
+
+
+class TestTokenMetricsIntegration:
+    """End-to-end token metrics through Swapper.handle_request.
+
+    Timing assertions use LOOSE bounds (count / positivity) — event-loop
+    noise makes exact values meaningless here; exact math lives in
+    TestTokenMetricCollector.
+    """
+
+    async def test_stream_with_usage_chunk_records_counters_and_timing(
+        self, monkeypatch,
+    ):
+        # AC1 (real swapper wiring), AC3, AC4, AC5, AC6.
+        seen = {}
+
+        async def chat(request):
+            seen["body"] = await request.read()
+            seen["content_length"] = request.headers.get("Content-Length")
+            resp = web.StreamResponse(
+                status=200,
+                headers={"Content-Type": "text/event-stream"},
+            )
+            await resp.prepare(request)
+            await resp.write(
+                b'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n'
+            )
+            await resp.write(
+                b'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n'
+            )
+            await resp.write(
+                b'data: {"choices":[],"usage":{"prompt_tokens":12,'
+                b'"completion_tokens":9,'
+                b'"prompt_tokens_details":{"cached_tokens":3}}}\n\n'
+            )
+            await resp.write(b"data: [DONE]\n\n")
+            await resp.write_eof()
+            return resp
+
+        upstream_app = _make_app(chat)
+        async with _stack(
+            monkeypatch, {"model-a": upstream_app}, seed="model-a"
+        ) as stack:
+            async with TestClient(stack.proxy) as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": "model-a", "stream": True},
+                )
+                assert resp.status == 200
+                text = await resp.text()
+                assert '"content":"Hel"' in text
+                assert '"usage"' in text  # usage chunk flows to the client
+
+                data = await (await client.get("/stats/json")).json()
+
+        # AC1: upstream received the injected stream_options with a
+        # Content-Length consistent with the mutated body.
+        received = json.loads(seen["body"])
+        assert received["model"] == "model-a"
+        assert received["stream"] is True
+        assert received["stream_options"] == {"include_usage": True}
+        assert int(seen["content_length"]) == len(seen["body"])
+
+        req = data["requests"]
+        assert req["total"] == 1
+        assert req["success"] == 1
+        assert req["tokens"] == {
+            "prompt": 12, "completion": 9, "cached": 3,
+        }
+        assert req["ttft_ms"]["count"] == 1
+        assert req["ttft_ms"]["avg"] > 0  # loose: event-loop noise
+        assert req["tpot_ms"]["count"] == 1
+        assert req["tpot_ms"]["avg"] > 0
+        gen = req["rates"]["generation_tps"]
+        assert gen["avg"] > 0
+        assert gen["last_60s"] == pytest.approx(9 / 60)
+        assert req["rates"]["prompt_tps"]["avg"] > 0
+        # Per-model row mirrors the global record (AC8).
+        row = data["models"]["model-a"]["requests"]
+        assert row["tokens"] == {"prompt": 12, "completion": 9, "cached": 3}
+        assert row["ttft_ms"]["count"] == 1
+        assert row["tpot_ms"]["count"] == 1
+        assert row["rates"]["generation_tps"]["avg"] > 0
+
+    async def test_pre_first_chunk_delay_lands_in_ttft_not_decode(
+        self, monkeypatch,
+    ):
+        # AC4/AC5/AC6 discriminator: an upstream-side wall-clock delay
+        # BEFORE the first content chunk must land in the TTFT window,
+        # not in the decode window. The delay is upstream asyncio.sleep
+        # (real time, not CPU) so the bound is robust to event-loop noise.
+        #
+        # Margin math (completion_tokens=2, the TPOT minimum, maximizes the
+        # swapped-wiring TPOT and thus the discriminating gap):
+        # - correct wiring: ttft ~= 250 ms; decode = first token -> stream
+        #   end, i.e. just the time to flush 3 tiny chunks + eof on a local
+        #   TestServer (a few ms) -> tpot_ms avg << 100, gen tps >> 20.
+        # - ttft/decode swapped: ttft ~= 0 (fails >= 150) and decode ~=
+        #   250 ms -> tpot_ms ~= 250 (fails < 100), gen tps ~= 8 (fails > 20).
+        # - decode = ended - started: ttft passes but decode ~= 250 ms ->
+        #   tpot_ms ~= 250 and gen tps ~= 8, both fail.
+        async def chat(request):
+            resp = web.StreamResponse(
+                status=200,
+                headers={"Content-Type": "text/event-stream"},
+            )
+            await resp.prepare(request)
+            # All model "thinking" time happens before the first token.
+            await asyncio.sleep(0.25)
+            await resp.write(
+                b'data: {"choices":[{"delta":{"content":"a"}}]}\n\n'
+            )
+            await resp.write(
+                b'data: {"choices":[{"delta":{"content":"b"}}]}\n\n'
+            )
+            await resp.write(
+                b'data: {"choices":[],"usage":{"prompt_tokens":6,'
+                b'"completion_tokens":2}}\n\n'
+            )
+            await resp.write(b"data: [DONE]\n\n")
+            await resp.write_eof()  # ends immediately: minimal decode window
+            return resp
+
+        upstream_app = _make_app(chat)
+        async with _stack(
+            monkeypatch, {"model-a": upstream_app}, seed="model-a"
+        ) as stack:
+            async with TestClient(stack.proxy) as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": "model-a", "stream": True},
+                )
+                assert resp.status == 200
+                await resp.text()
+
+                data = await (await client.get("/stats/json")).json()
+
+        req = data["requests"]
+        # The pre-first-chunk sleep is TTFT, not decode (AC4).
+        assert req["ttft_ms"]["count"] == 1
+        assert req["ttft_ms"]["avg"] >= 150
+        # The decode window is nearly empty, so TPOT stays tiny (AC5)
+        # and the generation rate stays high (AC6).
+        assert req["tpot_ms"]["count"] == 1
+        assert req["tpot_ms"]["avg"] < 100
+        assert req["rates"]["generation_tps"]["avg"] > 20
+
+    async def test_stream_without_usage_records_null_tokens(self, monkeypatch):
+        # AC3 null rule: upstream ignores the injection — no usage chunk.
+        async def chat(request):
+            resp = web.StreamResponse(
+                status=200,
+                headers={"Content-Type": "text/event-stream"},
+            )
+            await resp.prepare(request)
+            await resp.write(
+                b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
+            )
+            await resp.write(b"data: [DONE]\n\n")
+            await resp.write_eof()
+            return resp
+
+        upstream_app = _make_app(chat)
+        async with _stack(
+            monkeypatch, {"model-a": upstream_app}, seed="model-a"
+        ) as stack:
+            async with TestClient(stack.proxy) as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": "model-a", "stream": True},
+                )
+                assert resp.status == 200
+                await resp.text()
+
+                data = await (await client.get("/stats/json")).json()
+
+        req = data["requests"]
+        assert req["tokens"] == {"prompt": 0, "completion": 0, "cached": 0}
+        # Content events were observed, so TTFT is still captured (AC4).
+        assert req["ttft_ms"]["count"] == 1
+        assert req["ttft_ms"]["avg"] > 0
+        assert req["tpot_ms"] is None  # AC5: needs usage + completion >= 2
+        assert req["rates"]["generation_tps"]["avg"] is None  # AC6
+        assert req["rates"]["prompt_tps"]["avg"] is None
+        assert req["rates"]["generation_tps"]["last_60s"] == 0.0
+
+    async def test_buffered_with_usage_records_counters_no_timing(
+        self, monkeypatch,
+    ):
+        # AC2 + streaming-only rule (AC4/AC5/AC6): counters only.
+        async def chat(request):
+            body = await request.json()
+            body["usage"] = {
+                "prompt_tokens": 7,
+                "completion_tokens": 3,
+                "prompt_tokens_details": {"cached_tokens": 2},
+            }
+            return web.json_response(body)
+
+        upstream_app = _make_app(chat)
+        async with _stack(
+            monkeypatch, {"model-a": upstream_app}, seed="model-a"
+        ) as stack:
+            async with TestClient(stack.proxy) as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": "model-a", "prompt": "x"},
+                )
+                assert resp.status == 200
+
+                data = await (await client.get("/stats/json")).json()
+
+        req = data["requests"]
+        assert req["tokens"] == {"prompt": 7, "completion": 3, "cached": 2}
+        assert req["ttft_ms"] is None  # non-streaming never contributes
+        assert req["tpot_ms"] is None
+        assert req["rates"]["prompt_tps"]["avg"] is None
+        assert req["rates"]["generation_tps"]["avg"] is None
+        # Counters still feed the windowed generation rate (decision 8).
+        assert req["rates"]["generation_tps"]["last_60s"] == \
+            pytest.approx(3 / 60)
+        row = data["models"]["model-a"]["requests"]
+        assert row["tokens"] == {"prompt": 7, "completion": 3, "cached": 2}
+        assert row["ttft_ms"] is None
+
+    async def test_failed_stream_records_counters_not_timing(self, monkeypatch):
+        # Decision 7: timing metrics only for successful requests; token
+        # counters whenever usage was extractable, regardless of status.
+        async def chat(request):
+            resp = web.StreamResponse(
+                status=200,
+                headers={"Content-Type": "text/event-stream"},
+            )
+            await resp.prepare(request)
+            await resp.write(
+                b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
+            )
+            await resp.write(
+                b'data: {"choices":[],"usage":{"prompt_tokens":8,'
+                b'"completion_tokens":4}}\n\n'
+            )
+            # Crash the writer without write_eof — mid-stream failure.
+            await resp.writer.close()
+            return resp
+
+        upstream_app = _make_app(chat)
+        async with _stack(
+            monkeypatch, {"model-a": upstream_app}, seed="model-a"
+        ) as stack:
+            async with TestClient(stack.proxy) as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": "model-a", "stream": True},
+                )
+                assert resp.status == 200  # headers already committed
+                await resp.text()
+
+        req = stack.swapper.stats.snapshot()["requests"]
+        assert req["success"] == 0
+        assert req["errors"] == {"stream_error": 1}
+        # Tokens recorded despite the failure.
+        assert req["tokens"] == {"prompt": 8, "completion": 4, "cached": 0}
+        # No timing contributions for failed requests.
+        assert req["ttft_ms"] is None
+        assert req["tpot_ms"] is None
+        assert req["rates"]["generation_tps"]["avg"] is None
+        assert req["rates"]["prompt_tps"]["avg"] is None
+
+    async def test_windowed_generation_tps_integration_sanity(
+        self, monkeypatch,
+    ):
+        # AC7 integration sanity: two streamed requests with usage.
+        async def chat(request):
+            resp = web.StreamResponse(
+                status=200,
+                headers={"Content-Type": "text/event-stream"},
+            )
+            await resp.prepare(request)
+            await resp.write(
+                b'data: {"choices":[{"delta":{"content":"abc"}}]}\n\n'
+            )
+            await resp.write(
+                b'data: {"choices":[],"usage":{"prompt_tokens":10,'
+                b'"completion_tokens":6}}\n\n'
+            )
+            await resp.write_eof()
+            return resp
+
+        upstream_app = _make_app(chat)
+        async with _stack(
+            monkeypatch, {"model-a": upstream_app}, seed="model-a"
+        ) as stack:
+            async with TestClient(stack.proxy) as client:
+                for _ in range(2):
+                    resp = await client.post(
+                        "/v1/chat/completions",
+                        json={"model": "model-a", "stream": True},
+                    )
+                    assert resp.status == 200
+                    await resp.text()
+
+                data = await (await client.get("/stats/json")).json()
+
+        gen = data["requests"]["rates"]["generation_tps"]
+        # 2 requests x 6 completion tokens, all inside both windows.
+        assert gen["last_60s"] == pytest.approx(12 / 60)
+        assert gen["last_300s"] == pytest.approx(12 / 300)
+        assert gen["avg"] > 0  # loose: decode time has event-loop noise
+
+    async def test_stats_json_full_contract_with_usage_per_model(
+        self, monkeypatch,
+    ):
+        # AC8: extended contract, global block and every model row.
+        async def chat(request):
+            resp = web.StreamResponse(
+                status=200,
+                headers={"Content-Type": "text/event-stream"},
+            )
+            await resp.prepare(request)
+            await resp.write(
+                b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
+            )
+            await resp.write(
+                b'data: {"choices":[],"usage":{"prompt_tokens":12,'
+                b'"completion_tokens":9,'
+                b'"prompt_tokens_details":{"cached_tokens":3}}}\n\n'
+            )
+            await resp.write_eof()
+            return resp
+
+        upstream_app = _make_app(chat)
+        async with _stack(
+            monkeypatch, {"model-a": upstream_app}, seed="model-a"
+        ) as stack:
+            async with TestClient(stack.proxy) as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": "model-a", "stream": True},
+                )
+                assert resp.status == 200
+                await resp.text()
+
+                data = await (await client.get("/stats/json")).json()
+
+        req = data["requests"]
+        assert set(req) == {
+            "total", "success", "failure", "success_rate", "errors",
+            "latency_ms", "bytes_in", "bytes_out",
+            "tokens", "rates", "ttft_ms", "tpot_ms",
+        }
+        assert set(req["tokens"]) == {"prompt", "completion", "cached"}
+        assert set(req["rates"]) == {"prompt_tps", "generation_tps"}
+        assert set(req["rates"]["prompt_tps"]) == {"avg"}
+        assert set(req["rates"]["generation_tps"]) == {
+            "avg", "last_60s", "last_300s",
+        }
+        assert set(req["ttft_ms"]) == {"count", "avg", "p50", "p95", "max"}
+        assert set(req["tpot_ms"]) == {"count", "avg", "p50", "p95", "max"}
+        # Pre-existing keys and rules unchanged.
+        assert req["total"] == 1
+        assert req["success"] == 1
+        assert req["failure"] == 0
+        assert req["success_rate"] == 1.0
+        assert req["errors"] == {}
+        assert req["latency_ms"]["count"] == 1
+        assert req["bytes_in"] > 0
+        assert req["bytes_out"] > 0
+        # Per-model row: same shape, same values.
+        row = data["models"]["model-a"]["requests"]
+        assert set(row) == set(req)
+        assert row["tokens"] == req["tokens"]
+        assert row["rates"] == req["rates"]
+        assert row["ttft_ms"]["count"] == req["ttft_ms"]["count"]
+        assert row["tpot_ms"]["count"] == req["tpot_ms"]["count"]
+
+    async def test_dashboard_renders_token_cards_and_table(self, monkeypatch):
+        # AC9: new cards + Token throughput table + unchanged polling.
+        upstream_app, _ = _make_upstream_with_config("model-a")
+        async with _stack(
+            monkeypatch, {"model-a": upstream_app}, seed="model-a"
+        ) as stack:
+            async with TestClient(stack.proxy) as client:
+                resp = await client.get("/stats")
+                assert resp.status == 200
+                body = await resp.text()
+
+        # Two new summary cards.
+        assert 'id="gen-tps"' in body
+        assert "Gen tok/s (avg)" in body
+        assert 'id="completion-tokens"' in body
+        assert "Completion tokens" in body
+        # Token throughput table and its renderer.
+        assert "Token throughput" in body
+        assert 'id="token-models"' in body
+        assert "renderTokenModels" in body
+        for header in (
+            "Prompt tok", "Compl tok", "Cached tok",
+            "Prompt t/s", "Gen t/s", "TTFT p50 ms", "TTFT p95 ms",
+        ):
+            assert header in body
+        # Null-safe "–" formatting helpers for rates and milliseconds.
+        assert "fmtTps" in body
+        assert "fmtMs" in body
+        assert 'const DASH = "–"' in body
+        # All DOM writes via textContent — no innerHTML anywhere.
+        assert ".innerHTML" not in body
+        assert ".textContent" in body
+        # 5000 ms fetch behavior unchanged.
+        assert 'fetch("/stats/json")' in body
+        assert "setInterval(refresh, 5000)" in body

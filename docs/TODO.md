@@ -8,6 +8,7 @@
 
 ## Done
 
+- [P-20260913-02] Add token metrics (tok/s, TTFT, TPOT) and transparent stream_options injection — DONE 2026-09-13 16:08 UTC
 - [P-20260913-01] Add runtime statistics dashboard and JSON endpoint — DONE 2026-09-13 13:49 UTC
 - [P-20260829-01] Add ninfer backend compatibility — DONE 2026-08-29 07:50 UTC
 - [P-20260827-01] Prevent total timeout of active streams — DONE 2026-08-27 09:51 UTC

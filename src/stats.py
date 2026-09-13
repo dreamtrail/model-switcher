@@ -23,6 +23,10 @@ class Outcome:
 
     stream_error: bool = False
     bytes_out: int = 0
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cached_tokens: int | None = None
+    first_token_at: float | None = None  # monotonic ts of first content event
 
 
 @dataclass
@@ -37,6 +41,16 @@ class _ModelStats:
     latencies: list[float] = field(default_factory=list)  # seconds
     bytes_in: int = 0
     bytes_out: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cached_tokens: int = 0
+    ttfts: list[float] = field(default_factory=list)  # seconds
+    tpots: list[float] = field(default_factory=list)  # seconds
+    decode_tokens: int = 0  # Σ completion_tokens over streaming requests
+    decode_time: float = 0.0  # Σ decode seconds
+    prefill_tokens: int = 0  # Σ prompt_tokens over streaming requests
+    prefill_time: float = 0.0  # Σ TTFT seconds
+    token_events: deque = field(default_factory=deque)  # (monotonic, tokens)
 
 
 def _percentile(sorted_samples: list[float], q: float) -> float:
@@ -67,6 +81,22 @@ def _latency_report(samples: list[float]) -> dict | None:
     }
 
 
+def _prune_token_events(events: deque, now_monotonic: float) -> None:
+    """Drop token events older than the retention window (chronological)."""
+    while events and now_monotonic - events[0][0] > REQUEST_RETENTION_S:
+        events.popleft()
+
+
+def _window_tps(
+    events: deque,
+    now_monotonic: float,
+    window_s: int,
+) -> float:
+    """Completion tokens within the trailing window divided by window size."""
+    tokens = sum(n for t, n in events if now_monotonic - t <= window_s)
+    return tokens / window_s
+
+
 def _requests_report(
     total: int,
     success: int,
@@ -74,6 +104,18 @@ def _requests_report(
     latencies: list[float],
     bytes_in: int,
     bytes_out: int,
+    *,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    cached_tokens: int = 0,
+    ttfts: list[float] | None = None,
+    tpots: list[float] | None = None,
+    decode_tokens: int = 0,
+    decode_time: float = 0.0,
+    prefill_tokens: int = 0,
+    prefill_time: float = 0.0,
+    token_events: deque = (),
+    now_monotonic: float = 0.0,
 ) -> dict:
     """Build the requests block shared by global and per-model reports."""
     return {
@@ -85,6 +127,23 @@ def _requests_report(
         "latency_ms": _latency_report(latencies),
         "bytes_in": bytes_in,
         "bytes_out": bytes_out,
+        "tokens": {
+            "prompt": prompt_tokens,
+            "completion": completion_tokens,
+            "cached": cached_tokens,
+        },
+        "rates": {
+            "prompt_tps": {
+                "avg": (prefill_tokens / prefill_time) if prefill_time > 0 else None,
+            },
+            "generation_tps": {
+                "avg": (decode_tokens / decode_time) if decode_time > 0 else None,
+                "last_60s": _window_tps(token_events, now_monotonic, WINDOW_SHORT_S),
+                "last_300s": _window_tps(token_events, now_monotonic, WINDOW_LONG_S),
+            },
+        },
+        "ttft_ms": _latency_report(ttfts or []),
+        "tpot_ms": _latency_report(tpots or []),
     }
 
 
@@ -103,6 +162,18 @@ class StatsCollector:
         self._bytes_in = 0
         self._bytes_out = 0
         self._request_times: deque[float] = deque()  # monotonic timestamps
+        # Global mirrors of the per-model token/timing stats (same field
+        # names as _ModelStats so _apply_usage works on both).
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.cached_tokens = 0
+        self.ttfts: list[float] = []  # seconds
+        self.tpots: list[float] = []  # seconds
+        self.decode_tokens = 0
+        self.decode_time = 0.0
+        self.prefill_tokens = 0
+        self.prefill_time = 0.0
+        self.token_events: deque[tuple[float, int]] = deque()
         self._swap_durations: list[float] = []  # seconds
         self._peak_inflight = 0
         self._models: dict[str, _ModelStats] = {}
@@ -123,8 +194,18 @@ class StatsCollector:
         latency_s: float | None = None,
         bytes_in: int = 0,
         bytes_out: int = 0,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        cached_tokens: int | None = None,
+        ttft_s: float | None = None,
+        decode_s: float | None = None,
     ) -> None:
-        """Record a completed proxied request."""
+        """Record a completed proxied request.
+
+        Token counters are recorded whenever usage was extractable,
+        regardless of response status; timing stats (ttft_s/decode_s)
+        are only passed for successful streaming requests.
+        """
         self._total += 1
         if ok:
             self._success += 1
@@ -134,7 +215,12 @@ class StatsCollector:
             self._latencies.append(latency_s)
         self._bytes_in += bytes_in
         self._bytes_out += bytes_out
-        self._request_times.append(time.monotonic())
+        now_monotonic = time.monotonic()
+        self._request_times.append(now_monotonic)
+        self._apply_usage(
+            self, now_monotonic, prompt_tokens, completion_tokens,
+            cached_tokens, ttft_s, decode_s,
+        )
         if model is not None:
             ms = self._model(model)
             ms.total += 1
@@ -146,7 +232,50 @@ class StatsCollector:
                 ms.latencies.append(latency_s)
             ms.bytes_in += bytes_in
             ms.bytes_out += bytes_out
+            self._apply_usage(
+                ms, now_monotonic, prompt_tokens, completion_tokens,
+                cached_tokens, ttft_s, decode_s,
+            )
         self._prune_request_times()
+
+    @staticmethod
+    def _apply_usage(
+        stats: _ModelStats,
+        now_monotonic: float,
+        prompt_tokens: int | None,
+        completion_tokens: int | None,
+        cached_tokens: int | None,
+        ttft_s: float | None,
+        decode_s: float | None,
+    ) -> None:
+        """Apply usage/timing contributions to a stats holder.
+
+        Works for both the global mirrors and per-model stats (same field
+        names). Pure arithmetic — every derivation is None-guarded and
+        never raises.
+        """
+        if prompt_tokens is not None:
+            stats.prompt_tokens += prompt_tokens
+        if completion_tokens is not None:
+            stats.completion_tokens += completion_tokens
+            stats.token_events.append((now_monotonic, completion_tokens))
+        if cached_tokens is not None:
+            stats.cached_tokens += cached_tokens
+        if ttft_s is not None:
+            stats.ttfts.append(ttft_s)
+        if (decode_s is not None and completion_tokens is not None
+                and completion_tokens >= 2):
+            stats.tpots.append(decode_s / (completion_tokens - 1))
+        if (decode_s is not None and completion_tokens is not None
+                and completion_tokens >= 1):
+            stats.decode_tokens += completion_tokens
+            stats.decode_time += decode_s
+        if (ttft_s is not None and prompt_tokens is not None
+                and prompt_tokens >= 1):
+            stats.prefill_tokens += prompt_tokens
+            stats.prefill_time += ttft_s
+        events = stats.token_events
+        _prune_token_events(events, now_monotonic)
 
     def record_rejection(self, kind: str, model: str | None = None) -> None:
         """Record a request rejected before proxying."""
@@ -190,6 +319,10 @@ class StatsCollector:
         """Build the JSON-contract report of all collected statistics."""
         self._prune_request_times()
         now_monotonic = time.monotonic()
+        _prune_token_events(self.token_events, now_monotonic)
+        for ms in self._models.values():
+            _prune_token_events(ms.token_events, now_monotonic)
+        now_monotonic = time.monotonic()
         uptime = max(time.time() - self._started_at, 0.0)
         if self._swap_durations:
             ordered = sorted(self._swap_durations)
@@ -213,6 +346,17 @@ class StatsCollector:
                     ms.latencies,
                     ms.bytes_in,
                     ms.bytes_out,
+                    prompt_tokens=ms.prompt_tokens,
+                    completion_tokens=ms.completion_tokens,
+                    cached_tokens=ms.cached_tokens,
+                    ttfts=ms.ttfts,
+                    tpots=ms.tpots,
+                    decode_tokens=ms.decode_tokens,
+                    decode_time=ms.decode_time,
+                    prefill_tokens=ms.prefill_tokens,
+                    prefill_time=ms.prefill_time,
+                    token_events=ms.token_events,
+                    now_monotonic=now_monotonic,
                 ),
             }
             for name, ms in self._models.items()
@@ -231,6 +375,17 @@ class StatsCollector:
                 self._latencies,
                 self._bytes_in,
                 self._bytes_out,
+                prompt_tokens=self.prompt_tokens,
+                completion_tokens=self.completion_tokens,
+                cached_tokens=self.cached_tokens,
+                ttfts=self.ttfts,
+                tpots=self.tpots,
+                decode_tokens=self.decode_tokens,
+                decode_time=self.decode_time,
+                prefill_tokens=self.prefill_tokens,
+                prefill_time=self.prefill_time,
+                token_events=self.token_events,
+                now_monotonic=now_monotonic,
             ),
             "throughput": {
                 "last_60s": sum(
@@ -288,6 +443,8 @@ STATS_HTML = """<!DOCTYPE html>
   <div class="card"><div class="value" id="concurrency">–</div><div class="label">Active / peak requests</div></div>
   <div class="card"><div class="value" id="swaps">–</div><div class="label">Swaps</div></div>
   <div class="card"><div class="value" id="rpm">–</div><div class="label">Requests/min (60s)</div></div>
+  <div class="card"><div class="value" id="gen-tps">–</div><div class="label">Gen tok/s (avg)</div></div>
+  <div class="card"><div class="value" id="completion-tokens">–</div><div class="label">Completion tokens</div></div>
 </div>
 <noscript><p>JavaScript is disabled — raw metrics are available at
 <a href="/stats/json">/stats/json</a>.</p></noscript>
@@ -305,6 +462,14 @@ STATS_HTML = """<!DOCTYPE html>
   </tr></thead>
   <tbody id="models"><tr><td colspan="12">–</td></tr></tbody>
 </table>
+<table>
+  <caption>Token throughput</caption>
+  <thead><tr>
+    <th>Model</th><th>Prompt tok</th><th>Compl tok</th><th>Cached tok</th>
+    <th>Prompt t/s</th><th>Gen t/s</th><th>TTFT p50 ms</th><th>TTFT p95 ms</th>
+  </tr></thead>
+  <tbody id="token-models"><tr><td colspan="8">–</td></tr></tbody>
+</table>
 <script>
 "use strict";
 
@@ -320,6 +485,10 @@ function fmtRate(v) {
 }
 
 function fmtMs(v) {
+  return (typeof v === "number" && isFinite(v)) ? v.toFixed(1) : DASH;
+}
+
+function fmtTps(v) {
   return (typeof v === "number" && isFinite(v)) ? v.toFixed(1) : DASH;
 }
 
@@ -405,6 +574,36 @@ function renderModels(models) {
   }
 }
 
+function renderTokenModels(models) {
+  const tbody = document.getElementById("token-models");
+  if (!tbody) return;
+  const entries = models && typeof models === "object"
+    ? Object.entries(models) : [];
+  tbody.textContent = "";
+  if (!entries.length) { fillRowless("token-models", 8); return; }
+  for (const [name, m] of entries) {
+    const r = (m && m.requests) || {};
+    const toks = r.tokens || {};
+    const rates = r.rates || {};
+    const pt = rates.prompt_tps || {};
+    const gt = rates.generation_tps || {};
+    const ttft = r.ttft_ms || {};
+    const cells = [
+      String(name),
+      fmtInt(toks.prompt), fmtInt(toks.completion), fmtInt(toks.cached),
+      fmtTps(pt.avg), fmtTps(gt.avg),
+      fmtMs(ttft.p50), fmtMs(ttft.p95),
+    ];
+    const tr = document.createElement("tr");
+    for (const text of cells) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+}
+
 function render(data) {
   if (!data || typeof data !== "object") return;
   setText("current-model", data.current_model == null ? DASH : String(data.current_model));
@@ -419,8 +618,12 @@ function render(data) {
   setText("swaps", fmtInt(swaps.count));
   const thr = data.throughput || {};
   setText("rpm", fmtInt(thr.last_60s));
+  const rates = req.rates || {};
+  setText("gen-tps", fmtTps((rates.generation_tps || {}).avg));
+  setText("completion-tokens", fmtInt((req.tokens || {}).completion));
   renderErrors(req.errors);
   renderModels(data.models);
+  renderTokenModels(data.models);
 }
 
 function refresh() {

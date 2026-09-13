@@ -78,7 +78,14 @@ Model-switcher tracks runtime statistics in memory (reset on restart) and serves
     "total": 42, "success": 40, "failure": 2, "success_rate": 0.952,
     "errors": {"502": 1, "stream_error": 1},
     "latency_ms": {"count": 42, "avg": 120.5, "p50": 100.0, "p95": 300.0, "max": 320.0},
-    "bytes_in": 1024, "bytes_out": 40960
+    "bytes_in": 1024, "bytes_out": 40960,
+    "tokens": {"prompt": 8100, "completion": 2300, "cached": 512},
+    "rates": {
+      "prompt_tps": {"avg": 890.2},
+      "generation_tps": {"avg": 38.1, "last_60s": 41.5, "last_300s": 39.0}
+    },
+    "ttft_ms": {"count": 40, "avg": 210.0, "p50": 180.0, "p95": 640.0, "max": 700.0},
+    "tpot_ms": {"count": 40, "avg": 26.3, "p50": 25.0, "p95": 30.0, "max": 31.0}
   },
   "throughput": {"last_60s": 5, "last_300s": 12, "avg_rpm": 0.7},
   "swaps": {"count": 2, "avg_ms": 1500.0, "p95_ms": 2100.0, "max_ms": 2100.0},
@@ -93,7 +100,17 @@ Metric semantics:
 - Latency is the upstream round-trip only: it excludes swap-queue wait and model-load time, so a request that triggers a cold start or swap reports its post-load latency.
 - Swaps count every stop-then-start in the model manager, including same-model restarts and crash recovery; swap durations are recorded only when the swap completes with a healthy model.
 
-Known limitations: these paths shadow upstreams serving the same paths (like `/v1/models`); latency samples are unbounded in memory (fine for a local dev tool); requests naming unknown models each create a per-model stats row keyed by the client-supplied name.
+Token metrics (when the upstream reports an OpenAI `usage` field):
+
+- Token counters are exact counts read from `usage`: `prompt`, `completion`, and `cached` (from `prompt_tokens_details.cached_tokens` when present). Counters are recorded whenever usage is available, regardless of request status; there is no estimation — when usage is absent, the fields show no data.
+- For streaming requests the switcher transparently adds `"stream_options": {"include_usage": true}` to chat/completions requests (`/v1/chat/completions`, `/v1/completions`) whose clients did not set `stream_options`, so token metrics are available even when the client doesn't ask for them. Client-set values are forwarded untouched; non-JSON and non-streaming bodies pass through unchanged.
+- Timing metrics are streaming-only, since only streamed responses reveal token boundaries:
+  - `ttft_ms` (time to first token) — from proxy start to the first content chunk; captures queueing, prompt processing, and model behavior. Percentiles, not averages.
+  - `tpot_ms` (time per output token) — decode-window time divided by `(completion_tokens - 1)`; requires at least 2 completion tokens.
+  - `rates.generation_tps` — completion tokens per second of decode time (token-weighted), with trailing `last_60s`/`last_300s` windows; `rates.prompt_tps` — prompt tokens per second of time-to-first-token. The two rates are never blended.
+- Non-streaming requests contribute token counts only; no timing split is observable from a single whole-body response.
+
+Known limitations: these paths shadow upstreams serving the same paths (like `/v1/models`); latency samples are unbounded in memory (fine for a local dev tool); requests naming unknown models each create a per-model stats row keyed by the client-supplied name; SSE parsing assumes text streams, so a pathological binary stream without newlines (e.g. an audio endpoint) could buffer excessively.
 
 ## CLI Reference
 
