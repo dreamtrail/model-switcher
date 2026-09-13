@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from aiohttp import web
+
+if TYPE_CHECKING:
+    from src.stats import Outcome
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +129,7 @@ async def proxy_request(
     *,
     timeout: float = 60,
     client: aiohttp.ClientSession | None = None,
+    outcome: Outcome | None = None,
 ) -> web.Response:
     """Forward a request to the upstream server.
 
@@ -135,6 +139,7 @@ async def proxy_request(
         body: Pre-read request body bytes.
         timeout: Maximum time to wait for the response.
         client: Optional shared client session.
+        outcome: Optional Outcome object; receives the response byte count.
     """
     upstream_path = request.path_qs or request.path
     target = upstream_url + upstream_path
@@ -154,6 +159,8 @@ async def proxy_request(
             ssl=False,
         ) as upstream_resp:
             response_body = await upstream_resp.read()
+            if outcome is not None:
+                outcome.bytes_out = len(response_body)
             # Forward all upstream headers except hop-by-hop
             resp_headers = {}
             for k, v in upstream_resp.headers.items():
@@ -182,6 +189,7 @@ async def stream_proxy(
     *,
     timeout: float = 60,
     client: aiohttp.ClientSession | None = None,
+    outcome: Outcome | None = None,
 ) -> web.Response:
     """Proxy with chunked streaming for SSE responses."""
     upstream_path = request.path_qs or request.path
@@ -234,8 +242,12 @@ async def stream_proxy(
             try:
                 async for chunk in upstream_resp.content.iter_any():
                     await response.write(chunk)
+                    if outcome is not None:
+                        outcome.bytes_out += len(chunk)
             except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
                 logger.error("Stream proxy error: %s", exc)
+                if outcome is not None:
+                    outcome.stream_error = True
                 error_payload = json.dumps(
                     _openai_error(f"Upstream error: {exc}")
                 )

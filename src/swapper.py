@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections import deque
 from contextlib import suppress
 from pathlib import Path
@@ -28,6 +29,7 @@ from src.proxy import (
     proxy_request,
     stream_proxy,
 )
+from src.stats import STATS_HTML, Outcome, StatsCollector
 
 logger = logging.getLogger(__name__)
 
@@ -44,11 +46,13 @@ class Swapper:
         timeout: float = 60,
         idle_timeout: float = 900,
         client: aiohttp.ClientSession | None = None,
+        stats: StatsCollector | None = None,
     ):
         self.config = config
         self.timeout = timeout
         self.idle_timeout = idle_timeout
         self._client = client
+        self.stats = stats or StatsCollector()
         self._current: ProcessHandle | None = None
         self._current_model: str | None = None
         self._healthy = False
@@ -101,12 +105,15 @@ class Swapper:
 
         # Stop current model if different. Call stop_process even if the
         # tracked parent has exited; wrapper children may still be alive.
+        swap_started: float | None = None
         if self._current:
             self._idle_generation += 1
             self._cancel_idle_timer()
             logger.info(
                 "Swapping from %s to %s", self._current_model, model_name
             )
+            swap_started = time.monotonic()
+            self.stats.record_model_stop(self._current_model)
             await stop_process(self._current)
             self._current = None
             self._current_model = None
@@ -115,6 +122,7 @@ class Swapper:
         # Start new model
         logger.info("Starting model %s", model_name)
         handle = await start_process(model_name, mc.cmd, mc.port)
+        self.stats.record_model_start(model_name)
         self._current = handle
         self._current_model = model_name
         self._healthy = False
@@ -128,12 +136,15 @@ class Swapper:
                 client=self._client,
             )
             self._healthy = True
+            if swap_started is not None:
+                self.stats.record_swap(time.monotonic() - swap_started)
         except TimeoutError:
             logger.error(
                 "Model %s on port %d did not become ready",
                 model_name,
                 handle.port,
             )
+            self.stats.record_model_stop(model_name)
             await stop_process(handle)
             self._current = None
             self._current_model = None
@@ -180,6 +191,20 @@ class Swapper:
             model_names = list(self.config.models.keys())
             return await handle_models_list(request, model_names)
 
+        # Statistics endpoints (switcher-local, never proxied upstream)
+        if request.method == "GET":
+            if path == "/stats/json":
+                return web.json_response(
+                    self.stats.snapshot(
+                        current_model=self._current_model,
+                        inflight=self._active_requests,
+                    )
+                )
+            if path == "/stats":
+                return web.Response(
+                    text=STATS_HTML, content_type="text/html"
+                )
+
         # Read body once (needed for model extraction + upstream forwarding)
         body = await request.read()
 
@@ -202,6 +227,7 @@ class Swapper:
                     body,
                     handle,
                 )
+            self.stats.record_rejection("400")
             return web.json_response(
                 _openai_error(
                     "No model specified and no model is currently running"
@@ -215,13 +241,29 @@ class Swapper:
                 future = self._queue_request()
                 await future  # wait until swap completes
             except asyncio.QueueFull:
+                self.stats.record_rejection("503", model_name)
                 return web.json_response(
                     _openai_error("Swap in progress, try again shortly"),
                     status=503,
                 )
-            # After swap completes, ensure correct model for this request
+            # After swap completes, ensure correct model for this request.
+            # Failure here must not escape as a bare 500 — mirror the
+            # primary path's error responses.
             async with self._lock:
-                handle = await self._ensure_model(model_name)
+                try:
+                    handle = await self._ensure_model(model_name)
+                except ValueError:
+                    self.stats.record_rejection("404", model_name)
+                    return web.json_response(
+                        _openai_error(f"Unknown model: {model_name}"),
+                        status=404,
+                    )
+                except TimeoutError:
+                    self.stats.record_rejection("504", model_name)
+                    return web.json_response(
+                        _openai_error("Model swap timed out", "swap_timeout"),
+                        status=504,
+                    )
                 self._begin_activity()
             return await self._proxy_with_recorded_activity(
                 request, model_name, body, handle
@@ -236,6 +278,7 @@ class Swapper:
             except ValueError:
                 self._swapping = False
                 await self._drain_queue()
+                self.stats.record_rejection("404", model_name)
                 return web.json_response(
                     _openai_error(f"Unknown model: {model_name}"),
                     status=404,
@@ -243,6 +286,7 @@ class Swapper:
             except TimeoutError:
                 self._swapping = False
                 await self._drain_queue()
+                self.stats.record_rejection("504", model_name)
                 return web.json_response(
                     _openai_error("Model swap timed out", "swap_timeout"),
                     status=504,
@@ -260,6 +304,7 @@ class Swapper:
         self._active_requests += 1
         self._idle_generation += 1
         self._cancel_idle_timer()
+        self.stats.observe_inflight(self._active_requests)
 
     def _end_activity(self) -> None:
         """Mark a model request complete and arm idle unload if needed."""
@@ -274,12 +319,34 @@ class Swapper:
         handle: ProcessHandle,
     ) -> web.Response:
         """Proxy a request already recorded as active model usage."""
+        started = time.monotonic()
+        outcome = Outcome()
+        resp: web.Response | None = None
         try:
-            return await self._proxy_for_model(
-                request, model_name, body, handle
+            resp = await self._proxy_for_model(
+                request, model_name, body, handle, outcome=outcome,
             )
+            return resp
         finally:
             self._end_activity()
+            latency_s = time.monotonic() - started
+            if resp is None:
+                # Exception escaped the proxy call — no response produced.
+                ok, kind = False, "error"
+            elif outcome.stream_error:
+                ok, kind = False, "stream_error"
+            elif resp.status >= 400:
+                ok, kind = False, str(resp.status)
+            else:
+                ok, kind = True, None
+            self.stats.record_request(
+                model_name,
+                ok=ok,
+                kind=kind,
+                latency_s=latency_s,
+                bytes_in=len(body) if body else 0,
+                bytes_out=outcome.bytes_out,
+            )
 
     async def _proxy_for_model(
         self,
@@ -287,6 +354,7 @@ class Swapper:
         model_name: str,
         body: bytes | None,
         handle: ProcessHandle | None = None,
+        outcome: Outcome | None = None,
     ) -> web.Response:
         """Proxy request to the upstream for the given model."""
         if handle is None:
@@ -318,10 +386,12 @@ class Swapper:
             return await stream_proxy(
                 request, upstream, body,
                 timeout=self.timeout, client=self._client,
+                outcome=outcome,
             )
         return await proxy_request(
             request, upstream, body,
             timeout=self.timeout, client=self._client,
+            outcome=outcome,
         )
 
     def _schedule_idle_timer(self) -> None:
@@ -376,6 +446,7 @@ class Swapper:
                     "Idle timeout reached for %s; unloading model",
                     model_name,
                 )
+                self.stats.record_model_stop(model_name)
                 await stop_process(handle)
                 self._current = None
                 self._current_model = None

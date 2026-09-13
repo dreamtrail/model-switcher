@@ -62,6 +62,39 @@ The API request's `model` must match the config key exactly, including case. The
 
 NInfer's `/health` becomes available after model loading and warm-up. Model-switcher then proxies its OpenAI-compatible JSON and SSE output unchanged: Chat Completions streams end with `data: [DONE]`, while Responses API streams use named `event:` records and a terminal response event without `[DONE]`. Upstream statuses, error bodies, and headers such as `x-request-id` are forwarded normally. On a swap or shutdown, model-switcher sends SIGTERM before its existing forced-stop fallback.
 
+## Statistics
+
+Model-switcher tracks runtime statistics in memory (reset on restart) and serves them at two switcher-local endpoints:
+
+- `GET /stats` — human-readable dashboard: auto-refreshing HTML page with summary cards, an error breakdown, and a per-model table.
+- `GET /stats/json` — the same data as JSON:
+
+```json
+{
+  "uptime_seconds": 3600.5,
+  "current_model": "llama-8b",
+  "concurrency": {"active": 1, "peak": 3},
+  "requests": {
+    "total": 42, "success": 40, "failure": 2, "success_rate": 0.952,
+    "errors": {"502": 1, "stream_error": 1},
+    "latency_ms": {"count": 42, "avg": 120.5, "p50": 100.0, "p95": 300.0, "max": 320.0},
+    "bytes_in": 1024, "bytes_out": 40960
+  },
+  "throughput": {"last_60s": 5, "last_300s": 12, "avg_rpm": 0.7},
+  "swaps": {"count": 2, "avg_ms": 1500.0, "p95_ms": 2100.0, "max_ms": 2100.0},
+  "models": {"llama-8b": {"starts": 1, "stops": 0, "requests": {"...": "..."}}}
+}
+```
+
+Metric semantics:
+
+- Counted requests are proxied requests plus rejected ones; `GET /v1/models`, `GET /models`, and the stats endpoints themselves are excluded.
+- Success means the final response status is below 400 with no mid-stream error. Failures are keyed by kind: rejection kinds (`"400"`, `"404"`, `"503"`, `"504"`), upstream statuses (`"500"`, `"502"`, ...), mid-stream SSE errors (`"stream_error"`), and exceptions (`"error"`). Null fields (`success_rate`, `latency_ms`, swap durations) mean "no data yet".
+- Latency is the upstream round-trip only: it excludes swap-queue wait and model-load time, so a request that triggers a cold start or swap reports its post-load latency.
+- Swaps count every stop-then-start in the model manager, including same-model restarts and crash recovery; swap durations are recorded only when the swap completes with a healthy model.
+
+Known limitations: these paths shadow upstreams serving the same paths (like `/v1/models`); latency samples are unbounded in memory (fine for a local dev tool); requests naming unknown models each create a per-model stats row keyed by the client-supplied name.
+
 ## CLI Reference
 
 | Flag | Default | Description |
