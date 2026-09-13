@@ -2,6 +2,8 @@
 
 ## Next
 
+- [P-20260913-03] Split `tests/test_stats.py` (1735 LOC) into focused test modules
+- [P-20260913-04] Split `tests/test_proxy.py` (1194 LOC) into focused test modules
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to README
 - [P-20260826-03] Remove stray blank line before `handle.stopped` in `stop_process` (deferred P2 from P-20260826-01 audit)
@@ -28,3 +30,7 @@
 - [P-20260612-06] Flexible port resolution (auto-detect + explicit) — DONE 2026-06-12 11:30 UTC
 - [P-20260612-05] Add color-coded log output — DONE 2026-06-12 11:19 UTC
 - [P-20260612-01] Build model switcher — reverse proxy with automatic model swapping — DONE 2026-06-12 01:59 UTC
+
+## Discovered
+
+- [P-20260913-05] Cap SSE line buffer in `stream_proxy` — pathological newline-free binary streams (e.g. audio endpoints) grow the buffer unboundedly (deferred P2 from P-20260913-02 audit; documented in README known limitations)

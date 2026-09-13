@@ -72,3 +72,20 @@
 
 ### Constraint
 - **One configured artifact per embedded ID** — NInfer's groupwise and NVFP4 artifacts for each 27B family share an ID. Without aliases, duplicate variants cannot be selected simultaneously; aliases and model rewriting remain out of scope.
+
+## P-20260913-01 / P-20260913-02 — Statistics & Token Metrics
+
+### Collection & Presentation
+- **Single-writer `StatsCollector` in `src/stats.py`** — swapper reads via `snapshot()`; `proxy.py` communicates only through the `Outcome` value object (no proxy→stats coupling). All state mutated synchronously on the asyncio loop; no locks.
+- **Two explicit endpoints: `/stats` (HTML dashboard) and `/stats/json`** — content negotiation rejected as brittle. Both switcher-local intercepts before the body read, mirroring `/v1/models`; they shadow upstreams serving the same paths (accepted, documented).
+- **Always-on, flag-free** — endpoints cost nothing when unused; opt-in flags would be speculative.
+- **Embedded static HTML + vanilla JS** — fetches `/stats/json` every 5 s, `textContent`-only rendering (no innerHTML), null-safe "–" display. No templating, no build step, no new dependencies.
+- **In-memory only; reset on restart** — persistence is a future addition, not now.
+
+### Token & Latency Metrics (P-20260913-02, conventions from llama-swap/vLLM/LiteLLM/llama.cpp research)
+- **Exact token counts only** — from the upstream OpenAI `usage` field; never estimate via chars/4. Absent usage renders as "–".
+- **Transparent `stream_options: {"include_usage": true}` injection** — POST + `/v1/chat/completions` + `/v1/completions` + JSON dict + `stream: true` + client `stream_options` absent; falls back to original body on any failure; forwarded `content-length` dropped so aiohttp recomputes it.
+- **"tokens/second" is always two rates** — prompt-processing t/s (prefill) and generation t/s (decode), token-weighted aggregates (Σtokens/Σtime), never blended.
+- **Timing metrics are streaming-only** — TTFT (proxy start → first content event, percentiles) and TPOT (`decode_time/(completion_tokens−1)`, requires ≥2 completion tokens). Non-streaming requests contribute token counters only; no timing split is observable.
+- **Latency excludes queue wait and swap/model-load time** — measured around the proxy chokepoint only; documented as upstream-round-trip latency.
+- **Outcome classification**: success = final status < 400 with no mid-stream error; errors keyed by kind (`400`/`404`/`502`/`503`/`504`/`stream_error`/`error`); swap = any stop-then-start in `_ensure_model` incl. same-model restarts and crash recovery, duration only on successful health-readiness.
