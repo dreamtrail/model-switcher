@@ -10,6 +10,7 @@
 
 ## Done
 
+- [P-20260913-05] Cap SSE line buffer in `stream_proxy` (64 KiB, discard non-line-shaped content) — DONE 2026-09-14 08:36 UTC
 - [P-20260913-02] Add token metrics (tok/s, TTFT, TPOT) and transparent stream_options injection — DONE 2026-09-13 16:08 UTC
 - [P-20260913-01] Add runtime statistics dashboard and JSON endpoint — DONE 2026-09-13 13:49 UTC
 - [P-20260829-01] Add ninfer backend compatibility — DONE 2026-08-29 07:50 UTC
@@ -31,6 +32,3 @@
 - [P-20260612-05] Add color-coded log output — DONE 2026-06-12 11:19 UTC
 - [P-20260612-01] Build model switcher — reverse proxy with automatic model swapping — DONE 2026-06-12 01:59 UTC
 
-## Discovered
-
-- [P-20260913-05] Cap SSE line buffer in `stream_proxy` — pathological newline-free binary streams (e.g. audio endpoints) grow the buffer unboundedly (deferred P2 from P-20260913-02 audit; documented in README known limitations)

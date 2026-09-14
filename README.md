@@ -110,7 +110,7 @@ Token metrics (when the upstream reports an OpenAI `usage` field):
   - `rates.generation_tps` — completion tokens per second of decode time (token-weighted), with trailing `last_60s`/`last_300s` windows; `rates.prompt_tps` — prompt tokens per second of time-to-first-token. The two rates are never blended.
 - Non-streaming requests contribute token counts only; no timing split is observable from a single whole-body response.
 
-Known limitations: these paths shadow upstreams serving the same paths (like `/v1/models`); latency samples are unbounded in memory (fine for a local dev tool); requests naming unknown models each create a per-model stats row keyed by the client-supplied name; SSE parsing assumes text streams, so a pathological binary stream without newlines (e.g. an audio endpoint) could buffer excessively.
+Known limitations: these paths shadow upstreams serving the same paths (like `/v1/models`); latency samples are unbounded in memory (fine for a local dev tool); requests naming unknown models each create a per-model stats row keyed by the client-supplied name; the pending SSE line buffer is capped (~64 KiB) — once the cap is hit, non-line-shaped content (e.g. a binary audio stream without newlines) is discarded, so token metrics may be absent for such streams (byte counts remain exact).
 
 ## CLI Reference
 

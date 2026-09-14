@@ -1192,3 +1192,52 @@ class TestStreamProxySseParsing:
 
         assert outcome.prompt_tokens == 1
         assert outcome.completion_tokens == 1
+
+    async def test_oversized_lineless_junk_discarded_usage_still_parsed(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr("src.proxy._SSE_LINE_BUFFER_CAP", 64)
+
+        async def sse_handler(request):
+            resp = aiohttp.web.StreamResponse(
+                status=200,
+                headers={"Content-Type": "text/event-stream"},
+            )
+            await resp.prepare(request)
+            # Newline-free junk larger than the patched cap — not
+            # line-shaped SSE, so the pending buffer is discarded.
+            await resp.write(b"\x00" * 100)
+            # Explicit newline closes the junk "line" whether or not the
+            # transport coalesced it with the junk chunk; a valid usage
+            # line after the discard still parses.
+            await resp.write(
+                b'\ndata: {"choices":[],"usage":{"prompt_tokens":3,'
+                b'"completion_tokens":7}}\n\n'
+            )
+            await resp.write_eof()
+            return resp
+
+        outcome = await self._proxy_stream(sse_handler)
+
+        assert outcome.prompt_tokens == 3
+        assert outcome.completion_tokens == 7
+
+    async def test_oversized_lineless_stream_completes_with_exact_bytes(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr("src.proxy._SSE_LINE_BUFFER_CAP", 64)
+        sent = b"\x00" * 200
+
+        async def binary_handler(request):
+            resp = aiohttp.web.StreamResponse(
+                status=200,
+                headers={"Content-Type": "application/octet-stream"},
+            )
+            await resp.prepare(request)
+            await resp.write(sent)
+            await resp.write_eof()
+            return resp
+
+        outcome = await self._proxy_stream(binary_handler)
+
+        assert outcome.bytes_out == len(sent)

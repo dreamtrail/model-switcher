@@ -55,6 +55,10 @@ _STREAM_OPTIONS_ENDPOINTS = frozenset([
     "/v1/completions",
 ])
 
+# Cap for the pending partial-line SSE buffer in stream_proxy: a
+# newline-free stream (e.g. binary audio) is discarded once it exceeds this.
+_SSE_LINE_BUFFER_CAP = 64 * 1024
+
 
 def _int_or_none(value: Any) -> int | None:
     """Return value if it is a plain int, else None."""
@@ -354,6 +358,11 @@ async def stream_proxy(
                         # so process complete lines and keep the remainder.
                         buffer += chunk
                         *lines, buffer = buffer.split(b"\n")
+                        if len(buffer) > _SSE_LINE_BUFFER_CAP:
+                            # Pathological newline-free stream (e.g. binary
+                            # audio) — not line-shaped SSE; discard to bound
+                            # memory. Byte counts continue via outcome.bytes_out.
+                            buffer = b""
                         for line in lines:
                             _process_sse_line(line, outcome)
                 if outcome is not None and buffer.strip():
