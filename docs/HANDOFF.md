@@ -1,25 +1,25 @@
 ## Handoff Card
 
 - Goal: Keep model-switcher compatible with local AI servers and ready for the next planned improvement.
-- As-Of: 2026-09-13 23:02 UTC (2026-09-13 23:02 Z)
-- Branch/HEAD: master @ 3379626 (before this handoff commit)
+- As-Of: 2026-09-14 10:35 UTC (2026-09-14 10:35 Z)
+- Branch/HEAD: master @ d2caaaa (before this handoff commit)
 - Mode: FINISHED
 - Working On: P-20260913-03
-- Stop Point: docs/TODO.md "Next" — P-20260913-03 at top (size-hygiene refactor).
+- Stop Point: docs/TODO.md "Next" — P-20260913-03 at top (size-hygiene refactor of tests/test_stats.py, now 1810 LOC).
 - Next Step: Run Discover, then prepare the plan for the Working On ID.
 - Key Decisions:
-  - Stats/token metrics: exact usage-field counts only, never estimate; stream_options include_usage injected transparently (guarded).
-  - "tokens/second" is two token-weighted rates (prompt/decode); TTFT/TPOT are streaming-only.
-  - Stats endpoints `/stats` + `/stats/json` are switcher-local intercepts, always on, in-memory only.
+  - Cache hit rate: `cached_tokens ÷ prompt_tokens`, token-weighted lifetime avg, per model + global; null when no prompt tokens; no clamping (documented in docs/DECISIONS.md).
+  - SSE pending line buffer capped at 64 KiB; non-line-shaped content discarded; byte counts stay exact.
+  - Per-stream throughput breakdown rejected by user decision — aggregation kept as-is.
 - Key Files:
-  - src/stats.py — StatsCollector + embedded HTML dashboard (single-writer of stats state).
-  - src/swapper.py — instrumentation chokepoint + stats endpoints + injection call.
-  - docs/DECISIONS.md — P-20260913-01/-02 design rationale.
+  - src/stats.py — StatsCollector + embedded HTML dashboard (single-writer of stats state; cache_hit_rate in _requests_report).
+  - src/swapper.py — instrumentation chokepoint + stats endpoints.
+  - docs/DECISIONS.md — design rationale through P-20260914-01.
 - Env Hints: `.venv` available; Python 3.13.5; no GPU required for tests (fake handles + TestServer pattern in tests/helpers.py).
-- Critical Context: Stats contract is additive; existing tests pin exact key sets (tests/test_stats.py) — extend them when extending the contract. Architecture boundary tests (AST) enforce stats.py stdlib-only and proxy.py Outcome-only.
-- Completed Since Last: P-20260913-01, P-20260913-02
+- Critical Context: Stats contract is additive; exact key sets pinned in tests/test_stats.py (13 `tokens` equality sites + key-set pin) — enumerate by grep, never from memory, when touching the tokens/rates shape. AST boundary tests enforce stats.py stdlib-only and proxy.py Outcome-only. `/stats` serves STATS_HTML verbatim → static string gates on the constant cover served HTML.
+- Completed Since Last: P-20260913-05, P-20260914-01
 - Commands:
   - `.venv/bin/python -m compileall -q src`
   - `.venv/bin/python -m pytest tests/ --tb=short -q`
-- Verification: 355/355 tests passed; audits PASS (zero P0/P1).
-- Risks/Blockers: P-20260913-05 (SSE buffer cap) deferred P2; P-20260826-03 deferred P2; no current blocker.
+- Verification: 361/361 tests passed; implementation audit PASS; test audit PASS (zero P0/P1).
+- Risks/Blockers: none current; no deferred P2 items remain (P-20260913-05 and P-20260826-03 resolved).

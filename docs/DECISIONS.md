@@ -89,3 +89,16 @@
 - **Timing metrics are streaming-only** — TTFT (proxy start → first content event, percentiles) and TPOT (`decode_time/(completion_tokens−1)`, requires ≥2 completion tokens). Non-streaming requests contribute token counters only; no timing split is observable.
 - **Latency excludes queue wait and swap/model-load time** — measured around the proxy chokepoint only; documented as upstream-round-trip latency.
 - **Outcome classification**: success = final status < 400 with no mid-stream error; errors keyed by kind (`400`/`404`/`502`/`503`/`504`/`stream_error`/`error`); swap = any stop-then-start in `_ensure_model` incl. same-model restarts and crash recovery, duration only on successful health-readiness.
+
+## P-20260913-05 / P-20260914-01 — SSE Buffer Cap & Cache Hit Rate
+
+### Streaming Robustness (P-20260913-05)
+- **Cap the pending SSE line buffer at 64 KiB** (`_SSE_LINE_BUFFER_CAP`) — a newline-free stream (e.g. binary audio) is not line-shaped SSE; the split remainder is discarded once it exceeds the cap. Complete lines are never discarded; byte counts stay exact via `bytes_out`.
+- **No config surface, no content-type gating** — the cap alone fixes the unbounded-growth finding; gating would change stats behavior more broadly.
+- **Trade-off:** token metrics are absent for a discarded pathological segment (such streams never yield usage anyway); a legitimate single SSE line > 64 KiB would lose metrics (accepted for a local dev tool).
+
+### Cache Hit Rate (P-20260914-01)
+- **`cache_hit_rate = cached_tokens ÷ prompt_tokens`** — token-weighted lifetime ratio since process start, per model and global; computed in the shared `_requests_report()` so one edit covers both reports. Denominator 0 → `null` (same None-guard pattern as existing rates).
+- **Bare scalar in the `tokens` section** (not the `rates` object) — it is a derived ratio over counters, not a time-windowed rate; no windowed variants (lifetime only, matching `prompt_tps`).
+- **No clamping** — backends reporting cumulative/oversized cached counts yield ratios > 1, reported as-is (exact counts only, never estimate).
+- **Per-stream breakdown rejected** — user decision: keep aggregation as-is; per-request data exists at the `record_request` chokepoint if ever revisited.
