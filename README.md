@@ -79,7 +79,7 @@ Model-switcher tracks runtime statistics in memory (reset on restart) and serves
     "errors": {"502": 1, "stream_error": 1},
     "latency_ms": {"count": 42, "avg": 120.5, "p50": 100.0, "p95": 300.0, "max": 320.0},
     "bytes_in": 1024, "bytes_out": 40960,
-    "tokens": {"prompt": 8100, "completion": 2300, "cached": 512},
+    "tokens": {"prompt": 8100, "completion": 2300, "cached": 512, "cache_hit_rate": 0.063},
     "rates": {
       "prompt_tps": {"avg": 890.2},
       "generation_tps": {"avg": 38.1, "last_60s": 41.5, "last_300s": 39.0}
@@ -103,6 +103,7 @@ Metric semantics:
 Token metrics (when the upstream reports an OpenAI `usage` field):
 
 - Token counters are exact counts read from `usage`: `prompt`, `completion`, and `cached` (from `prompt_tokens_details.cached_tokens` when present). Counters are recorded whenever usage is available, regardless of request status; there is no estimation — when usage is absent, the fields show no data.
+- `cache_hit_rate` is the token-weighted lifetime ratio `cached ÷ prompt` (per model and global); it is `null` when no prompt tokens were recorded. Like the counters, it is derived from exact reported counts — no estimation. Backends that report cumulative cached counts may yield a ratio above 1; the value is reported as-is.
 - For streaming requests the switcher transparently adds `"stream_options": {"include_usage": true}` to chat/completions requests (`/v1/chat/completions`, `/v1/completions`) whose clients did not set `stream_options`, so token metrics are available even when the client doesn't ask for them. Client-set values are forwarded untouched; non-JSON and non-streaming bodies pass through unchanged.
 - Timing metrics are streaming-only, since only streamed responses reveal token boundaries:
   - `ttft_ms` (time to first token) — from proxy start to the first content chunk; captures queueing, prompt processing, and model behavior. Percentiles, not averages.

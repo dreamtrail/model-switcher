@@ -131,6 +131,10 @@ def _requests_report(
             "prompt": prompt_tokens,
             "completion": completion_tokens,
             "cached": cached_tokens,
+            # Token-weighted lifetime ratio; null when no prompt tokens.
+            "cache_hit_rate": (
+                cached_tokens / prompt_tokens
+            ) if prompt_tokens > 0 else None,
         },
         "rates": {
             "prompt_tps": {
@@ -466,9 +470,10 @@ STATS_HTML = """<!DOCTYPE html>
   <caption>Token throughput</caption>
   <thead><tr>
     <th>Model</th><th>Prompt tok</th><th>Compl tok</th><th>Cached tok</th>
+    <th>Cache hit %</th>
     <th>Prompt t/s</th><th>Gen t/s</th><th>TTFT p50 ms</th><th>TTFT p95 ms</th>
   </tr></thead>
-  <tbody id="token-models"><tr><td colspan="8">–</td></tr></tbody>
+  <tbody id="token-models"><tr><td colspan="9">–</td></tr></tbody>
 </table>
 <script>
 "use strict";
@@ -580,7 +585,7 @@ function renderTokenModels(models) {
   const entries = models && typeof models === "object"
     ? Object.entries(models) : [];
   tbody.textContent = "";
-  if (!entries.length) { fillRowless("token-models", 8); return; }
+  if (!entries.length) { fillRowless("token-models", 9); return; }
   for (const [name, m] of entries) {
     const r = (m && m.requests) || {};
     const toks = r.tokens || {};
@@ -591,6 +596,7 @@ function renderTokenModels(models) {
     const cells = [
       String(name),
       fmtInt(toks.prompt), fmtInt(toks.completion), fmtInt(toks.cached),
+      fmtRate(toks.cache_hit_rate),
       fmtTps(pt.avg), fmtTps(gt.avg),
       fmtMs(ttft.p50), fmtMs(ttft.p95),
     ];

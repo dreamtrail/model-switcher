@@ -318,6 +318,7 @@ class TestStatsCollector:
         assert snap["requests"]["bytes_out"] == 0
         assert snap["requests"]["tokens"] == {
             "prompt": 0, "completion": 0, "cached": 0,
+            "cache_hit_rate": None,
         }
         assert snap["requests"]["rates"] == {
             "prompt_tps": {"avg": None},
@@ -423,6 +424,7 @@ class TestStatsEndpoints:
                 assert data["requests"]["errors"] == {}
                 assert data["requests"]["tokens"] == {
                     "prompt": 0, "completion": 0, "cached": 0,
+                    "cache_hit_rate": None,
                 }
                 assert data["requests"]["rates"] == {
                     "prompt_tps": {"avg": None},
@@ -1155,7 +1157,9 @@ class TestTokenMetricCollector:
         assert req["rates"]["generation_tps"]["avg"] is None
         assert req["rates"]["prompt_tps"]["avg"] is None
         assert req["tpot_ms"] is None
-        assert req["tokens"] == {"prompt": 0, "completion": 0, "cached": 0}
+        assert req["tokens"] == {
+            "prompt": 0, "completion": 0, "cached": 0, "cache_hit_rate": None,
+        }
 
     def test_cached_tokens_summed_when_present(self):
         # AC2/AC8: cached sums only when prompt_tokens_details is present.
@@ -1168,8 +1172,11 @@ class TestTokenMetricCollector:
 
         assert snap["requests"]["tokens"] == {
             "prompt": 150, "completion": 0, "cached": 30,
+            "cache_hit_rate": 0.2,
         }
         assert snap["models"]["m"]["requests"]["tokens"]["cached"] == 30
+        assert snap["requests"]["tokens"]["cache_hit_rate"] == 0.2
+        assert snap["models"]["m"]["requests"]["tokens"]["cache_hit_rate"] == 0.2
 
     def test_token_counters_recorded_regardless_of_status(self):
         # Plan §Metric definitions: counters over all requests where usage
@@ -1182,7 +1189,9 @@ class TestTokenMetricCollector:
 
         req = collector.snapshot()["requests"]
 
-        assert req["tokens"] == {"prompt": 10, "completion": 4, "cached": 1}
+        assert req["tokens"] == {
+            "prompt": 10, "completion": 4, "cached": 1, "cache_hit_rate": 0.1,
+        }
         assert req["errors"] == {"stream_error": 1}
         assert req["ttft_ms"] is None
         assert req["rates"]["generation_tps"]["avg"] is None
@@ -1200,7 +1209,9 @@ class TestTokenMetricCollector:
 
         req = collector.snapshot()["requests"]
 
-        assert req["tokens"] == {"prompt": 0, "completion": 0, "cached": 0}
+        assert req["tokens"] == {
+            "prompt": 0, "completion": 0, "cached": 0, "cache_hit_rate": None,
+        }
         assert req["ttft_ms"]["count"] == 1  # observable without usage
         assert req["tpot_ms"] is None  # needs usage + completion >= 2
         assert req["rates"]["prompt_tps"]["avg"] is None
@@ -1216,7 +1227,9 @@ class TestTokenMetricCollector:
         req = collector.snapshot()["requests"]
 
         assert req["total"] == 2
-        assert req["tokens"] == {"prompt": 0, "completion": 0, "cached": 0}
+        assert req["tokens"] == {
+            "prompt": 0, "completion": 0, "cached": 0, "cache_hit_rate": None,
+        }
         assert req["ttft_ms"] is None
         assert req["tpot_ms"] is None
         assert req["rates"]["generation_tps"]["avg"] is None
@@ -1318,6 +1331,55 @@ class TestTokenMetricCollector:
         # Global window is independent of per-model seeding.
         assert snap["requests"]["rates"]["generation_tps"]["last_60s"] == 0.0
 
+    def test_cache_hit_rate_is_per_model_independent(self):
+        # Each model's ratio derives from its own sums only.
+        collector = StatsCollector()
+        collector.record_request("a", ok=True, prompt_tokens=100,
+                                 cached_tokens=50)   # 0.5
+        collector.record_request("b", ok=True, prompt_tokens=200,
+                                 cached_tokens=20)   # 0.1
+
+        snap = collector.snapshot()
+
+        assert snap["models"]["a"]["requests"]["tokens"]["cache_hit_rate"] \
+            == 0.5
+        assert snap["models"]["b"]["requests"]["tokens"]["cache_hit_rate"] \
+            == 0.1
+        # Global pools both models: 70 cached / 300 prompt.
+        assert snap["requests"]["tokens"]["cache_hit_rate"] \
+            == pytest.approx(70 / 300)
+
+    def test_cache_hit_rate_null_without_prompt_tokens(self):
+        # No usage recorded -> prompt sum 0 -> null, global and per-model.
+        collector = StatsCollector()
+        collector.record_request("m", ok=True)
+        collector.record_request(None, ok=True)
+
+        snap = collector.snapshot()
+
+        assert snap["requests"]["tokens"]["cache_hit_rate"] is None
+        assert snap["models"]["m"]["requests"]["tokens"]["cache_hit_rate"] \
+            is None
+
+    def test_cache_hit_rate_null_when_cached_without_prompt_tokens(self):
+        # Denominator-0 anomaly: cached reported while prompt sum stays 0.
+        # Division is guarded, not clamped — exact counts, never estimate.
+        collector = StatsCollector()
+        collector.record_request("m", ok=True, cached_tokens=5)
+
+        snap = collector.snapshot()
+
+        assert snap["requests"]["tokens"]["cache_hit_rate"] is None
+        assert snap["models"]["m"]["requests"]["tokens"]["cache_hit_rate"] \
+            is None
+
+    def test_dashboard_html_has_cache_hit_column(self):
+        # Static gate: the Token throughput table carries the new column.
+        assert "<th>Cache hit %</th>" in STATS_HTML
+        assert 'colspan="9"' in STATS_HTML
+        assert "fmtRate(toks.cache_hit_rate)" in STATS_HTML
+        assert 'fillRowless("token-models", 9)' in STATS_HTML
+
 
 # ---------------------------------------------------------------------------
 # Integration: token metrics through the real proxy path
@@ -1391,6 +1453,7 @@ class TestTokenMetricsIntegration:
         assert req["success"] == 1
         assert req["tokens"] == {
             "prompt": 12, "completion": 9, "cached": 3,
+            "cache_hit_rate": 0.25,
         }
         assert req["ttft_ms"]["count"] == 1
         assert req["ttft_ms"]["avg"] > 0  # loose: event-loop noise
@@ -1402,7 +1465,9 @@ class TestTokenMetricsIntegration:
         assert req["rates"]["prompt_tps"]["avg"] > 0
         # Per-model row mirrors the global record (AC8).
         row = data["models"]["model-a"]["requests"]
-        assert row["tokens"] == {"prompt": 12, "completion": 9, "cached": 3}
+        assert row["tokens"] == {
+            "prompt": 12, "completion": 9, "cached": 3, "cache_hit_rate": 0.25,
+        }
         assert row["ttft_ms"]["count"] == 1
         assert row["tpot_ms"]["count"] == 1
         assert row["rates"]["generation_tps"]["avg"] > 0
@@ -1500,7 +1565,9 @@ class TestTokenMetricsIntegration:
                 data = await (await client.get("/stats/json")).json()
 
         req = data["requests"]
-        assert req["tokens"] == {"prompt": 0, "completion": 0, "cached": 0}
+        assert req["tokens"] == {
+            "prompt": 0, "completion": 0, "cached": 0, "cache_hit_rate": None,
+        }
         # Content events were observed, so TTFT is still captured (AC4).
         assert req["ttft_ms"]["count"] == 1
         assert req["ttft_ms"]["avg"] > 0
@@ -1536,7 +1603,9 @@ class TestTokenMetricsIntegration:
                 data = await (await client.get("/stats/json")).json()
 
         req = data["requests"]
-        assert req["tokens"] == {"prompt": 7, "completion": 3, "cached": 2}
+        assert req["tokens"] == {
+            "prompt": 7, "completion": 3, "cached": 2, "cache_hit_rate": 2 / 7,
+        }
         assert req["ttft_ms"] is None  # non-streaming never contributes
         assert req["tpot_ms"] is None
         assert req["rates"]["prompt_tps"]["avg"] is None
@@ -1545,7 +1614,9 @@ class TestTokenMetricsIntegration:
         assert req["rates"]["generation_tps"]["last_60s"] == \
             pytest.approx(3 / 60)
         row = data["models"]["model-a"]["requests"]
-        assert row["tokens"] == {"prompt": 7, "completion": 3, "cached": 2}
+        assert row["tokens"] == {
+            "prompt": 7, "completion": 3, "cached": 2, "cache_hit_rate": 2 / 7,
+        }
         assert row["ttft_ms"] is None
 
     async def test_failed_stream_records_counters_not_timing(self, monkeypatch):
@@ -1584,7 +1655,9 @@ class TestTokenMetricsIntegration:
         assert req["success"] == 0
         assert req["errors"] == {"stream_error": 1}
         # Tokens recorded despite the failure.
-        assert req["tokens"] == {"prompt": 8, "completion": 4, "cached": 0}
+        assert req["tokens"] == {
+            "prompt": 8, "completion": 4, "cached": 0, "cache_hit_rate": 0.0,
+        }
         # No timing contributions for failed requests.
         assert req["ttft_ms"] is None
         assert req["tpot_ms"] is None
@@ -1673,7 +1746,9 @@ class TestTokenMetricsIntegration:
             "latency_ms", "bytes_in", "bytes_out",
             "tokens", "rates", "ttft_ms", "tpot_ms",
         }
-        assert set(req["tokens"]) == {"prompt", "completion", "cached"}
+        assert set(req["tokens"]) == {
+            "prompt", "completion", "cached", "cache_hit_rate",
+        }
         assert set(req["rates"]) == {"prompt_tps", "generation_tps"}
         assert set(req["rates"]["prompt_tps"]) == {"avg"}
         assert set(req["rates"]["generation_tps"]) == {
