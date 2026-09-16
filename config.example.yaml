@@ -19,6 +19,10 @@ llama-3.1-8b: "llama-server --model /path/to/llama-3.1-8b.gguf --port ${PORT} --
 # ninfer runs in the foreground and reports ready on /health after warm-up.
 qwen3.8-27b: "/path/to/ninfer/build/apps/ninfer-serve /path/to/models/qwen3_8_27b_nvfp4.ninfer --host 127.0.0.1 --port ${PORT}"
 
+# --- SGLang: match the config key to --served-model-name ---
+# sglang runs in the foreground; /health reports ready after warm-up.
+qwen2.5-7b-sglang: "sglang serve --model-path /path/to/Qwen2.5-7B-Instruct --served-model-name qwen2.5-7b-sglang --host 127.0.0.1 --port ${PORT}"
+
 # --- Mode 2: Natural command (port flag replaced) ---
 # Switcher auto-assigns a free port and replaces --port 8000 with it.
 mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port 8000 --ctx-size 4096"

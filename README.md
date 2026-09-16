@@ -42,6 +42,42 @@ mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port ${PORT}"
 - `${PORT}` — replaced at runtime with a free port.
 - Commands run in the foreground; the switcher manages their lifecycle.
 
+## SGLang
+
+[SGLang](https://docs.sglang.io/) works through the generic foreground-process interface. Follow its official [quickstart and installation guidance](https://docs.sglang.io/docs/get-started/quickstart) for your platform and accelerator, and confirm that the selected model fits the available device memory. The supported integration described here targets the OpenAI-compatible API behavior in [SGLang v0.5.19](https://github.com/sgl-project/sglang/releases/tag/v0.5.19).
+
+Use `sglang serve`, bind it to loopback, and make the config key, `--served-model-name`, and API request `model` identical:
+
+```yaml
+qwen2.5-7b-sglang: "sglang serve --model-path /path/to/Qwen2.5-7B-Instruct --served-model-name qwen2.5-7b-sglang --host 127.0.0.1 --port ${PORT}"
+```
+
+Model-switcher executes commands directly rather than through a shell. The `sglang` executable must therefore be available in the environment that runs model-switcher; shell activation, pipes, and inline environment assignments are not interpreted.
+
+During normal SGLang startup, `/health` returns 503 while model warm-up continues and 200 only when the server is ready, even though `/v1/models` may already return 200. Model-switcher treats an implemented `/health` endpoint as authoritative and uses `/v1/models` as a readiness fallback only when `/health` returns 404 or 405.
+
+OpenAI-compatible Chat Completions JSON and SSE streams are forwarded unchanged, including the terminal `data: [DONE]`. SGLang accepts the switcher's automatic `stream_options: {"include_usage": true}` addition for streamed Chat Completions. If the selected SGLang version and model expose `POST /v1/responses`, its named SSE events are also passed through unchanged; that endpoint is optional in SGLang and is not guaranteed by a successful health check. SGLang-native endpoints such as `/generate` are not covered by this integration.
+
+For a hardware-backed smoke check, start model-switcher with this config. Models start lazily, so in another terminal first send a model-selecting request; it will wait while SGLang starts:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen2.5-7b-sglang","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+Once the startup log shows SGLang's assigned port, inspect readiness and the advertised model ID. After `/health` returns 200 and the trigger request completes, repeat the non-streaming request above and then check streaming:
+
+```bash
+curl -i http://127.0.0.1:<assigned-port>/health
+curl http://127.0.0.1:<assigned-port>/v1/models
+curl -N http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen2.5-7b-sglang","messages":[{"role":"user","content":"Hello"}],"stream":true}'
+```
+
+On a swap or shutdown, model-switcher sends SIGTERM to SGLang's process group, waits for the existing grace period, and uses its forced-stop fallback if needed.
+
 ## NInfer
 
 [NInfer](https://github.com/Neroued/ninfer) works through the same foreground-process interface. At the time this support was added, NInfer required 64-bit Linux, an RTX 5090 (SM120a), CUDA Toolkit 13.1 or newer, and a supported `.ninfer` artifact; check its upstream documentation for current requirements and build instructions.

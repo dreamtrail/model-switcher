@@ -102,3 +102,17 @@
 - **Bare scalar in the `tokens` section** (not the `rates` object) — it is a derived ratio over counters, not a time-windowed rate; no windowed variants (lifetime only, matching `prompt_tps`).
 - **No clamping** — backends reporting cumulative/oversized cached counts yield ratios > 1, reported as-is (exact counts only, never estimate).
 - **Per-stream breakdown rejected** — user decision: keep aggregation as-is; per-request data exists at the `record_request` chokepoint if ever revisited.
+
+## P-20260916-01 — SGLang Compatibility
+
+### Backend Integration
+- **Reuse the generic foreground-command contract** — SGLang v0.5.19 supports `sglang serve`, assigned host/port flags, OpenAI-compatible HTTP/SSE, and process-group shutdown. No backend adapter, dependency, registry, command wrapper, or special log parser is needed.
+- **Align model IDs at launch** — the config key, SGLang's `--served-model-name`, and the request `model` must match. Model-switcher continues to forward model IDs unchanged rather than adding aliases or rewriting request bodies.
+- **Limit certification to OpenAI-compatible routes** — Chat Completions JSON/SSE is supported, including `stream_options.include_usage`. Responses API named-event passthrough is supported only when the selected SGLang version and model expose that optional endpoint. SGLang-native routes such as `/generate` remain out of scope.
+
+### Readiness
+- **Treat an implemented `/health` as authoritative** — SGLang exposes HTTP routes during warm-up: `/health` returns 503 while `/v1/models` can already return static metadata with 200. The primary health probe therefore does not follow redirects, and loading, unhealthy, authentication, server-error, and redirect statuses cannot be overridden by model discovery.
+- **Fallback only when `/health` is unsupported** — original 404 or 405 responses permit the existing `/v1/models` fallback. The fallback request retains its existing redirect behavior for servers without a health endpoint.
+
+### Verification Trade-off
+- **Use deterministic loopback fixtures in automation** — real model loading requires platform-specific SGLang installation, a compatible accelerator, large model artifacts, and material runtime. Tests exercise the real model-switcher config, readiness, and proxy paths against SGLang-shaped fixtures; README documents a non-gating hardware-backed smoke check.

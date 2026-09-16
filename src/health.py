@@ -22,7 +22,8 @@ async def wait_for_ready(
 ) -> None:
     """Poll an upstream server until it reports healthy.
 
-    Tries /health first, falls back to /v1/models.
+    Tries /health first, falling back to /v1/models only when /health is
+    unsupported.
 
     Args:
         port: Upstream port to poll.
@@ -34,7 +35,6 @@ async def wait_for_ready(
         TimeoutError: if the server does not become ready within timeout.
     """
     base = f"http://127.0.0.1:{port}"
-    endpoints = ["/health", "/v1/models"]
 
     own_client = client is None
     if client is None:
@@ -45,13 +45,31 @@ async def wait_for_ready(
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while True:
-            for ep in endpoints:
-                url = base + ep
+            health_status = None
+            try:
+                async with client.get(
+                    base + "/health", ssl=False, allow_redirects=False
+                ) as resp:
+                    health_status = resp.status
+                    if health_status == 200:
+                        logger.info(
+                            "Upstream on port %d is ready (/health)", port
+                        )
+                        return
+            except (
+                aiohttp.ClientError,
+                asyncio.TimeoutError,
+                ConnectionError,
+                OSError,
+            ):
+                pass  # not ready yet
+
+            if health_status in (404, 405):
                 try:
-                    async with client.get(url, ssl=False) as resp:
+                    async with client.get(base + "/v1/models", ssl=False) as resp:
                         if resp.status == 200:
                             logger.info(
-                                "Upstream on port %d is ready (%s)", port, ep
+                                "Upstream on port %d is ready (/v1/models)", port
                             )
                             return
                 except (
@@ -60,7 +78,7 @@ async def wait_for_ready(
                     ConnectionError,
                     OSError,
                 ):
-                    pass  # not ready yet or endpoint not supported
+                    pass  # fallback not ready yet
 
             if loop.time() > deadline:
                 raise TimeoutError(

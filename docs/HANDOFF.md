@@ -1,25 +1,28 @@
 ## Handoff Card
 
 - Goal: Keep model-switcher compatible with local AI servers and ready for the next planned improvement.
-- As-Of: 2026-09-14 10:35 UTC (2026-09-14 10:35 Z)
-- Branch/HEAD: master @ d2caaaa (before this handoff commit)
+- As-Of: 2026-09-16 02:04 UTC (2026-09-16 02:04 Z)
+- Branch/HEAD: master @ d14dd6c (before the P-20260916-01 commit)
 - Mode: FINISHED
 - Working On: P-20260913-03
 - Stop Point: docs/TODO.md "Next" — P-20260913-03 at top (size-hygiene refactor of tests/test_stats.py, now 1810 LOC).
 - Next Step: Run Discover, then prepare the plan for the Working On ID.
 - Key Decisions:
-  - Cache hit rate: `cached_tokens ÷ prompt_tokens`, token-weighted lifetime avg, per model + global; null when no prompt tokens; no clamping (documented in docs/DECISIONS.md).
-  - SSE pending line buffer capped at 64 KiB; non-line-shaped content discarded; byte counts stay exact.
-  - Per-stream throughput breakdown rejected by user decision — aggregation kept as-is.
+  - SGLang uses the generic foreground-process contract; no backend adapter, dependency, model rewriting, or native-endpoint support was added.
+  - An implemented `/health` endpoint is authoritative: original 200 is ready, only original 404/405 permits `/v1/models` fallback, and the primary probe does not follow redirects.
+  - SGLang config key, `--served-model-name`, and request `model` must match; OpenAI Chat Completions are supported, while Responses API passthrough remains version/model dependent.
 - Key Files:
-  - src/stats.py — StatsCollector + embedded HTML dashboard (single-writer of stats state; cache_hit_rate in _requests_report).
-  - src/swapper.py — instrumentation chokepoint + stats endpoints.
-  - docs/DECISIONS.md — design rationale through P-20260914-01.
-- Env Hints: `.venv` available; Python 3.13.5; no GPU required for tests (fake handles + TestServer pattern in tests/helpers.py).
-- Critical Context: Stats contract is additive; exact key sets pinned in tests/test_stats.py (13 `tokens` equality sites + key-set pin) — enumerate by grep, never from memory, when touching the tokens/rates shape. AST boundary tests enforce stats.py stdlib-only and proxy.py Outcome-only. `/stats` serves STATS_HTML verbatim → static string gates on the constant cover served HTML.
-- Completed Since Last: P-20260913-05, P-20260914-01
+  - src/health.py — authoritative `/health` readiness and narrow `/v1/models` fallback.
+  - config.example.yaml — copyable `sglang serve` foreground command.
+  - tests/test_sglang_compat.py — SGLang v0.5.19 protocol fixtures and end-to-end compatibility coverage.
+  - tests/test_health.py — readiness fallback, failure, and redirect regressions.
+  - docs/DECISIONS.md — SGLang integration and readiness rationale through P-20260916-01.
+- Env Hints: `.venv` available; Python 3.13.5; no GPU required for automated tests (loopback TestServer fixtures replace the expensive SGLang process).
+- Critical Context: SGLang v0.5.19 can return `/health` 503 during warm-up while `/v1/models` already returns 200. Do not broaden fallback beyond original 404/405 or re-enable redirects on the primary health probe. Automated wire fixtures cite immutable v0.5.19 source; real accelerator/model execution remains a manual smoke check.
+- Completed Since Last: P-20260916-01
 - Commands:
   - `.venv/bin/python -m compileall -q src`
+  - `.venv/bin/python -m pytest tests/test_sglang_compat.py tests/test_health.py tests/test_process_manager.py tests/test_port_rewrite.py tests/test_proxy.py --tb=short -q`
   - `.venv/bin/python -m pytest tests/ --tb=short -q`
-- Verification: 361/361 tests passed; implementation audit PASS; test audit PASS (zero P0/P1).
-- Risks/Blockers: none current; no deferred P2 items remain (P-20260913-05 and P-20260826-03 resolved).
+- Verification: 380/380 tests passed; targeted 149/149 passed; implementation audit PASS; test audit PASS after repair (zero P0/P1).
+- Risks/Blockers: none current; real SGLang accelerator/model smoke was not run and remains documented as non-gating.
