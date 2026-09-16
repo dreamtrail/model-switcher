@@ -1,28 +1,20 @@
 ## Handoff Card
 
 - Goal: Keep model-switcher compatible with local AI servers and ready for the next planned improvement.
-- As-Of: 2026-09-16 02:04 UTC (2026-09-16 02:04 Z)
-- Branch/HEAD: master @ d14dd6c (before the P-20260916-01 commit)
+- As-Of: 2026-09-16 02:18 UTC (2026-09-16 02:18 Z)
+- Branch/HEAD: master @ c951893 (before this handoff commit)
 - Mode: FINISHED
 - Working On: P-20260913-03
-- Stop Point: docs/TODO.md "Next" — P-20260913-03 at top (size-hygiene refactor of tests/test_stats.py, now 1810 LOC).
-- Next Step: Run Discover, then prepare the plan for the Working On ID.
+- Stop Point: `docs/TODO.md` Next — P-20260913-03.
+- Next Step: Run Discover and prepare the plan for the Working On ID.
 - Key Decisions:
-  - SGLang uses the generic foreground-process contract; no backend adapter, dependency, model rewriting, or native-endpoint support was added.
-  - An implemented `/health` endpoint is authoritative: original 200 is ready, only original 404/405 permits `/v1/models` fallback, and the primary probe does not follow redirects.
-  - SGLang config key, `--served-model-name`, and request `model` must match; OpenAI Chat Completions are supported, while Responses API passthrough remains version/model dependent.
-- Key Files:
-  - src/health.py — authoritative `/health` readiness and narrow `/v1/models` fallback.
-  - config.example.yaml — copyable `sglang serve` foreground command.
-  - tests/test_sglang_compat.py — SGLang v0.5.19 protocol fixtures and end-to-end compatibility coverage.
-  - tests/test_health.py — readiness fallback, failure, and redirect regressions.
-  - docs/DECISIONS.md — SGLang integration and readiness rationale through P-20260916-01.
-- Env Hints: `.venv` available; Python 3.13.5; no GPU required for automated tests (loopback TestServer fixtures replace the expensive SGLang process).
-- Critical Context: SGLang v0.5.19 can return `/health` 503 during warm-up while `/v1/models` already returns 200. Do not broaden fallback beyond original 404/405 or re-enable redirects on the primary health probe. Automated wire fixtures cite immutable v0.5.19 source; real accelerator/model execution remains a manual smoke check.
+  - SGLang uses the generic foreground-process contract without an adapter, dependency, model rewriting, or native-endpoint support.
+  - An implemented `/health` is authoritative; only original 404/405 permits `/v1/models` fallback, and the primary probe does not follow redirects.
+  - SGLang config key, `--served-model-name`, and request `model` must match; Responses API passthrough remains version/model dependent.
+- Key Files: `src/health.py` (readiness), `tests/test_sglang_compat.py` (v0.5.19 contract), `docs/DECISIONS.md` (rationale).
+- Env Hints: `.venv` available; Python 3.13.5; automated tests require no GPU.
+- Critical Context: SGLang v0.5.19 exposes `/v1/models` during warm-up while `/health` is 503; real accelerator/model smoke remains non-gating.
 - Completed Since Last: P-20260916-01
-- Commands:
-  - `.venv/bin/python -m compileall -q src`
-  - `.venv/bin/python -m pytest tests/test_sglang_compat.py tests/test_health.py tests/test_process_manager.py tests/test_port_rewrite.py tests/test_proxy.py --tb=short -q`
-  - `.venv/bin/python -m pytest tests/ --tb=short -q`
-- Verification: 380/380 tests passed; targeted 149/149 passed; implementation audit PASS; test audit PASS after repair (zero P0/P1).
-- Risks/Blockers: none current; real SGLang accelerator/model smoke was not run and remains documented as non-gating.
+- Commands: `.venv/bin/python -m compileall -q src`; targeted SGLang/health suite; `.venv/bin/python -m pytest tests/ --tb=short -q`.
+- Verification: 380/380 tests passed; targeted 149/149 passed; implementation and test audits PASS.
+- Risks/Blockers: none current.
