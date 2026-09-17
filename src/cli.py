@@ -101,7 +101,7 @@ async def _run_server(
     shutdown_event: asyncio.Event,
 ) -> None:
     """Run the aiohttp server."""
-    app = web.Application()
+    app = web.Application(client_max_size=100 * 1024**2)
     app.router.add_route("*", "/{path:.*}", swapper.handle_request)
 
     runner = web.AppRunner(app, shutdown_timeout=SERVER_SHUTDOWN_TIMEOUT)
