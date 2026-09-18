@@ -86,6 +86,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Unload idle model after duration (default: 30m; 0 disables)",
     )
     parser.add_argument(
+        "--quick-switch",
+        action="store_true",
+        default=False,
+        help=(
+            "Let a different-model request supersede a model that is still "
+            "loading (default: off)"
+        ),
+    )
+    parser.add_argument(
         "--timestamp",
         action="store_true",
         default=False,
@@ -158,6 +167,7 @@ async def _main(argv: list[str] | None = None) -> None:
         config,
         timeout=args.timeout,
         idle_timeout=args.idle_timeout,
+        quick_switch=args.quick_switch,
         client=client,
     )
 

@@ -10,6 +10,7 @@
 
 ## Done
 
+- [P-20260918-02] Add configurable quick switching for pending model loads — DONE 2026-09-18 06:00 UTC
 - [P-20260916-01] Add SGLang backend compatibility — DONE 2026-09-16 02:03 UTC
 - [P-20260914-01] Add cache hit rate metric (cached ÷ prompt, per model + global, dashboard column) — DONE 2026-09-14 09:58 UTC
 - [P-20260913-05] Cap SSE line buffer in `stream_proxy` (64 KiB, discard non-line-shaped content) — DONE 2026-09-14 08:36 UTC

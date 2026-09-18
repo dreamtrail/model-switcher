@@ -72,6 +72,23 @@ class TestParseArgs:
         args = parse_args(["--config", "config.yaml"])
         assert args.idle_timeout == 1800
 
+    def test_quick_switch_defaults_off_and_can_be_enabled(self):
+        """--quick-switch is a boolean opt-in and defaults off (AC1)."""
+        assert parse_args(["--config", "config.yaml"]).quick_switch is False
+        assert parse_args([
+            "--config", "config.yaml", "--quick-switch",
+        ]).quick_switch is True
+
+    def test_quick_switch_is_documented_in_help(self, capsys):
+        """CLI help documents supersession and the default-off policy (AC1)."""
+        with pytest.raises(SystemExit) as exc:
+            parse_args(["--help"])
+        assert exc.value.code == 0
+        help_text = capsys.readouterr().out
+        assert "--quick-switch" in help_text
+        assert "supersede" in help_text
+        assert "default: off" in help_text
+
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
@@ -142,10 +159,13 @@ class TestMainRuntime:
                 self.kwargs = kwargs
 
         class FakeSwapper:
-            def __init__(self, config, *, timeout, idle_timeout, client):
+            def __init__(
+                self, config, *, timeout, idle_timeout, quick_switch, client
+            ):
                 self.config = config
                 self.timeout = timeout
                 self.idle_timeout = idle_timeout
+                self.quick_switch = quick_switch
                 self.client = client
                 created_swappers.append(self)
 
@@ -170,7 +190,45 @@ class TestMainRuntime:
         assert created_swappers[0].config is config
         assert created_swappers[0].timeout == 60
         assert created_swappers[0].idle_timeout == expected_idle_timeout
+        assert created_swappers[0].quick_switch is False
         assert isinstance(created_swappers[0].client, FakeClientSession)
+
+    @pytest.mark.parametrize(
+        ("extra_args", "expected_quick_switch"),
+        [([], False), (["--quick-switch"], True)],
+    )
+    async def test_main_passes_quick_switch_to_swapper(
+        self, monkeypatch, extra_args, expected_quick_switch
+    ):
+        """_main wires the exact parsed quick-switch boolean (AC1)."""
+        captured = {}
+
+        class FakeClientSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class FakeSwapper:
+            def __init__(
+                self, config, *, timeout, idle_timeout, quick_switch, client
+            ):
+                self.config = config
+                captured["quick_switch"] = quick_switch
+
+            async def shutdown(self):
+                pass
+
+        async def fake_run_server(host, port, swapper, shutdown_event):
+            pass
+
+        config = type("Config", (), {"models": {"model-a": object()}})()
+        monkeypatch.setattr(cli_module, "load_config", lambda path: config)
+        monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)
+        monkeypatch.setattr(cli_module, "Swapper", FakeSwapper)
+        monkeypatch.setattr(cli_module, "_run_server", fake_run_server)
+
+        await cli_module._main(["--config", "config.yaml", *extra_args])
+
+        assert captured == {"quick_switch": expected_quick_switch}
 
     async def test_main_first_signal_starts_graceful_shutdown(
         self, monkeypatch
@@ -184,7 +242,9 @@ class TestMainRuntime:
                 pass
 
         class FakeSwapper:
-            def __init__(self, config, *, timeout, idle_timeout, client):
+            def __init__(
+                self, config, *, timeout, idle_timeout, quick_switch, client
+            ):
                 self.config = config
 
             async def shutdown(self):
@@ -225,7 +285,9 @@ class TestMainRuntime:
                 pass
 
         class FakeSwapper:
-            def __init__(self, config, *, timeout, idle_timeout, client):
+            def __init__(
+                self, config, *, timeout, idle_timeout, quick_switch, client
+            ):
                 self.config = config
 
             async def shutdown(self):

@@ -116,3 +116,31 @@
 
 ### Verification Trade-off
 - **Use deterministic loopback fixtures in automation** — real model loading requires platform-specific SGLang installation, a compatible accelerator, large model artifacts, and material runtime. Tests exercise the real model-switcher config, readiness, and proxy paths against SGLang-shaped fixtures; README documents a non-gating hardware-backed smoke check.
+
+## P-20260918-01 — Pending Load Supersession (Superseded)
+
+This proposal made pending-load supersession unconditional. It was superseded before user approval or implementation by P-20260918-02, which makes the behavior configurable. The cleanup-safety reasoning below was retained in the governing design, but this section does not describe current or planned behavior on its own.
+
+### Historical Proposal
+- A newer admitted request for a different model would supersede a pending load; the latest model would win, same-model requests would join, and obsolete requests would receive HTTP 409 `swap_superseded`.
+- Supersession would interrupt readiness only, preserving safe process-spawn, teardown, and active-proxy boundaries.
+- Replacement would require confirmed process-group cleanup; unconfirmed cleanup would fail closed with HTTP 503 `process_cleanup_failed`.
+
+## P-20260918-02 — Configurable Quick Switching
+
+### Configuration and Request Contract
+- **CLI-only opt-in** — `--quick-switch` is a boolean flag that defaults off. The flat YAML model schema is unchanged.
+- **Quick switch off** — requests for the model already loading join its bounded load. A different-model request is not queued and cannot mutate intent or readiness; it receives HTTP 409 with `error.code` set to `switch_in_progress`.
+- **Quick switch on** — the latest admitted different-model target wins, while same-target requests join. Obsolete requests receive HTTP 409 with `error.code` set to `swap_superseded`.
+- **Share start failures** — if process creation fails, the owner and same-target joiners receive HTTP 500 with `error.code` set to `model_start_failed`. The failed load is not retried automatically; a later independent request may retry.
+
+### Lifecycle and Cleanup Safety
+- **Interrupt readiness only** — supersession may cancel readiness for a started-but-unhealthy process, but not spawn, teardown, a healthy active proxy request, or other lifecycle work at unsafe boundaries.
+- **Confirm cleanup before replacement** — retain graceful SIGTERM, the existing grace period, and SIGKILL escalation. No replacement starts until the tracked parent/process group is confirmed absent.
+- **Fail closed** — unconfirmed cleanup returns HTTP 503 `process_cleanup_failed`, retains the unresolved process handle, and permits no replacement. Operator intervention may be required for an unkillable process.
+- **Own asynchronous lifecycle tasks explicitly** — spawn, readiness, and cleanup tasks must reach defined terminal states so external request cancellation cannot orphan a returned process or leave waiters hanging. A failed cancellation cleanup remains tracked and blocks replacement.
+- **Preserve shutdown statistics** — confirmed non-shutdown lifecycle stops are counted; shutdown termination, including a successful final retry, remains excluded from model-stop statistics.
+
+### Constraints and Rejected Alternatives
+- Keep the existing single-model architecture and bounded admission. Do not add a cancellation endpoint, dedicated worker, YAML setting, dependency, immediate-SIGKILL policy, or cancellation of healthy active proxy requests.
+- **Status** — implemented under P-20260918-02. The governing behavior is verified by deterministic lifecycle/race tests, the full automated suite, and independent implementation/test audits.

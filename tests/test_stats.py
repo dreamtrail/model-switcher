@@ -570,8 +570,10 @@ class TestProxiedRequestStats:
             assert row["errors"] == {"500": 1}
 
     async def test_upstream_connection_error_keyed_502(self, monkeypatch):
-        async with _stack(monkeypatch) as stack:
-            # Seed a handle pointing at a dead port — no upstream server.
+        async with _stack(
+            monkeypatch, extra_models=("model-a",)
+        ) as stack:
+            # Seed a configured handle pointing at a dead port — no upstream.
             handle = _fake_handle("model-a", port=19876)
             stack.swapper._current = handle
             stack.swapper._current_model = "model-a"
@@ -789,13 +791,13 @@ class TestRejectionStats:
 
 
 # ---------------------------------------------------------------------------
-# Integration: post-drain failure path (AC12)
+# Integration: pre-admission rejection accounting (P-20260918-02, AC8/AC11)
 # ---------------------------------------------------------------------------
 
 
-class TestPostDrainFailurePath:
+class TestPreAdmissionRejectionStats:
 
-    async def test_post_drain_unknown_model_returns_404_not_bare_500(
+    async def test_unknown_model_is_counted_without_queue_or_intent_change(
         self, monkeypatch
     ):
         upstream_app, _ = _make_upstream_with_config("model-a")
@@ -804,56 +806,55 @@ class TestPostDrainFailurePath:
         ) as stack:
             swapper = stack.swapper
             swapper._swapping = True
+            swapper._intent_generation = 4
+            swapper._desired_model = "model-a"
 
             async with TestClient(stack.proxy) as client:
-                task = asyncio.create_task(client.post(
+                resp = await client.post(
                     "/v1/chat/completions",
                     json={"model": "ghost", "prompt": "hi"},
-                ))
-                await _wait_for_queue(swapper)
-                swapper._swapping = False
-                await swapper._drain_queue()
-
-                resp = await task
-                assert resp.status == 404  # not a bare 500
+                )
+                assert resp.status == 404
                 data = await resp.json()
                 assert data["error"]["type"] == "invalid_request_error"
                 assert "Unknown model" in data["error"]["message"]
 
+            assert list(swapper._queue) == []
+            assert swapper._intent_generation == 4
+            assert swapper._desired_model == "model-a"
             snap = swapper.stats.snapshot()
             assert snap["requests"]["errors"] == {"404": 1}
-            assert snap["requests"]["total"] == 1  # exactly once
-            row = snap["models"]["ghost"]["requests"]
-            assert row["total"] == 1
-            assert row["errors"] == {"404": 1}
+            assert snap["models"]["ghost"]["requests"]["errors"] == {
+                "404": 1
+            }
 
-    async def test_post_drain_swap_timeout_returns_504(self, monkeypatch):
+    async def test_quick_off_refusal_is_counted_as_409_for_requested_model(
+        self, monkeypatch
+    ):
         async with _stack(
-            monkeypatch, extra_models=("timeout-model",), timeout=0.5
+            monkeypatch, extra_models=("model-a", "model-b")
         ) as stack:
             swapper = stack.swapper
             swapper._swapping = True
+            swapper._intent_generation = 8
+            swapper._desired_model = "model-a"
 
             async with TestClient(stack.proxy) as client:
-                task = asyncio.create_task(client.post(
-                    "/v1/chat/completions",
-                    json={"model": "timeout-model"},
-                ))
-                await _wait_for_queue(swapper)
-                swapper._swapping = False
-                await swapper._drain_queue()
+                resp = await client.post(
+                    "/v1/chat/completions", json={"model": "model-b"}
+                )
+                assert resp.status == 409
+                assert (await resp.json())["error"]["code"] == \
+                    "switch_in_progress"
 
-                resp = await task
-                assert resp.status == 504  # not a bare 500
-                data = await resp.json()
-                assert data["error"]["code"] == "swap_timeout"
-
+            assert list(swapper._queue) == []
+            assert swapper._intent_generation == 8
+            assert swapper._desired_model == "model-a"
             snap = swapper.stats.snapshot()
-            assert snap["requests"]["errors"] == {"504": 1}
-            assert snap["requests"]["total"] == 1  # exactly once
-            row = snap["models"]["timeout-model"]["requests"]
-            assert row["total"] == 1
-            assert row["errors"] == {"504": 1}
+            assert snap["requests"]["errors"] == {"409": 1}
+            assert snap["models"]["model-b"]["requests"]["errors"] == {
+                "409": 1
+            }
 
 
 # ---------------------------------------------------------------------------

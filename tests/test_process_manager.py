@@ -1,6 +1,8 @@
 """Tests for src/process_manager.py — upstream process lifecycle.
 
 Derived from plan acceptance criteria:
+- AC6/AC10/AC11: confirmed process/group teardown or contextual failure,
+  with log-drain finalization and no false stopped state
 - Process manager: start/stop, SIGTERM+3s->SIGKILL
 - Upstream logs captured without repeated model-name prefixes
 """
@@ -17,6 +19,8 @@ import logging
 
 from src.process_manager import (
     GRACE_PERIOD,
+    ProcessHandle,
+    ProcessStopError,
     _upstream_log_level,
     is_running,
     start_process,
@@ -123,6 +127,160 @@ class TestStopProcess:
         stdout_task = handle._stdout_task
         stderr_task = handle._stderr_task
         await stop_process(handle)
+        assert stdout_task.done()
+        assert stderr_task.done()
+
+    async def test_initial_group_probe_oserror_is_contextual_and_cleans_logs(
+        self, monkeypatch
+    ):
+        """An ordinary initial liveness-probe error fails closed (AC6/AC10)."""
+        import src.process_manager as process_manager
+
+        class ProbeFailureProcess:
+            pid = 4141
+            returncode = None
+
+        stdout_task = asyncio.create_task(asyncio.Event().wait())
+        stderr_task = asyncio.create_task(asyncio.Event().wait())
+        handle = ProcessHandle(
+            "probe-failure-model",
+            0,
+            ProbeFailureProcess(),
+            process_group_id=4141,
+            _stdout_task=stdout_task,
+            _stderr_task=stderr_task,
+        )
+        probe_error = OSError("probe failed")
+
+        def failed_probe(process_group_id):
+            assert process_group_id == 4141
+            raise probe_error
+
+        monkeypatch.setattr(
+            process_manager, "_process_group_exists", failed_probe
+        )
+
+        with pytest.raises(ProcessStopError) as exc_info:
+            await stop_process(handle)
+
+        assert exc_info.value.__cause__ is probe_error
+        assert str(exc_info.value) == (
+            "Could not confirm probe-failure-model (pid 4141) stopped"
+        )
+        assert handle.stopped is False
+        assert stdout_task.done()
+        assert stderr_task.done()
+
+    async def test_unconfirmed_stop_raises_and_leaves_handle_unstopped(
+        self, monkeypatch
+    ):
+        """Final unconfirmed parent/group state fails closed (AC6)."""
+        import src.process_manager as process_manager
+
+        class UnkillableProcess:
+            pid = 4242
+            returncode = None
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+        stdout_task = asyncio.create_task(asyncio.Event().wait())
+        stderr_task = asyncio.create_task(asyncio.Event().wait())
+        handle = ProcessHandle(
+            "stuck-model",
+            0,
+            UnkillableProcess(),
+            _stdout_task=stdout_task,
+            _stderr_task=stderr_task,
+        )
+
+        monkeypatch.setattr(
+            process_manager, "_signal_process_group", lambda *args: False
+        )
+
+        async def never_stopped(*args, **kwargs):
+            return False
+
+        monkeypatch.setattr(
+            process_manager, "_wait_for_stopped", never_stopped
+        )
+
+        with pytest.raises(
+            ProcessStopError,
+            match=r"stuck-model.*pid 4242.*stopped",
+        ):
+            await stop_process(handle)
+
+        assert handle.stopped is False
+        assert stdout_task.done()
+        assert stderr_task.done()
+
+    @pytest.mark.parametrize(
+        "failure_site",
+        ["terminate", "kill", "group_sigterm", "group_sigkill"],
+    )
+    async def test_raw_signal_failure_is_normalized_and_cleans_log_tasks(
+        self, monkeypatch, failure_site
+    ):
+        """Raw fallback/group signal errors become ProcessStopError (AC6/AC10)."""
+        import src.process_manager as process_manager
+
+        class FailingProcess:
+            pid = 4343
+            returncode = None
+
+            def terminate(self):
+                if failure_site == "terminate":
+                    raise PermissionError("terminate denied")
+
+            def kill(self):
+                if failure_site == "kill":
+                    raise PermissionError("kill denied")
+
+        stdout_task = asyncio.create_task(asyncio.Event().wait())
+        stderr_task = asyncio.create_task(asyncio.Event().wait())
+        handle = ProcessHandle(
+            "signal-failure-model",
+            0,
+            FailingProcess(),
+            process_group_id=4343,
+            _stdout_task=stdout_task,
+            _stderr_task=stderr_task,
+        )
+
+        def signal_group(_handle, sent_signal):
+            if (
+                failure_site == "group_sigterm"
+                and sent_signal == signal.SIGTERM
+            ):
+                raise PermissionError("group SIGTERM denied")
+            if (
+                failure_site == "group_sigkill"
+                and sent_signal == signal.SIGKILL
+            ):
+                raise PermissionError("group SIGKILL denied")
+            return False
+
+        async def never_stopped(*args, **kwargs):
+            return False
+
+        monkeypatch.setattr(
+            process_manager, "_signal_process_group", signal_group
+        )
+        monkeypatch.setattr(
+            process_manager, "_wait_for_stopped", never_stopped
+        )
+
+        with pytest.raises(ProcessStopError) as exc_info:
+            await stop_process(handle)
+
+        assert isinstance(exc_info.value.__cause__, PermissionError)
+        assert "signal-failure-model" in str(exc_info.value)
+        assert "pid 4343" in str(exc_info.value)
+        assert handle.stopped is False
         assert stdout_task.done()
         assert stderr_task.done()
 

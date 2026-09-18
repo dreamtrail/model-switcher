@@ -1,20 +1,20 @@
 ## Handoff Card
 
-- Goal: Keep model-switcher compatible with local AI servers and ready for the next planned improvement.
-- As-Of: 2026-09-16 02:18 UTC (2026-09-16 02:18 Z)
-- Branch/HEAD: master @ c951893 (before this handoff commit)
+- Goal: Keep model-switcher safe during slow model loads and ready for the next planned improvement.
+- As-Of: 2026-09-18 06:00 UTC (2026-09-18 15:00 KST)
+- Branch/HEAD: master @ 1cca01d (before the P-20260918-02 commit)
 - Mode: FINISHED
 - Working On: P-20260913-03
-- Stop Point: `docs/TODO.md` Next — P-20260913-03.
+- Stop Point: `docs/TODO.md:5` Next — P-20260913-03.
 - Next Step: Run Discover and prepare the plan for the Working On ID.
 - Key Decisions:
-  - SGLang uses the generic foreground-process contract without an adapter, dependency, model rewriting, or native-endpoint support.
-  - An implemented `/health` is authoritative; only original 404/405 permits `/v1/models` fallback, and the primary probe does not follow redirects.
-  - SGLang config key, `--served-model-name`, and request `model` must match; Responses API passthrough remains version/model dependent.
-- Key Files: `src/health.py` (readiness), `tests/test_sglang_compat.py` (v0.5.19 contract), `docs/DECISIONS.md` (rationale).
+  - `--quick-switch` is CLI-only, defaults off, and does not change the flat YAML schema.
+  - With quick switch off, same-target requests join the pending load and different targets receive 409 `switch_in_progress`; with it on, the latest admitted target wins and obsolete requests receive 409 `swap_superseded`.
+  - Process creation and cleanup fail deterministically as `model_start_failed` or `process_cleanup_failed`; replacement never starts before tracked cleanup is confirmed.
+- Key Files: `src/swapper.py` (admission/lifecycle), `src/process_manager.py` (fail-closed teardown), `tests/test_swapper_quick_switch.py` (concurrency contracts), `docs/DECISIONS.md` (rationale).
 - Env Hints: `.venv` available; Python 3.13.5; automated tests require no GPU.
-- Critical Context: SGLang v0.5.19 exposes `/v1/models` during warm-up while `/health` is 503; real accelerator/model smoke remains non-gating.
-- Completed Since Last: P-20260916-01
-- Commands: `.venv/bin/python -m compileall -q src`; targeted SGLang/health suite; `.venv/bin/python -m pytest tests/ --tb=short -q`.
-- Verification: 380/380 tests passed; targeted 149/149 passed; implementation and test audits PASS.
-- Risks/Blockers: none current.
+- Critical Context: Supersession cancels readiness only; spawn and cleanup reach terminal states. Shutdown and external cancellation retain unresolved handles and block replacement when cleanup cannot be confirmed.
+- Completed Since Last: P-20260918-02
+- Commands: `.venv/bin/python -m compileall -q src`; focused CLI/swapper/process/stats suite; `.venv/bin/python -m pytest tests/ --tb=short -q`; explicit POSIX process-group checks.
+- Verification: 420/420 tests passed; focused 211/211 passed; POSIX 2/2 passed without skips; implementation and test audits PASS.
+- Risks/Blockers: none current; deliberately detached process groups and unobservable non-POSIX descendants remain outside the cleanup guarantee.

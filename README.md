@@ -42,6 +42,20 @@ mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port ${PORT}"
 - `${PORT}` — replaced at runtime with a free port.
 - Commands run in the foreground; the switcher manages their lifecycle.
 
+## Quick Switching
+
+By default, a request for the model that is already loading joins that load. A request for a different model is refused immediately with HTTP 409 and `error.code: "switch_in_progress"`; it is not queued to trigger another slow load afterward.
+
+Enable quick switching when a newer different-model request should replace the pending target:
+
+```bash
+./run.sh --config config.yaml --quick-switch
+```
+
+With `--quick-switch`, the latest admitted model wins. Requests for the same target still join one load, while requests made obsolete by a newer target receive HTTP 409 with `error.code: "swap_superseded"`. Supersession interrupts readiness polling only: the obsolete model's process group is stopped before its replacement starts. If the requested model had already been stopped, switching back loads it again.
+
+Process creation failures return HTTP 500 with `error.code: "model_start_failed"`. If SIGTERM, the existing grace period, and SIGKILL cannot confirm that the old process group exited, switching fails closed with HTTP 503 and `error.code: "process_cleanup_failed"`; no replacement starts until cleanup is confirmed. Graceful cleanup can therefore delay a quick switch by several seconds, but prevents overlapping model servers and GPU-memory contention.
+
 ## SGLang
 
 [SGLang](https://docs.sglang.io/) works through the generic foreground-process interface. Follow its official [quickstart and installation guidance](https://docs.sglang.io/docs/get-started/quickstart) for your platform and accelerator, and confirm that the selected model fits the available device memory. The supported integration described here targets the OpenAI-compatible API behavior in [SGLang v0.5.19](https://github.com/sgl-project/sglang/releases/tag/v0.5.19).
@@ -158,6 +172,7 @@ Known limitations: these paths shadow upstreams serving the same paths (like `/v
 | `--port` | `8080` | Listen port |
 | `--timeout` | `60` | For positive values: total swap/non-stream timeout and stream connection/read-inactivity timeout (seconds); streams have no total lifetime limit |
 | `--idle-timeout` | `30m` | Unload idle model after duration (`900`, `900s`, `15m`, `1h`; `0` disables) |
+| `--quick-switch` | off | Let a newer different-model request supersede a model that is still loading |
 | `--timestamp` | off | Include timestamps in log output |
 | `--version` | — | Print version |
 

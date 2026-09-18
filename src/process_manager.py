@@ -14,6 +14,11 @@ logger = logging.getLogger(__name__)
 
 GRACE_PERIOD = 3  # seconds to wait after SIGTERM before SIGKILL
 
+
+class ProcessStopError(RuntimeError):
+    """Raised when a tracked process cannot be confirmed stopped."""
+
+
 _NINFER_LEVEL_RE = re.compile(
     r"^\s*\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\]\s+"
     r"\[(?P<level>INFO|WARNING|ERROR)\]\s+ninfer-serve:",
@@ -142,67 +147,116 @@ async def stop_process(handle: ProcessHandle) -> None:
     proc = handle.process
     pid = proc.pid
 
-    parent_already_exited = proc.returncode is not None
-    group_exists = _process_group_exists(handle.process_group_id)
+    signal_error: Exception | None = None
+    terminated = False
 
-    if parent_already_exited and not group_exists:
-        if handle.stopped:
-            logger.debug(
-                "%s (pid %s) already stopped (code %d); nothing to do",
+    try:
+        # Keep the initial liveness probe inside the same normalization and
+        # log-task finalization boundary as signaling and wait failures.
+        parent_already_exited = proc.returncode is not None
+        group_exists = _process_group_exists(handle.process_group_id)
+
+        if parent_already_exited and not group_exists:
+            if handle.stopped:
+                logger.debug(
+                    "%s (pid %s) already stopped (code %d); nothing to do",
+                    handle.model_name,
+                    pid,
+                    proc.returncode,
+                )
+            else:
+                logger.info(
+                    "%s (pid %s) already exited with code %d",
+                    handle.model_name,
+                    pid,
+                    proc.returncode,
+                )
+            handle.stopped = True
+            return
+
+        if parent_already_exited:
+            logger.info(
+                "%s (pid %s) already exited with code %d; "
+                "stopping remaining process group",
                 handle.model_name,
                 pid,
                 proc.returncode,
             )
         else:
             logger.info(
-                "%s (pid %s) already exited with code %d",
+                "Stopping %s (pid %s) with SIGTERM",
                 handle.model_name,
                 pid,
-                proc.returncode,
             )
-        handle.stopped = True
-        await _cancel_log_tasks(handle)
-        return
 
-    if parent_already_exited:
-        logger.info(
-            "%s (pid %s) already exited with code %d; "
-            "stopping remaining process group",
-            handle.model_name,
-            pid,
-            proc.returncode,
-        )
-    else:
-        logger.info("Stopping %s (pid %s) with SIGTERM", handle.model_name, pid)
+        try:
+            group_signaled = _signal_process_group(handle, signal.SIGTERM)
+        except Exception as exc:
+            group_signaled = False
+            signal_error = exc
+        if not group_signaled and proc.returncode is None:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+            except Exception as exc:
+                signal_error = exc
 
-    if not _signal_process_group(handle, signal.SIGTERM):
-        if proc.returncode is None:
-            proc.terminate()
+        try:
+            terminated = await _wait_for_stopped(handle, GRACE_PERIOD)
+        except Exception as exc:
+            signal_error = exc
 
-    terminated = await _wait_for_stopped(handle, GRACE_PERIOD)
-
-    if not terminated:
-        logger.warning(
-            "%s (pid %s) did not exit in %ds, sending SIGKILL",
-            handle.model_name,
-            pid,
-            GRACE_PERIOD,
-        )
-        if not _signal_process_group(handle, signal.SIGKILL):
-            if proc.returncode is None:
-                proc.kill()
-        terminated = await _wait_for_stopped(handle, 5)
         if not terminated:
-            logger.error(
-                "%s (pid %s) could not be killed", handle.model_name, pid
+            logger.warning(
+                "%s (pid %s) did not exit in %ds, sending SIGKILL",
+                handle.model_name,
+                pid,
+                GRACE_PERIOD,
             )
+            try:
+                group_signaled = _signal_process_group(
+                    handle, signal.SIGKILL
+                )
+            except Exception as exc:
+                group_signaled = False
+                signal_error = exc
+            if not group_signaled and proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                except Exception as exc:
+                    signal_error = exc
+            try:
+                terminated = await _wait_for_stopped(handle, 5)
+            except Exception as exc:
+                signal_error = exc
+            if not terminated:
+                logger.error(
+                    "%s (pid %s) could not be killed",
+                    handle.model_name,
+                    pid,
+                )
 
-    await _cancel_log_tasks(handle)
+        if not terminated:
+            error = ProcessStopError(
+                f"Could not confirm {handle.model_name} (pid {pid}) stopped"
+            )
+            if signal_error is not None:
+                raise error from signal_error
+            raise error
 
-    if terminated:
         logger.info("%s stopped", handle.model_name)
-
-    handle.stopped = True
+        handle.stopped = True
+    except ProcessStopError:
+        raise
+    except Exception as exc:
+        raise ProcessStopError(
+            f"Could not confirm {handle.model_name} (pid {pid}) stopped"
+        ) from exc
+    finally:
+        await _cancel_log_tasks(handle)
 
 
 def _signal_process_group(handle: ProcessHandle, sig: int) -> bool:
