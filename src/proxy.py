@@ -226,7 +226,10 @@ def _process_sse_line(line: bytes, outcome: Outcome) -> None:
     if not isinstance(event, dict):
         return
     if event.get("choices") and outcome.first_token_at is None:
-        outcome.first_token_at = time.monotonic()
+        first_token_at = time.monotonic()
+        outcome.first_token_at = first_token_at
+        if outcome.first_token_observer is not None:
+            outcome.first_token_observer(first_token_at)
     _apply_usage_dict(event, outcome)
 
 

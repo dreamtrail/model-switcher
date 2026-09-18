@@ -851,7 +851,14 @@ class Swapper:
     ) -> web.Response:
         """Proxy a request already recorded as active model usage."""
         started = time.monotonic()
-        outcome = Outcome()
+        decode_identity = object()
+        outcome = Outcome(
+            first_token_observer=lambda first_token_at: (
+                self.stats.record_decode_start(
+                    model_name, decode_identity, first_token_at,
+                )
+            ),
+        )
         resp: web.Response | None = None
         try:
             resp = await self._proxy_for_model(
@@ -877,6 +884,15 @@ class Swapper:
             if ok and outcome.first_token_at is not None:
                 ttft_s = outcome.first_token_at - started
                 decode_s = ended - outcome.first_token_at
+            self.stats.record_decode_end(
+                model_name,
+                decode_identity,
+                ended_at=ended,
+                ok=ok,
+                completion_tokens=(
+                    outcome.completion_tokens if ok else None
+                ),
+            )
             self.stats.record_request(
                 model_name,
                 ok=ok,

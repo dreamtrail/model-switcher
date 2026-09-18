@@ -139,7 +139,22 @@ Model-switcher tracks runtime statistics in memory (reset on restart) and serves
   },
   "throughput": {"last_60s": 5, "last_300s": 12, "avg_rpm": 0.7},
   "swaps": {"count": 2, "avg_ms": 1500.0, "p95_ms": 2100.0, "max_ms": 2100.0},
-  "models": {"llama-8b": {"starts": 1, "stops": 0, "requests": {"...": "..."}}}
+  "models": {
+    "llama-8b": {
+      "starts": 1,
+      "stops": 0,
+      "requests": {
+        "rates": {
+          "generation_tps": {
+            "avg": 38.1,
+            "last_60s": 41.5,
+            "last_300s": 39.0,
+            "max_aggregate": {"tps": 107.8, "concurrency": 3}
+          }
+        }
+      }
+    }
+  }
 }
 ```
 
@@ -159,6 +174,9 @@ Token metrics (when the upstream reports an OpenAI `usage` field):
   - `ttft_ms` (time to first token) — from proxy start to the first content chunk; captures queueing, prompt processing, and model behavior. Percentiles, not averages.
   - `tpot_ms` (time per output token) — decode-window time divided by `(completion_tokens - 1)`; requires at least 2 completion tokens.
   - `rates.generation_tps` — completion tokens per second of decode time (token-weighted), with trailing `last_60s`/`last_300s` windows; `rates.prompt_tps` — prompt tokens per second of time-to-first-token. The two rates are never blended.
+  - Per-model `rates.generation_tps.max_aggregate` is separate from those average and rolling rates. It retains the highest completed decode cohort as `{"tps": number, "concurrency": integer}` until restart; it is not added to the global generation-rate object.
+  - A cohort is a maximal connected group of positively overlapping decode intervals, from each request's first token through its final stream end. Its aggregate rate is the sum of exact completion tokens divided by the cohort's wall-clock span; concurrency is the peak number of simultaneously decoding eligible streams. Merely touching intervals are separate.
+  - Only successful streaming requests with exact usage reporting at least one completion token and a positive decode duration contribute. The dashboard's **Max Agg Gen t/s** column renders the result as `<tps>@<concurrency>` (for example, `107.8@3`) and shows `–` before an eligible cohort completes. A continuously overlapping cohort remains unpublished until it closes.
 - Non-streaming requests contribute token counts only; no timing split is observable from a single whole-body response.
 
 Known limitations: these paths shadow upstreams serving the same paths (like `/v1/models`); latency samples are unbounded in memory (fine for a local dev tool); requests naming unknown models each create a per-model stats row keyed by the client-supplied name; the pending SSE line buffer is capped (~64 KiB) — once the cap is hit, non-line-shaped content (e.g. a binary audio stream without newlines) is discarded, so token metrics may be absent for such streams (byte counts remain exact).

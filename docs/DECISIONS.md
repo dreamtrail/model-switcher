@@ -144,3 +144,18 @@ This proposal made pending-load supersession unconditional. It was superseded be
 ### Constraints and Rejected Alternatives
 - Keep the existing single-model architecture and bounded admission. Do not add a cancellation endpoint, dedicated worker, YAML setting, dependency, immediate-SIGKILL policy, or cancellation of healthy active proxy requests.
 - **Status** — implemented under P-20260918-02. The governing behavior is verified by deterministic lifecycle/race tests, the full automated suite, and independent implementation/test audits.
+
+## P-20260918-05 — Maximum Aggregate Generation Throughput
+
+### Measurement Contract
+- **Per-model completed cohorts only** — `models.<name>.requests.rates.generation_tps.max_aggregate` is either `null` or `{"tps": number, "concurrency": integer}`. The global generation-rate object remains unchanged. The dashboard renders this as **Max Agg Gen t/s**, using one decimal and `@` (for example, `107.8@3`), or `–` before data exists.
+- **Exact cohort rate** — a cohort is a maximal connected component of positively overlapping decode intervals. Its rate is the sum of exact completion tokens divided by the wall-clock span from the earliest first token to the latest final stream end; concurrency is the peak simultaneous decode count.
+- **Half-open intervals** — decode intervals are `[first token, stream end)`, so intervals that merely touch are separate and do not increase concurrency. Failed, cancelled, non-streaming, usage-less, zero-token, and nonpositive-duration requests are excluded and cannot bridge eligible cohorts.
+- **Strict lifetime maximum** — compare unrounded rates and replace only on a strict increase; equal rates keep the earlier result. State is per model, in memory, and resets with the process.
+
+### Lifecycle Boundary
+- **Observe without coupling the proxy to statistics** — the proxy reports the existing first-token timestamp through an optional synchronous outcome observer. The request lifecycle owns an opaque identity and always closes a started decode from its `finally` path; the statistics collector owns interval state, eligibility, cohort finalization, and reporting.
+- **Calculate after completion** — exact usage and final success are known only when a stream ends. Ended eligible components publish once no active interval can overlap or bridge them; unrelated non-overlapping activity does not delay publication.
+
+### Accepted Exactness Trade-off
+- **Preserve exact maximal cohorts rather than cap or approximate them** — the L4 interview outcome accepted delayed publication and potentially growing interval state while a continuously overlapping cohort remains unresolved. A cap, rolling window, average-times-concurrency estimate, or chunk/token estimate was rejected because it would change the requested metric's meaning. Once the overlap closes, temporary cohort state is finalized and only the per-model maximum remains.

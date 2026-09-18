@@ -18,6 +18,8 @@ import asyncio
 import ast
 import json
 import math
+import shutil
+import subprocess
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -1377,9 +1379,418 @@ class TestTokenMetricCollector:
     def test_dashboard_html_has_cache_hit_column(self):
         # Static gate: the Token throughput table carries the new column.
         assert "<th>Cache hit %</th>" in STATS_HTML
-        assert 'colspan="9"' in STATS_HTML
+        assert 'colspan="10"' in STATS_HTML
         assert "fmtRate(toks.cache_hit_rate)" in STATS_HTML
-        assert 'fillRowless("token-models", 9)' in STATS_HTML
+        assert 'fillRowless("token-models", 10)' in STATS_HTML
+
+
+# ---------------------------------------------------------------------------
+# Unit: maximum aggregate generation throughput (P-20260918-05, AC1-AC8)
+# ---------------------------------------------------------------------------
+
+
+class TestMaxAggregateGenerationThroughput:
+    """Collector-contract tests with plan-defined interval timestamps."""
+
+    @staticmethod
+    def _start(collector, model, request_id, started_at):
+        collector.record_decode_start(model, request_id, started_at)
+
+    @staticmethod
+    def _end(
+        collector, model, request_id, ended_at, completion_tokens, *, ok=True,
+    ):
+        collector.record_decode_end(
+            model,
+            request_id,
+            ended_at=ended_at,
+            ok=ok,
+            completion_tokens=completion_tokens,
+        )
+
+    @staticmethod
+    def _maximum(collector, model):
+        return collector.snapshot()["models"][model]["requests"]["rates"][
+            "generation_tps"
+        ]["max_aggregate"]
+
+    def test_overlapping_cohort_uses_exact_tokens_span_and_peak_concurrency(
+        self,
+    ):
+        # AC1: [0,10), [2,8), and [4,6) peak at three simultaneous decodes.
+        # Exact cohort formula: (10 + 20 + 30) / (10 - 0) = 6 t/s.
+        collector = StatsCollector()
+        for request_id, started_at in (("a", 0.0), ("b", 2.0), ("c", 4.0)):
+            self._start(collector, "m", request_id, started_at)
+
+        self._end(collector, "m", "c", 6.0, 30)
+        self._end(collector, "m", "b", 8.0, 20)
+        assert self._maximum(collector, "m") is None  # cohort still active
+        self._end(collector, "m", "a", 10.0, 10)
+
+        maximum = self._maximum(collector, "m")
+        assert maximum["tps"] == pytest.approx((10 + 20 + 30) / (10.0 - 0.0))
+        assert maximum["concurrency"] == 3
+
+    def test_transitive_positive_overlap_forms_one_maximal_cohort(self):
+        # AC2: A overlaps B and B overlaps C, although A does not overlap C.
+        collector = StatsCollector()
+        for request_id, started_at in (("a", 0.0), ("b", 2.0), ("c", 4.0)):
+            self._start(collector, "m", request_id, started_at)
+
+        self._end(collector, "m", "a", 3.0, 7)
+        self._end(collector, "m", "b", 5.0, 14)
+        self._end(collector, "m", "c", 7.0, 21)
+
+        assert self._maximum(collector, "m") == {
+            "tps": pytest.approx((7 + 14 + 21) / (7.0 - 0.0)),
+            "concurrency": 2,
+        }
+
+    def test_touching_half_open_intervals_are_independent_cohorts(self):
+        # AC1/AC2: [0,2) and [2,4) have no positive overlap. The first
+        # cohort can publish while the second remains active, each at @1.
+        collector = StatsCollector()
+        self._start(collector, "m", "first", 0.0)
+        self._start(collector, "m", "second", 2.0)
+
+        self._end(collector, "m", "first", 2.0, 10)
+        assert self._maximum(collector, "m") == {"tps": 5.0, "concurrency": 1}
+
+        self._end(collector, "m", "second", 4.0, 12)
+        assert self._maximum(collector, "m") == {"tps": 6.0, "concurrency": 1}
+
+    def test_ineligible_bridge_removal_publishes_earlier_component_incrementally(
+        self,
+    ):
+        # AC2: the unresolved bridge provisionally overlaps the early cohort.
+        # Once it ends ineligible it cannot connect that cohort to later work.
+        collector = StatsCollector()
+        self._start(collector, "m", "early", 0.0)
+        self._start(collector, "m", "bridge", 3.0)
+        self._end(collector, "m", "early", 4.0, 12)
+        assert self._maximum(collector, "m") is None
+
+        self._start(collector, "m", "later", 10.0)
+        self._end(collector, "m", "bridge", 12.0, 100, ok=False)
+
+        # The unrelated later decode is still active, but the early cohort is
+        # now final and publishes immediately: 12 / (4 - 0) = 3 t/s.
+        assert self._maximum(collector, "m") == {"tps": 3.0, "concurrency": 1}
+        self._end(collector, "m", "later", 14.0, 20)
+        assert self._maximum(collector, "m") == {"tps": 5.0, "concurrency": 1}
+
+    def test_maximum_replaces_only_on_strict_increase_and_keeps_first_tie(self):
+        # AC5: the equal-rate cohort has higher concurrency, making a tie
+        # replacement observable; the first 5@1 result must remain.
+        collector = StatsCollector()
+        self._start(collector, "m", "first", 0.0)
+        self._end(collector, "m", "first", 2.0, 10)
+
+        self._start(collector, "m", "lower", 5.0)
+        self._end(collector, "m", "lower", 7.0, 6)
+        assert self._maximum(collector, "m") == {"tps": 5.0, "concurrency": 1}
+
+        self._start(collector, "m", "tie-a", 10.0)
+        self._start(collector, "m", "tie-b", 11.0)
+        self._end(collector, "m", "tie-b", 13.0, 10)
+        self._end(collector, "m", "tie-a", 14.0, 10)
+        assert self._maximum(collector, "m") == {"tps": 5.0, "concurrency": 1}
+
+        self._start(collector, "m", "higher-a", 20.0)
+        self._start(collector, "m", "higher-b", 21.0)
+        self._end(collector, "m", "higher-b", 23.0, 12)
+        self._end(collector, "m", "higher-a", 24.0, 12)
+        assert self._maximum(collector, "m") == {"tps": 6.0, "concurrency": 2}
+
+    def test_huge_exact_tokens_do_not_poison_maximum_or_json(self):
+        # AC1/AC5/AC6 regression: converting an exact integer this large to a
+        # float would overflow. Recording must remain non-raising, publish no
+        # non-finite value, and leave the maximum open to a later valid cohort.
+        collector = StatsCollector()
+        self._start(collector, "m", "huge", 0.0)
+        self._end(collector, "m", "huge", 1.0, 10**400)
+
+        assert self._maximum(collector, "m") is None
+        model_stats = collector._models["m"]
+        assert model_stats.max_aggregate_tps is None
+        assert model_stats.max_aggregate_concurrency is None
+        json.dumps(collector.snapshot(), allow_nan=False)
+
+        self._start(collector, "m", "finite", 10.0)
+        self._end(collector, "m", "finite", 12.0, 12)
+
+        assert self._maximum(collector, "m") == {
+            "tps": 6.0,
+            "concurrency": 1,
+        }
+        json.dumps(collector.snapshot(), allow_nan=False)
+
+    def test_higher_unrounded_rate_replaces_equal_display_rate(self):
+        # AC5: both candidates display as 107.7 to one decimal, but maximum
+        # comparison uses their distinct unrounded rates. Distinct concurrency
+        # makes replacement by the 107.74 candidate directly observable.
+        collector = StatsCollector()
+        self._start(collector, "m", "first", 0.0)
+        self._end(collector, "m", "first", 100.0, 10_771)
+        first = self._maximum(collector, "m")
+
+        self._start(collector, "m", "higher-a", 200.0)
+        self._start(collector, "m", "higher-b", 225.0)
+        self._end(collector, "m", "higher-b", 275.0, 5_774)
+        self._end(collector, "m", "higher-a", 300.0, 5_000)
+        higher = self._maximum(collector, "m")
+
+        assert first == {"tps": pytest.approx(107.71), "concurrency": 1}
+        assert higher == {"tps": pytest.approx(107.74), "concurrency": 2}
+        assert f"{first['tps']:.1f}" == f"{higher['tps']:.1f}" == "107.7"
+
+    def test_maximum_is_per_model_and_resets_with_a_fresh_collector(self):
+        # AC5: lifetime scope is one collector/process, isolated by model.
+        collector = StatsCollector()
+        self._start(collector, "a", "a-request", 0.0)
+        self._end(collector, "a", "a-request", 2.0, 10)
+        self._start(collector, "b", "b-request", 0.0)
+        self._end(collector, "b", "b-request", 3.0, 21)
+
+        assert self._maximum(collector, "a") == {"tps": 5.0, "concurrency": 1}
+        assert self._maximum(collector, "b") == {"tps": 7.0, "concurrency": 1}
+
+        fresh = StatsCollector()
+        fresh.record_model_start("a")
+        assert self._maximum(fresh, "a") is None
+
+    def test_duplicate_start_and_end_are_idempotent_by_request_identity(self):
+        # AC3: the first observation owns the identity; repeated completion is
+        # harmless and cannot replace its exact final usage.
+        collector = StatsCollector()
+        self._start(collector, "m", "request", 0.0)
+        self._start(collector, "m", "request", 99.0)
+        self._end(collector, "m", "request", 2.0, 10)
+        self._end(collector, "m", "request", 3.0, 999)
+
+        assert self._maximum(collector, "m") == {"tps": 5.0, "concurrency": 1}
+
+    def test_all_ineligible_decode_outcomes_leave_maximum_null(self):
+        # AC4: each model exercises one exclusion without sharing state.
+        collector = StatsCollector()
+        cases = {
+            "missing-usage": (0.0, 1.0, None, True),
+            "zero-tokens": (0.0, 1.0, 0, True),
+            "zero-duration": (1.0, 1.0, 5, True),
+            "negative-duration": (2.0, 1.0, 5, True),
+            "nonfinite-timing": (0.0, math.inf, 5, True),
+            "failure": (0.0, 1.0, 5, False),
+            "stream-error": (0.0, 1.0, 5, False),
+            "cancellation": (0.0, 1.0, 5, False),
+        }
+        for model, (started_at, ended_at, tokens, ok) in cases.items():
+            self._start(collector, model, model, started_at)
+            self._end(collector, model, model, ended_at, tokens, ok=ok)
+
+        # Missing first-token/timing: an end for an unknown identity is a no-op.
+        collector.record_model_start("missing-first-token")
+        self._end(collector, "missing-first-token", "never-started", 1.0, 5)
+        # Non-streaming usage still belongs to existing token metrics only.
+        collector.record_request(
+            "non-stream", ok=True, completion_tokens=50,
+        )
+
+        for model in (*cases, "missing-first-token", "non-stream"):
+            assert self._maximum(collector, model) is None
+
+    def test_nonpositive_synthetic_duration_keeps_existing_average_behavior(self):
+        # AC4/AC8 compatibility: the new positive-duration rule must not be
+        # backported into the established weighted-average accumulator.
+        collector = StatsCollector()
+        collector.record_request(
+            "m", ok=True, completion_tokens=10, decode_s=1.0,
+        )
+        collector.record_request(
+            "m", ok=True, completion_tokens=5, decode_s=-0.25,
+        )
+
+        generation = collector.snapshot()["models"]["m"]["requests"][
+            "rates"
+        ]["generation_tps"]
+        assert generation["avg"] == pytest.approx((10 + 5) / (1.0 - 0.25))
+        assert generation["max_aggregate"] is None
+
+    def test_global_and_per_model_generation_rate_shapes_are_deliberately_distinct(
+        self,
+    ):
+        # AC6: max_aggregate is per-model only and null before completion.
+        collector = StatsCollector()
+        collector.record_model_start("m")
+        snap = collector.snapshot()
+
+        assert snap["requests"]["rates"]["generation_tps"] == {
+            "avg": None,
+            "last_60s": 0.0,
+            "last_300s": 0.0,
+        }
+        assert snap["models"]["m"]["requests"]["rates"]["generation_tps"] == {
+            "avg": None,
+            "last_60s": 0.0,
+            "last_300s": 0.0,
+            "max_aggregate": None,
+        }
+
+    def test_dashboard_has_maximum_header_cell_and_ten_column_fallback(self):
+        # AC7: table shape and per-model field wiring.
+        assert "<th>Max Agg Gen t/s</th>" in STATS_HTML
+        assert '<tbody id="token-models"><tr><td colspan="10">–</td>' in STATS_HTML
+        assert 'fillRowless("token-models", 10)' in STATS_HTML
+        assert "fmtMaxAggregateTps(gt.max_aggregate)" in STATS_HTML
+
+    @staticmethod
+    def _execute_dashboard_javascript(expression):
+        """Run the actual embedded script with a minimal, browserless DOM."""
+        # Resolve Node through PATH rather than assuming a platform-specific
+        # install location. It is a required test prerequisite because AC7
+        # must execute the embedded JavaScript rather than silently skip it.
+        node = shutil.which("node")
+        if node is None:
+            pytest.fail(
+                "Node.js is required to execute the embedded-JS AC7 tests"
+            )
+        script = STATS_HTML.split("<script>", 1)[1].split("</script>", 1)[0]
+        harness = r'''
+class Element {
+  constructor(tagName, id = null) {
+    this.tagName = tagName;
+    this.id = id;
+    this.children = [];
+    this._textContent = "";
+    this.colSpan = 1;
+  }
+  set textContent(value) {
+    this._textContent = String(value);
+    if (value === "") this.children = [];
+  }
+  get textContent() {
+    return this.children.length
+      ? this.children.map((child) => child.textContent).join("")
+      : this._textContent;
+  }
+  appendChild(child) { this.children.push(child); return child; }
+}
+const elements = new Map([
+  ["token-models", new Element("tbody", "token-models")],
+]);
+const document = {
+  getElementById(id) { return elements.get(id) || null; },
+  createElement(tagName) { return new Element(tagName); },
+};
+function fetch() { return new Promise(() => {}); }
+function setInterval() { return 0; }
+'''
+        completed = subprocess.run(
+            [node, "-"],
+            input=harness + script + "\n" + expression,
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        return json.loads(completed.stdout)
+
+    @pytest.mark.parametrize(
+        ("value_expression", "expected"),
+        [
+            ("{tps: 107.76, concurrency: 3}", "107.8@3"),
+            ("null", "–"),
+            ("42", "–"),
+            ('"primitive"', "–"),
+            ("true", "–"),
+            ("[]", "–"),
+            ("{tps: NaN, concurrency: 1}", "–"),
+            ("{tps: Infinity, concurrency: 1}", "–"),
+            ("{tps: -Infinity, concurrency: 1}", "–"),
+            ("{tps: 0, concurrency: 1}", "–"),
+            ("{tps: -1, concurrency: 1}", "–"),
+            ("{concurrency: 1}", "–"),
+            ("{tps: 1}", "–"),
+            ("{tps: 1, concurrency: 1.5}", "–"),
+            ("{tps: 1, concurrency: 0}", "–"),
+            ("{tps: 1, concurrency: -1}", "–"),
+        ],
+    )
+    def test_dashboard_executes_maximum_formatter_contract(
+        self, value_expression, expected,
+    ):
+        # AC7: execute the shipped formatter itself, including JavaScript-only
+        # non-finite values that cannot be represented in strict JSON.
+        output = self._execute_dashboard_javascript(
+            "console.log(JSON.stringify(fmtMaxAggregateTps("
+            + value_expression
+            + ")));"
+        )
+        assert output == expected
+
+    def test_dashboard_rendered_maximum_cell_has_observable_text(self):
+        # AC7: exercise the actual table renderer and DOM textContent result,
+        # not merely the formatter's source or return value.
+        output = self._execute_dashboard_javascript(r'''
+renderTokenModels({
+  "model-a": {
+    requests: {
+      tokens: {prompt: 12, completion: 9, cached: 3, cache_hit_rate: 0.25},
+      rates: {
+        prompt_tps: {avg: 4},
+        generation_tps: {
+          avg: 9,
+          max_aggregate: {tps: 107.76, concurrency: 3},
+        },
+      },
+      ttft_ms: {p50: 10, p95: 20},
+    },
+  },
+});
+const rendered = document.getElementById("token-models");
+console.log(JSON.stringify({
+  rows: rendered.children.length,
+  cells: rendered.children[0].children.length,
+  maximumText: rendered.children[0].children[7].textContent,
+}));
+''')
+        assert output == {"rows": 1, "cells": 10, "maximumText": "107.8@3"}
+
+    def test_dashboard_formats_valid_maximum_to_one_decimal_at_concurrency(self):
+        # Preserve the static wiring gate alongside executable JS coverage.
+        assert 'return v.tps.toFixed(1) + "@" + v.concurrency;' in STATS_HTML
+
+    @pytest.mark.parametrize(
+        "invalid_contract",
+        [
+            # null, primitive/non-object, and array values
+            'if (!v || typeof v !== "object" || Array.isArray(v)) return DASH;',
+            # missing/non-number/nonfinite/nonpositive tps
+            'typeof v.tps === "number" && Number.isFinite(v.tps) && v.tps > 0',
+            # missing/non-number/non-integer/nonpositive concurrency
+            'typeof v.concurrency === "number" &&\n'
+            '        Number.isInteger(v.concurrency) && v.concurrency > 0',
+        ],
+    )
+    def test_dashboard_malformed_maximum_contract_falls_back_to_dash(
+        self, invalid_contract,
+    ):
+        # AC7 static formatter contract: each complete validation guard leads
+        # to DASH, without requiring a browser/runtime dependency.
+        formatter = STATS_HTML.split(
+            "function fmtMaxAggregateTps(v) {", 1
+        )[1].split("\n}\n\nfunction fmtBytes", 1)[0]
+        assert invalid_contract in formatter
+        assert "return DASH;" in formatter
+        assert 'const DASH = "–"' in STATS_HTML
+
+    def test_dashboard_keeps_safe_dom_writes_and_refresh_behavior(self):
+        # AC7/AC8: text-only rendering and existing polling are unchanged.
+        assert ".innerHTML" not in STATS_HTML
+        assert ".textContent" in STATS_HTML
+        assert 'fetch("/stats/json")' in STATS_HTML
+        assert "setInterval(refresh, 5000)" in STATS_HTML
 
 
 # ---------------------------------------------------------------------------
@@ -1426,9 +1837,39 @@ class TestTokenMetricsIntegration:
             return resp
 
         upstream_app = _make_app(chat)
+        decode_starts = []
+        decode_ends = []
         async with _stack(
             monkeypatch, {"model-a": upstream_app}, seed="model-a"
         ) as stack:
+            original_start = stack.swapper.stats.record_decode_start
+            original_end = stack.swapper.stats.record_decode_end
+
+            def capture_start(model, request_id, started_at):
+                decode_starts.append((model, request_id, started_at))
+                original_start(model, request_id, started_at)
+
+            def capture_end(
+                model, request_id, *, ended_at, ok, completion_tokens,
+            ):
+                decode_ends.append(
+                    (model, request_id, ended_at, ok, completion_tokens)
+                )
+                original_end(
+                    model,
+                    request_id,
+                    ended_at=ended_at,
+                    ok=ok,
+                    completion_tokens=completion_tokens,
+                )
+
+            monkeypatch.setattr(
+                stack.swapper.stats, "record_decode_start", capture_start
+            )
+            monkeypatch.setattr(
+                stack.swapper.stats, "record_decode_end", capture_end
+            )
+
             async with TestClient(stack.proxy) as client:
                 resp = await client.post(
                     "/v1/chat/completions",
@@ -1440,6 +1881,17 @@ class TestTokenMetricsIntegration:
                 assert '"usage"' in text  # usage chunk flows to the client
 
                 data = await (await client.get("/stats/json")).json()
+
+        # AC3: two content events trigger one start, associated to the one
+        # matching end by an opaque request identity and exact final usage.
+        assert len(decode_starts) == len(decode_ends) == 1
+        start_model, start_identity, started_at = decode_starts[0]
+        end_model, end_identity, ended_at, end_ok, end_tokens = decode_ends[0]
+        assert start_model == end_model == "model-a"
+        assert start_identity is end_identity
+        assert ended_at > started_at
+        assert end_ok is True
+        assert end_tokens == 9
 
         # AC1: upstream received the injected stream_options with a
         # Content-Length consistent with the mutated body.
@@ -1472,6 +1924,98 @@ class TestTokenMetricsIntegration:
         assert row["ttft_ms"]["count"] == 1
         assert row["tpot_ms"]["count"] == 1
         assert row["rates"]["generation_tps"]["avg"] > 0
+
+    async def test_cancellation_after_first_token_cleans_up_and_propagates(
+        self, monkeypatch,
+    ):
+        # AC3/AC4: cancellation must close the matching started identity as
+        # ineligible, re-raise CancelledError, and not strand later cohorts.
+        upstream_app, _ = _make_upstream_with_config("model-a")
+        first_token_seen = asyncio.Event()
+        calls = 0
+        starts = []
+        ends = []
+
+        async with _stack(
+            monkeypatch, {"model-a": upstream_app}, seed="model-a"
+        ) as stack:
+            stats = stack.swapper.stats
+            original_start = stats.record_decode_start
+            original_end = stats.record_decode_end
+
+            def capture_start(model, request_id, started_at):
+                starts.append((model, request_id))
+                original_start(model, request_id, started_at)
+
+            def capture_end(
+                model, request_id, *, ended_at, ok, completion_tokens,
+            ):
+                ends.append((model, request_id, ok, completion_tokens))
+                original_end(
+                    model,
+                    request_id,
+                    ended_at=ended_at,
+                    ok=ok,
+                    completion_tokens=completion_tokens,
+                )
+
+            monkeypatch.setattr(stats, "record_decode_start", capture_start)
+            monkeypatch.setattr(stats, "record_decode_end", capture_end)
+
+            async def controlled_proxy(
+                request, model_name, body, handle, outcome,
+            ):
+                nonlocal calls
+                calls += 1
+                started_at = time.monotonic()
+                outcome.first_token_at = started_at
+                outcome.first_token_observer(started_at)
+                if calls == 1:
+                    first_token_seen.set()
+                    await asyncio.Future()
+                outcome.completion_tokens = 6
+                await asyncio.sleep(0)
+                return web.Response(status=200, body=b"ok")
+
+            monkeypatch.setattr(
+                stack.swapper, "_proxy_for_model", controlled_proxy
+            )
+            handle = stack.swapper._current
+
+            stack.swapper._begin_activity()
+            cancelled = asyncio.create_task(
+                stack.swapper._proxy_with_recorded_activity(
+                    SimpleNamespace(), "model-a", None, handle,
+                )
+            )
+            await first_token_seen.wait()
+            cancelled.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await cancelled
+
+            generation = stats.snapshot()["models"]["model-a"]["requests"][
+                "rates"
+            ]["generation_tps"]
+            assert generation["max_aggregate"] is None
+
+            stack.swapper._begin_activity()
+            response = await stack.swapper._proxy_with_recorded_activity(
+                SimpleNamespace(), "model-a", None, handle,
+            )
+            assert response.status == 200
+
+            maximum = stats.snapshot()["models"]["model-a"]["requests"][
+                "rates"
+            ]["generation_tps"]["max_aggregate"]
+            assert maximum["tps"] > 0
+            assert maximum["concurrency"] == 1
+
+        assert len(starts) == len(ends) == 2
+        assert starts[0][1] is ends[0][1]
+        assert starts[1][1] is ends[1][1]
+        assert starts[0][1] is not starts[1][1]
+        assert ends[0][2:] == (False, None)
+        assert ends[1][2:] == (True, 6)
 
     async def test_pre_first_chunk_delay_lands_in_ttft_not_decode(
         self, monkeypatch,
@@ -1576,6 +2120,9 @@ class TestTokenMetricsIntegration:
         assert req["rates"]["generation_tps"]["avg"] is None  # AC6
         assert req["rates"]["prompt_tps"]["avg"] is None
         assert req["rates"]["generation_tps"]["last_60s"] == 0.0
+        assert data["models"]["model-a"]["requests"]["rates"][
+            "generation_tps"
+        ]["max_aggregate"] is None
 
     async def test_buffered_with_usage_records_counters_no_timing(
         self, monkeypatch,
@@ -1619,51 +2166,137 @@ class TestTokenMetricsIntegration:
             "prompt": 7, "completion": 3, "cached": 2, "cache_hit_rate": 2 / 7,
         }
         assert row["ttft_ms"] is None
+        assert row["rates"]["generation_tps"]["max_aggregate"] is None
 
     async def test_failed_stream_records_counters_not_timing(self, monkeypatch):
-        # Decision 7: timing metrics only for successful requests; token
-        # counters whenever usage was extractable, regardless of status.
+        # Decision 7 and AC3/AC4: a real mid-stream transport failure keeps
+        # streamed response behavior and ordinary usage counters, but closes
+        # exactly the matching decode identity without an aggregate token
+        # contribution. A later real stream must still be publishable.
+        calls = 0
+
         async def chat(request):
+            nonlocal calls
+            calls += 1
             resp = web.StreamResponse(
                 status=200,
                 headers={"Content-Type": "text/event-stream"},
             )
             await resp.prepare(request)
+            content = b"Hi" if calls == 1 else b"Bye"
             await resp.write(
-                b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
+                b'data: {"choices":[{"delta":{"content":"'
+                + content
+                + b'"}}]}\n\n'
             )
+            if calls == 1:
+                await resp.write(
+                    b'data: {"choices":[],"usage":{"prompt_tokens":8,'
+                    b'"completion_tokens":4}}\n\n'
+                )
+                # Crash the writer without write_eof — mid-stream failure.
+                await resp.writer.close()
+                return resp
             await resp.write(
-                b'data: {"choices":[],"usage":{"prompt_tokens":8,'
-                b'"completion_tokens":4}}\n\n'
+                b'data: {"choices":[],"usage":{"prompt_tokens":5,'
+                b'"completion_tokens":6}}\n\n'
             )
-            # Crash the writer without write_eof — mid-stream failure.
-            await resp.writer.close()
+            await resp.write_eof()
             return resp
 
+        starts = []
+        ends = []
         upstream_app = _make_app(chat)
         async with _stack(
             monkeypatch, {"model-a": upstream_app}, seed="model-a"
         ) as stack:
+            stats = stack.swapper.stats
+            original_start = stats.record_decode_start
+            original_end = stats.record_decode_end
+
+            def capture_start(model, request_id, started_at):
+                starts.append((model, request_id, started_at))
+                original_start(model, request_id, started_at)
+
+            def capture_end(
+                model, request_id, *, ended_at, ok, completion_tokens,
+            ):
+                ends.append(
+                    (model, request_id, ended_at, ok, completion_tokens)
+                )
+                original_end(
+                    model,
+                    request_id,
+                    ended_at=ended_at,
+                    ok=ok,
+                    completion_tokens=completion_tokens,
+                )
+
+            monkeypatch.setattr(stats, "record_decode_start", capture_start)
+            monkeypatch.setattr(stats, "record_decode_end", capture_end)
+
             async with TestClient(stack.proxy) as client:
-                resp = await client.post(
+                failed = await client.post(
                     "/v1/chat/completions",
                     json={"model": "model-a", "stream": True},
                 )
-                assert resp.status == 200  # headers already committed
-                await resp.text()
+                assert failed.status == 200  # headers already committed
+                failed_text = await failed.text()
+                assert '"content":"Hi"' in failed_text
+                assert "error" in failed_text.lower()  # injected SSE payload
 
-        req = stack.swapper.stats.snapshot()["requests"]
-        assert req["success"] == 0
-        assert req["errors"] == {"stream_error": 1}
-        # Tokens recorded despite the failure.
-        assert req["tokens"] == {
+                # Exactly one observed start is matched by one ineligible end;
+                # extracted usage remains on ordinary counters, never on the
+                # aggregate event or retained frontier.
+                assert len(starts) == len(ends) == 1
+                assert starts[0][0] == ends[0][0] == "model-a"
+                assert starts[0][1] is ends[0][1]
+                assert ends[0][2] >= starts[0][2]
+                assert ends[0][3:] == (False, None)
+                model_stats = stats._models["model-a"]
+                assert model_stats.active_decodes == {}
+                assert model_stats.decode_frontier == []
+
+                failed_snap = stats.snapshot()
+                failed_req = failed_snap["requests"]
+                assert failed_snap["models"]["model-a"]["requests"][
+                    "rates"
+                ]["generation_tps"]["max_aggregate"] is None
+
+                eligible = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": "model-a", "stream": True},
+                )
+                assert eligible.status == 200
+                eligible_text = await eligible.text()
+                assert '"content":"Bye"' in eligible_text
+                assert "error" not in eligible_text.lower()
+
+                # A subsequent request to the real stats endpoint also gives
+                # the completed stream handler's finally path a deterministic
+                # scheduling boundary before observing its publication.
+                published = await (await client.get("/stats/json")).json()
+                maximum = published["models"]["model-a"]["requests"][
+                    "rates"
+                ]["generation_tps"]["max_aggregate"]
+                assert maximum["tps"] > 0
+                assert maximum["concurrency"] == 1
+
+        # Preserve all prior failed-stream accounting assertions.
+        assert failed_req["success"] == 0
+        assert failed_req["errors"] == {"stream_error": 1}
+        assert failed_req["tokens"] == {
             "prompt": 8, "completion": 4, "cached": 0, "cache_hit_rate": 0.0,
         }
-        # No timing contributions for failed requests.
-        assert req["ttft_ms"] is None
-        assert req["tpot_ms"] is None
-        assert req["rates"]["generation_tps"]["avg"] is None
-        assert req["rates"]["prompt_tps"]["avg"] is None
+        assert failed_req["ttft_ms"] is None
+        assert failed_req["tpot_ms"] is None
+        assert failed_req["rates"]["generation_tps"]["avg"] is None
+        assert failed_req["rates"]["prompt_tps"]["avg"] is None
+
+        assert len(starts) == len(ends) == 2
+        assert starts[1][1] is ends[1][1]
+        assert starts[0][1] is not starts[1][1]
+        assert ends[1][3:] == (True, 6)
 
     async def test_windowed_generation_tps_integration_sanity(
         self, monkeypatch,
@@ -1766,11 +2399,25 @@ class TestTokenMetricsIntegration:
         assert req["latency_ms"]["count"] == 1
         assert req["bytes_in"] > 0
         assert req["bytes_out"] > 0
-        # Per-model row: same shape, same values.
+        # Per-model requests retain the global shape except for the scoped
+        # maximum aggregate generation-rate field (P-20260918-05, AC6).
         row = data["models"]["model-a"]["requests"]
         assert set(row) == set(req)
         assert row["tokens"] == req["tokens"]
-        assert row["rates"] == req["rates"]
+        assert set(row["rates"]["generation_tps"]) == {
+            "avg", "last_60s", "last_300s", "max_aggregate",
+        }
+        maximum = row["rates"]["generation_tps"]["max_aggregate"]
+        assert set(maximum) == {"tps", "concurrency"}
+        assert isinstance(maximum["tps"], float)
+        assert maximum["tps"] > 0
+        assert maximum["concurrency"] == 1
+        assert {
+            key: value
+            for key, value in row["rates"]["generation_tps"].items()
+            if key != "max_aggregate"
+        } == req["rates"]["generation_tps"]
+        assert row["rates"]["prompt_tps"] == req["rates"]["prompt_tps"]
         assert row["ttft_ms"]["count"] == req["ttft_ms"]["count"]
         assert row["tpot_ms"]["count"] == req["tpot_ms"]["count"]
 

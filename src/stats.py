@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 # Trailing windows for throughput reporting.
@@ -27,6 +28,18 @@ class Outcome:
     completion_tokens: int | None = None
     cached_tokens: int | None = None
     first_token_at: float | None = None  # monotonic ts of first content event
+    first_token_observer: Callable[[float], None] | None = field(
+        default=None, repr=False,
+    )
+
+
+@dataclass(frozen=True)
+class _DecodeInterval:
+    """One completed, aggregate-eligible decode interval."""
+
+    started_at: float
+    ended_at: float
+    completion_tokens: int
 
 
 @dataclass
@@ -51,6 +64,46 @@ class _ModelStats:
     prefill_tokens: int = 0  # Σ prompt_tokens over streaming requests
     prefill_time: float = 0.0  # Σ TTFT seconds
     token_events: deque = field(default_factory=deque)  # (monotonic, tokens)
+    active_decodes: dict[object, float] = field(default_factory=dict)
+    decode_frontier: list[_DecodeInterval] = field(default_factory=list)
+    max_aggregate_tps: float | None = None
+    max_aggregate_concurrency: int | None = None
+
+
+def _decode_components(
+    intervals: list[_DecodeInterval],
+) -> list[list[_DecodeInterval]]:
+    """Partition intervals into positive-overlap connected components."""
+    ordered = sorted(
+        intervals, key=lambda interval: (interval.started_at, interval.ended_at)
+    )
+    components: list[list[_DecodeInterval]] = []
+    component_end: float | None = None
+    for interval in ordered:
+        if component_end is None or interval.started_at >= component_end:
+            components.append([interval])
+            component_end = interval.ended_at
+        else:
+            components[-1].append(interval)
+            component_end = max(component_end, interval.ended_at)
+    return components
+
+
+def _peak_decode_concurrency(intervals: list[_DecodeInterval]) -> int:
+    """Return peak overlap for half-open intervals; ends precede starts."""
+    events = [
+        event
+        for interval in intervals
+        for event in (
+            (interval.started_at, 1),
+            (interval.ended_at, -1),
+        )
+    ]
+    active = peak = 0
+    for _, change in sorted(events, key=lambda event: (event[0], event[1])):
+        active += change
+        peak = max(peak, active)
+    return peak
 
 
 def _percentile(sorted_samples: list[float], q: float) -> float:
@@ -116,8 +169,23 @@ def _requests_report(
     prefill_time: float = 0.0,
     token_events: deque = (),
     now_monotonic: float = 0.0,
+    max_aggregate: tuple[float, int] | None = None,
+    include_max_aggregate: bool = False,
 ) -> dict:
     """Build the requests block shared by global and per-model reports."""
+    generation_tps = {
+        "avg": (decode_tokens / decode_time) if decode_time > 0 else None,
+        "last_60s": _window_tps(token_events, now_monotonic, WINDOW_SHORT_S),
+        "last_300s": _window_tps(token_events, now_monotonic, WINDOW_LONG_S),
+    }
+    if include_max_aggregate:
+        generation_tps["max_aggregate"] = (
+            {
+                "tps": max_aggregate[0],
+                "concurrency": max_aggregate[1],
+            }
+            if max_aggregate is not None else None
+        )
     return {
         "total": total,
         "success": success,
@@ -140,11 +208,7 @@ def _requests_report(
             "prompt_tps": {
                 "avg": (prefill_tokens / prefill_time) if prefill_time > 0 else None,
             },
-            "generation_tps": {
-                "avg": (decode_tokens / decode_time) if decode_time > 0 else None,
-                "last_60s": _window_tps(token_events, now_monotonic, WINDOW_SHORT_S),
-                "last_300s": _window_tps(token_events, now_monotonic, WINDOW_LONG_S),
-            },
+            "generation_tps": generation_tps,
         },
         "ttft_ms": _latency_report(ttfts or []),
         "tpot_ms": _latency_report(tpots or []),
@@ -309,6 +373,80 @@ class StatsCollector:
         if n > self._peak_inflight:
             self._peak_inflight = n
 
+    def record_decode_start(
+        self, model: str, request_id: object, started_at: float,
+    ) -> None:
+        """Record one request's first-token boundary at most once."""
+        active = self._model(model).active_decodes
+        if request_id not in active:
+            active[request_id] = started_at
+
+    def record_decode_end(
+        self,
+        model: str,
+        request_id: object,
+        *,
+        ended_at: float,
+        ok: bool,
+        completion_tokens: int | None,
+    ) -> None:
+        """Close a started decode and finalize newly closed cohorts."""
+        stats = self._models.get(model)
+        if stats is None:
+            return
+        started_at = stats.active_decodes.pop(request_id, None)
+        if started_at is None:
+            return
+        eligible = (
+            ok
+            and isinstance(completion_tokens, int)
+            and not isinstance(completion_tokens, bool)
+            and completion_tokens >= 1
+            and math.isfinite(started_at)
+            and math.isfinite(ended_at)
+            and ended_at > started_at
+        )
+        if eligible:
+            stats.decode_frontier.append(_DecodeInterval(
+                started_at=started_at,
+                ended_at=ended_at,
+                completion_tokens=completion_tokens,
+            ))
+        self._finalize_decode_frontier(stats)
+
+    @staticmethod
+    def _finalize_decode_frontier(stats: _ModelStats) -> None:
+        """Publish ended components no active decode can still bridge."""
+        retained: list[_DecodeInterval] = []
+        active_starts = tuple(stats.active_decodes.values())
+        for component in _decode_components(stats.decode_frontier):
+            component_end = max(interval.ended_at for interval in component)
+            if any(started_at < component_end for started_at in active_starts):
+                retained.extend(component)
+                continue
+
+            cohort_start = min(
+                interval.started_at for interval in component
+            )
+            cohort_end = component_end
+            tokens = sum(
+                interval.completion_tokens for interval in component
+            )
+            try:
+                tps = tokens / (cohort_end - cohort_start)
+            except (OverflowError, ZeroDivisionError):
+                continue
+            if not math.isfinite(tps) or tps <= 0:
+                continue
+            concurrency = _peak_decode_concurrency(component)
+            if (
+                stats.max_aggregate_tps is None
+                or tps > stats.max_aggregate_tps
+            ):
+                stats.max_aggregate_tps = tps
+                stats.max_aggregate_concurrency = concurrency
+        stats.decode_frontier = retained
+
     def _prune_request_times(self) -> None:
         now_monotonic = time.monotonic()
         times = self._request_times
@@ -361,6 +499,14 @@ class StatsCollector:
                     prefill_time=ms.prefill_time,
                     token_events=ms.token_events,
                     now_monotonic=now_monotonic,
+                    max_aggregate=(
+                        ms.max_aggregate_tps,
+                        ms.max_aggregate_concurrency,
+                    ) if (
+                        ms.max_aggregate_tps is not None
+                        and ms.max_aggregate_concurrency is not None
+                    ) else None,
+                    include_max_aggregate=True,
                 ),
             }
             for name, ms in self._models.items()
@@ -471,9 +617,10 @@ STATS_HTML = """<!DOCTYPE html>
   <thead><tr>
     <th>Model</th><th>Prompt tok</th><th>Compl tok</th><th>Cached tok</th>
     <th>Cache hit %</th>
-    <th>Prompt t/s</th><th>Gen t/s</th><th>TTFT p50 ms</th><th>TTFT p95 ms</th>
+    <th>Prompt t/s</th><th>Gen t/s</th><th>Max Agg Gen t/s</th>
+    <th>TTFT p50 ms</th><th>TTFT p95 ms</th>
   </tr></thead>
-  <tbody id="token-models"><tr><td colspan="9">–</td></tr></tbody>
+  <tbody id="token-models"><tr><td colspan="10">–</td></tr></tbody>
 </table>
 <script>
 "use strict";
@@ -495,6 +642,18 @@ function fmtMs(v) {
 
 function fmtTps(v) {
   return (typeof v === "number" && isFinite(v)) ? v.toFixed(1) : DASH;
+}
+
+function fmtMaxAggregateTps(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return DASH;
+  if (!(typeof v.tps === "number" && Number.isFinite(v.tps) && v.tps > 0)) {
+    return DASH;
+  }
+  if (!(typeof v.concurrency === "number" &&
+        Number.isInteger(v.concurrency) && v.concurrency > 0)) {
+    return DASH;
+  }
+  return v.tps.toFixed(1) + "@" + v.concurrency;
 }
 
 function fmtBytes(v) {
@@ -585,7 +744,7 @@ function renderTokenModels(models) {
   const entries = models && typeof models === "object"
     ? Object.entries(models) : [];
   tbody.textContent = "";
-  if (!entries.length) { fillRowless("token-models", 9); return; }
+  if (!entries.length) { fillRowless("token-models", 10); return; }
   for (const [name, m] of entries) {
     const r = (m && m.requests) || {};
     const toks = r.tokens || {};
@@ -597,7 +756,7 @@ function renderTokenModels(models) {
       String(name),
       fmtInt(toks.prompt), fmtInt(toks.completion), fmtInt(toks.cached),
       fmtRate(toks.cache_hit_rate),
-      fmtTps(pt.avg), fmtTps(gt.avg),
+      fmtTps(pt.avg), fmtTps(gt.avg), fmtMaxAggregateTps(gt.max_aggregate),
       fmtMs(ttft.p50), fmtMs(ttft.p95),
     ];
     const tr = document.createElement("tr");
