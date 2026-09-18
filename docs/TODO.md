@@ -2,8 +2,10 @@
 
 ## Next
 
-- [P-20260913-03] Split `tests/test_stats.py` (1735 LOC) into focused test modules
-- [P-20260913-04] Split `tests/test_proxy.py` (1194 LOC) into focused test modules
+- [P-20260918-03] Split `src/swapper.py` (1074 LOC) into focused modules
+- [P-20260918-04] Split `tests/test_swapper_quick_switch.py` (2000 LOC) into focused test modules
+- [P-20260913-03] Split `tests/test_stats.py` (1811 LOC) into focused test modules
+- [P-20260913-04] Split `tests/test_proxy.py` (1243 LOC) into focused test modules
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to README
 - [P-20260826-03] Remove stray blank line before `handle.stopped` in `stop_process` (deferred P2 from P-20260826-01 audit)
