@@ -12,6 +12,7 @@
 
 ## Done
 
+- [P-20260920-01] Add FlashML FreeToken server compatibility — DONE 2026-09-20 05:36 UTC
 - [P-20260918-05] Add per-model maximum aggregate generation throughput metric — DONE 2026-09-18 06:59 UTC
 - [P-20260918-02] Add configurable quick switching for pending model loads — DONE 2026-09-18 06:00 UTC
 - [P-20260916-01] Add SGLang backend compatibility — DONE 2026-09-16 02:03 UTC

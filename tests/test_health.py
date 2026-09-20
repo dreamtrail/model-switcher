@@ -9,13 +9,139 @@ from __future__ import annotations
 import asyncio
 
 import aiohttp
-from aiohttp.test_utils import TestServer, TestClient
+from aiohttp.test_utils import TestServer
 import pytest
 
 from src.health import wait_for_ready
 
 
 class TestWaitForReady:
+
+    async def test_lifecycle_200_waits_through_loading_and_error_until_ok(self):
+        """HTTP 200 lifecycle bodies are pending until exact status ``ok``."""
+        loading_seen = asyncio.Event()
+        allow_error = asyncio.Event()
+        error_seen = asyncio.Event()
+        allow_ok = asyncio.Event()
+        health_count = 0
+        models_count = 0
+
+        async def handle_health(request):
+            nonlocal health_count
+            health_count += 1
+            if health_count == 1:
+                loading_seen.set()
+                return aiohttp.web.json_response({"status": "loading"})
+            if health_count == 2:
+                await allow_error.wait()
+                error_seen.set()
+                return aiohttp.web.json_response({"status": "error"})
+            await allow_ok.wait()
+            return aiohttp.web.json_response({"status": "ok"})
+
+        async def handle_models(request):
+            nonlocal models_count
+            models_count += 1
+            return aiohttp.web.json_response({"object": "list", "data": []})
+
+        app = aiohttp.web.Application()
+        app.router.add_get("/health", handle_health)
+        app.router.add_get("/v1/models", handle_models)
+        server = TestServer(app)
+        await server.start_server()
+        task = asyncio.create_task(
+            wait_for_ready(server.port, timeout=2, interval=0.01)
+        )
+        try:
+            await asyncio.wait_for(loading_seen.wait(), timeout=1)
+            assert not task.done()
+            assert models_count == 0
+
+            allow_error.set()
+            await asyncio.wait_for(error_seen.wait(), timeout=1)
+            assert not task.done()
+            assert models_count == 0
+
+            allow_ok.set()
+            await asyncio.wait_for(task, timeout=1)
+            assert health_count == 3
+            assert models_count == 0
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            await server.close()
+
+    @pytest.mark.parametrize("lifecycle_status", ("loading", "error"))
+    async def test_persistent_non_ready_lifecycle_200_times_out_without_fallback(
+        self, lifecycle_status
+    ):
+        """Persistent loading/error uses the existing timeout path."""
+        models_count = 0
+
+        async def handle_health(request):
+            return aiohttp.web.json_response({"status": lifecycle_status})
+
+        async def handle_models(request):
+            nonlocal models_count
+            models_count += 1
+            return aiohttp.web.json_response({"object": "list", "data": []})
+
+        app = aiohttp.web.Application()
+        app.router.add_get("/health", handle_health)
+        app.router.add_get("/v1/models", handle_models)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            with pytest.raises(TimeoutError, match="did not become ready"):
+                await wait_for_ready(server.port, timeout=0.05, interval=0.01)
+            assert models_count == 0
+        finally:
+            await server.close()
+
+    @pytest.mark.parametrize(
+        ("body", "content_type"),
+        (
+            pytest.param(b"healthy", "text/plain", id="non-json-text"),
+            pytest.param(b'{"status":', "application/json", id="malformed-json"),
+            pytest.param(b'["loading"]', "application/json", id="json-list"),
+            pytest.param(b'"loading"', "application/json", id="json-scalar"),
+            pytest.param(b'{"phase":"loading"}', "application/json", id="missing-status"),
+            pytest.param(b'{"status":"warming"}', "application/json", id="unknown-status"),
+            pytest.param(b'{"status":"Loading"}', "application/json", id="loading-title-case"),
+            pytest.param(b'{"status":"LOADING"}', "application/json", id="loading-upper-case"),
+            pytest.param(b'{"status":" loading"}', "application/json", id="loading-leading-space"),
+            pytest.param(b'{"status":"loading "}', "application/json", id="loading-trailing-space"),
+            pytest.param(b'{"status":"Error"}', "application/json", id="error-title-case"),
+            pytest.param(b'{"status":"ERROR"}', "application/json", id="error-upper-case"),
+            pytest.param(b'{"status":" error"}', "application/json", id="error-leading-space"),
+            pytest.param(b'{"status":"error "}', "application/json", id="error-trailing-space"),
+        ),
+    )
+    async def test_legacy_200_bodies_remain_ready_without_models_fallback(
+        self, body, content_type
+    ):
+        """Unrecognized HTTP 200 body forms preserve generic readiness."""
+        models_count = 0
+
+        async def handle_health(request):
+            return aiohttp.web.Response(body=body, content_type=content_type)
+
+        async def handle_models(request):
+            nonlocal models_count
+            models_count += 1
+            return aiohttp.web.json_response({"object": "list", "data": []})
+
+        app = aiohttp.web.Application()
+        app.router.add_get("/health", handle_health)
+        app.router.add_get("/v1/models", handle_models)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            await wait_for_ready(server.port, timeout=1, interval=0.01)
+            assert models_count == 0
+        finally:
+            await server.close()
 
     async def test_returns_on_health_200(self):
         """wait_for_ready returns when /health returns 200."""
@@ -265,8 +391,12 @@ class TestWaitForReady:
             await server.close()
 
     async def test_uses_shared_client(self):
-        """wait_for_ready can use a shared ClientSession."""
+        """A supplied ClientSession remains open and reusable after success."""
+        health_count = 0
+
         async def handle_health(request):
+            nonlocal health_count
+            health_count += 1
             return aiohttp.web.json_response({"status": "ok"})
 
         app = aiohttp.web.Application()
@@ -276,12 +406,20 @@ class TestWaitForReady:
         client = aiohttp.ClientSession()
         try:
             await wait_for_ready(server.port, timeout=5, client=client)
+
+            assert not client.closed
+            async with client.get(
+                f"http://127.0.0.1:{server.port}/health"
+            ) as response:
+                assert response.status == 200
+                assert await response.json() == {"status": "ok"}
+            assert health_count == 2
         finally:
             await client.close()
             await server.close()
 
-    async def test_creates_own_client_when_none(self):
-        """wait_for_ready creates and closes its own client when none provided."""
+    async def test_creates_own_client_when_none(self, monkeypatch):
+        """An internally created ClientSession is closed after success."""
         async def handle_health(request):
             return aiohttp.web.json_response({"status": "ok"})
 
@@ -289,7 +427,52 @@ class TestWaitForReady:
         app.router.add_get("/health", handle_health)
         server = TestServer(app)
         await server.start_server()
+        real_client_session = aiohttp.ClientSession
+        created_sessions = []
+
+        def tracking_client_session(*args, **kwargs):
+            session = real_client_session(*args, **kwargs)
+            created_sessions.append(session)
+            return session
+
+        monkeypatch.setattr(aiohttp, "ClientSession", tracking_client_session)
         try:
             await wait_for_ready(server.port, timeout=5)
+
+            assert len(created_sessions) == 1
+            assert created_sessions[0].closed
         finally:
+            for session in created_sessions:
+                if not session.closed:
+                    await session.close()
+            await server.close()
+
+    async def test_closes_own_client_after_timeout(self, monkeypatch):
+        """An internally created ClientSession is also closed on timeout."""
+        async def handle_health(request):
+            return aiohttp.web.json_response({"status": "loading"})
+
+        app = aiohttp.web.Application()
+        app.router.add_get("/health", handle_health)
+        server = TestServer(app)
+        await server.start_server()
+        real_client_session = aiohttp.ClientSession
+        created_sessions = []
+
+        def tracking_client_session(*args, **kwargs):
+            session = real_client_session(*args, **kwargs)
+            created_sessions.append(session)
+            return session
+
+        monkeypatch.setattr(aiohttp, "ClientSession", tracking_client_session)
+        try:
+            with pytest.raises(TimeoutError, match="did not become ready"):
+                await wait_for_ready(server.port, timeout=0, interval=0)
+
+            assert len(created_sessions) == 1
+            assert created_sessions[0].closed
+        finally:
+            for session in created_sessions:
+                if not session.closed:
+                    await session.close()
             await server.close()

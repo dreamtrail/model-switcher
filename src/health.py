@@ -13,6 +13,24 @@ DEFAULT_POLL_INTERVAL = 0.5   # seconds between polls
 DEFAULT_TIMEOUT = 120         # total timeout in seconds
 
 
+async def _health_200_is_ready(response: aiohttp.ClientResponse) -> bool:
+    """Interpret known lifecycle states without narrowing generic health checks."""
+    try:
+        payload = await response.json(content_type=None)
+    except (aiohttp.ClientError, UnicodeError, ValueError):
+        return True
+
+    if not isinstance(payload, dict):
+        return True
+
+    status = payload.get("status")
+    if status == "ok":
+        return True
+    if status in ("loading", "error"):
+        return False
+    return True
+
+
 async def wait_for_ready(
     port: int,
     *,
@@ -51,7 +69,7 @@ async def wait_for_ready(
                     base + "/health", ssl=False, allow_redirects=False
                 ) as resp:
                     health_status = resp.status
-                    if health_status == 200:
+                    if health_status == 200 and await _health_200_is_ready(resp):
                         logger.info(
                             "Upstream on port %d is ready (/health)", port
                         )

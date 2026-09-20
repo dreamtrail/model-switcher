@@ -159,3 +159,20 @@ This proposal made pending-load supersession unconditional. It was superseded be
 
 ### Accepted Exactness Trade-off
 - **Preserve exact maximal cohorts rather than cap or approximate them** — the L4 interview outcome accepted delayed publication and potentially growing interval state while a continuously overlapping cohort remains unresolved. A cap, rolling window, average-times-concurrency estimate, or chunk/token estimate was rejected because it would change the requested metric's meaning. Once the overlap closes, temporary cohort state is finalized and only the per-model maximum remains.
+
+## P-20260920-01 — FreeToken v0.1.3 Compatibility
+
+### Generic Backend Integration
+- **Reuse the generic foreground-command contract** — FreeToken v0.1.3 at release commit `cac247a860e316e06580d05aeb05f2e647bde214` accepts `ft serve`, an assigned loopback host/port, a public `--served-model-name`, HTTP/SSE requests, and process-group termination. The config key, served model name, and request `model` remain identical; no backend registry, command detection, dependency, config field, alias, or request-body rewrite is needed.
+- **Keep lifecycle management generic** — `ft` must be available in the switcher's execution environment and run in the foreground. Existing SIGTERM, grace-period, and forced-stop process-group handling owns swaps and shutdown; FreeToken's shell, desktop, and control-plane workflows are outside this integration.
+
+### Readiness and Port Selection
+- **Interpret only the pinned lifecycle values** — an HTTP 200 `/health` body with exact JSON status `ok` is ready, while `loading` or `error` remains pending without `/v1/models` fallback. Unknown, missing, malformed, and non-object 200 bodies preserve the generic ready behavior; non-200 handling and 404/405-only fallback remain unchanged. Fatal FreeToken health therefore uses the existing timeout and cleanup path instead of a new error contract.
+- **Probe the adjacent port for every model** — FreeToken derives its internal distributed address from API port + 1, so automatic selection holds successful loopback binds for base and base + 1 simultaneously and rejects base 65535. Both probes close before startup, retaining the accepted race in dynamic assignment. Applying this generic two-port probe avoids backend inference or schema expansion.
+
+### Certified Transport Boundary
+- **Certify a representative four-route matrix, not protocol conformance** — `/v1/chat/completions` and `/v1/completions` cover JSON plus `data:` SSE, injected `stream_options.include_usage`, a usage chunk, and terminal `[DONE]`; `/v1/messages` covers Anthropic JSON plus named SSE through `message_stop` without `[DONE]`; `/v1/responses` covers Responses JSON plus named SSE through representative `response.completed` without `[DONE]`. Statuses and headers remain transparent, with no FreeToken-specific wire transformation.
+- **Keep upstream limitations explicit** — the v0.1.3 OpenAI implementation rejects some optional fields and constrained response formats, while its Responses API is stateless and does not support background mode, prior-response continuation, retrieval, or cancellation. Compatibility does not imply support for every optional OpenAI, Anthropic, or Responses parameter.
+
+### Verification Trade-off
+- **Use pinned deterministic loopback fixtures in automation** — tests derive representative payloads from the immutable v0.1.3 sources and exercise the real config, health, switcher, and proxy paths without importing FreeToken. A live gate would require Linux x86_64, Python 3.10+, an NVIDIA GPU with driver r580+, CUDA 13 and `nvcc`, compatible model weights, substantial memory, and first-use compilation, so README documents an optional non-gating hardware smoke procedure instead.
