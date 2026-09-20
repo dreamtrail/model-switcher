@@ -1,21 +1,20 @@
 ## Handoff Card
 
 - Goal: Preserve completed P-20260920-01 context and resume P-20260918-03.
-- As-Of: 2026-09-20 05:36 UTC (2026-09-20 05:36 Z)
-- Branch/HEAD: master @ 453f581 (before this task commit)
+- As-Of: 2026-09-20 06:58 UTC (2026-09-20 06:58 Z)
+- Branch/HEAD: master @ abf6fa4 (before this handoff commit)
 - Mode: FINISHED
 - Working On: P-20260918-03
-- Stop Point: `docs/TODO.md:5` Next — P-20260918-03.
+- Stop Point: `docs/TODO.md:5` — P-20260918-03.
 - Next Step: Run Discover and prepare the plan for the Working On ID.
 - Key Decisions:
-  - FreeToken v0.1.3 uses the existing foreground-command contract with matching config key, `--served-model-name`, and request model ID; no backend registry or new config field was added.
-  - HTTP 200 `/health` responses with exact JSON status `loading` or `error` remain pending, while `ok` is ready; unrecognized 200 bodies preserve generic compatibility.
-  - Automatic port selection now probes the base and base + 1 simultaneously because FreeToken uses the adjacent port internally; the existing close-before-start race remains accepted.
-  - Compatibility certification covers representative JSON and streaming transport for Chat Completions, Completions, Anthropic Messages, and Responses, not exhaustive protocol conformance.
-- Key Files: `src/health.py` (lifecycle-aware readiness), `src/config.py` (adjacent-port probing), `tests/test_freetoken_compat.py` (pinned transport fixtures), `README.md` and `docs/DECISIONS.md` (supported boundary and rationale).
-- Env Hints: `.venv` available; Python 3.13.5; automated tests require no GPU; optional live FreeToken validation requires its supported Linux/NVIDIA/CUDA environment and model weights.
-- Critical Context: P-20260920-01 targets FreeToken v0.1.3 at release commit `cac247a860e316e06580d05aeb05f2e647bde214`; deterministic loopback tests passed, while the optional real FreeToken/GPU smoke check was not run and is non-gating.
+  - Reuse the generic foreground-command contract; align the config key, `--served-model-name`, and request model ID.
+  - Treat exact HTTP 200 health states `loading` and `error` as pending and `ok` as ready; preserve generic handling for other bodies.
+  - Probe the base and adjacent ports together; retain the existing close-before-start allocation race.
+- Key Files: `src/health.py`, `src/config.py`, `tests/test_freetoken_compat.py`, `README.md`, `docs/DECISIONS.md`.
+- Env Hints: `.venv` available; Python 3.13.5; automated tests require no GPU.
+- Critical Context: Compatibility targets FreeToken v0.1.3 commit `cac247a860e316e06580d05aeb05f2e647bde214`; representative loopback transport is certified, but the optional live GPU smoke check was not run.
 - Completed Since Last: P-20260920-01
-- Commands: `.venv/bin/python -m compileall -q src`; `.venv/bin/python -m pytest tests/test_health.py tests/test_freetoken_compat.py --tb=short -q`; `.venv/bin/python -m pytest tests/test_health.py tests/test_config.py tests/test_freetoken_compat.py --tb=short -q`; `.venv/bin/python -m pytest tests/test_sglang_compat.py tests/test_ninfer_compat.py --tb=short -q`; `.venv/bin/python -m pytest tests/ --tb=short -q`.
-- Verification: compileall passed; 47/47 health + FreeToken, 64/64 focused, 35/35 SGLang + NInfer, and 489/489 full tests passed; implementation audit and test-audit recheck PASS with zero findings; `git diff --check` passed; no dependency changes.
-- Risks/Blockers: no current blocker; dynamic ports are still released before lazy startup, exact `status: "error"` waits for the normal readiness timeout, and live FreeToken/CUDA/model behavior remains outside automated verification.
+- Commands: `.venv/bin/python -m compileall -q src`; `.venv/bin/python -m pytest tests/test_health.py tests/test_config.py tests/test_freetoken_compat.py --tb=short -q`; `.venv/bin/python -m pytest tests/ --tb=short -q`.
+- Verification: compileall passed; 64/64 focused, 35/35 existing compatibility, and 489/489 full tests passed; implementation and test audits PASS.
+- Risks/Blockers: no blocker; ports remain unreserved before lazy startup, and exact `status: "error"` waits for the normal readiness timeout.
