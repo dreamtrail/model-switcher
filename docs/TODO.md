@@ -9,6 +9,7 @@
 
 ## Done
 
+- [P-20260923-01] Add same-listener runtime control panel and API — DONE 2026-09-23 03:39 UTC
 - [P-20260913-03] Split statistics test coverage into focused modules — DONE 2026-09-23 01:13 UTC
 - [P-20260918-04] Split `tests/test_swapper_quick_switch.py` into focused test modules — DONE 2026-09-23 00:41 UTC
 - [P-20260918-03] Split `src/swapper.py` into focused modules — DONE 2026-09-23 00:14 UTC

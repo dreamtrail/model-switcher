@@ -56,6 +56,66 @@ With `--quick-switch`, the latest admitted model wins. Requests for the same tar
 
 Process creation failures return HTTP 500 with `error.code: "model_start_failed"`. If SIGTERM, the existing grace period, and SIGKILL cannot confirm that the old process group exited, switching fails closed with HTTP 503 and `error.code: "process_cleanup_failed"`; no replacement starts until cleanup is confirmed. Graceful cleanup can therefore delay a quick switch by several seconds, but prevents overlapping model servers and GPU-memory contention.
 
+## Control Panel and Runtime API
+
+Open `http://localhost:8080/control` to use the dependency-free control panel on the existing listener. It shows configured, active, and pending models, lifecycle state, in-flight request count, and the three runtime settings. It can load or switch to a model, unload the active model, and update settings. It never displays or edits model commands, assigned ports, process IDs, environment values, or the config path.
+
+> **Network trust warning:** the control API has no authentication or authorization. `X-Model-Switcher-Control: 1` protects browsers against cross-site request forgery; it does **not** prove who the caller is. Binding model-switcher to `0.0.0.0` or another shared interface grants every network-reachable client process-control authority. Use this only on a trusted local network. If the listener is exposed beyond that boundary, put an authenticated service in front of it or do not expose it.
+
+The switcher-local routes are:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/control` | Browser control panel |
+| `GET` | `/api/v1/control/state` | Full runtime state |
+| `PUT` | `/api/v1/control/settings` | Replace all three runtime settings |
+| `PUT` | `/api/v1/control/model` | Load or switch to one configured model |
+| `DELETE` | `/api/v1/control/model` | Unload the tracked model |
+
+`/control` and every path at or below `/api/v1/control` are reserved and intentionally shadow matching upstream routes. State responses use `Cache-Control: no-store`. Every mutation requires `X-Model-Switcher-Control: 1`; PUT requests also require `Content-Type: application/json` and a body no larger than 4 KiB. DELETE is bodyless. The service emits no CORS permission headers.
+
+Example state:
+
+```json
+{
+  "models": ["llama-3.1-8b", "mistral-7b"],
+  "active_model": "llama-3.1-8b",
+  "pending_model": null,
+  "lifecycle": "ready",
+  "inflight_requests": 0,
+  "settings": {
+    "automatic_switch": true,
+    "quick_switch": false,
+    "idle_timeout_seconds": 1800.0
+  }
+}
+```
+
+The lifecycle vocabulary is `idle`, `loading`, `ready`, `unloading`, `cleanup_failed`, and `shutting_down`. Mutations wait for model readiness or confirmed cleanup and then return the full state document. Loading the already-active healthy model and unloading when no model is tracked are successful no-ops.
+
+Settings updates are complete replacements:
+
+```bash
+curl -X PUT http://127.0.0.1:8080/api/v1/control/settings \
+  -H 'Content-Type: application/json' \
+  -H 'X-Model-Switcher-Control: 1' \
+  -d '{"automatic_switch":false,"quick_switch":true,"idle_timeout_seconds":600}'
+
+curl -X PUT http://127.0.0.1:8080/api/v1/control/model \
+  -H 'Content-Type: application/json' \
+  -H 'X-Model-Switcher-Control: 1' \
+  -d '{"model":"mistral-7b"}'
+
+curl -X DELETE http://127.0.0.1:8080/api/v1/control/model \
+  -H 'X-Model-Switcher-Control: 1'
+```
+
+`automatic_switch=false` pins inference routing to the currently healthy model. Explicit requests for that model and model-less requests routed to it continue; known requests that would load, join, or change a model return HTTP 409 with `error.code: "automatic_switch_disabled"`. Unknown models remain 404. Manual model controls bypass only this automatic-switch policy: they still share the same bounded admission, latest-wins quick-switch setting, cleanup, readiness, and shutdown rules. A manual unload returns 409 `control_busy` while a load/switch or another unload is pending. Disabling automatic switching does not cancel work already admitted.
+
+Changing a positive idle timeout restarts the countdown from the update time when a healthy model is idle; zero disables idle unload. Cleanup already in progress still finishes. Manual switches and unloads preserve the existing model-change behavior and may interrupt in-flight requests using the previous process; the panel shows the in-flight count but does not drain requests.
+
+All control settings are process-local. Restart restores `automatic_switch=true`, the command-line `--quick-switch` value, and the command-line `--idle-timeout` value; no YAML is changed.
+
 ## SGLang
 
 [SGLang](https://docs.sglang.io/) works through the generic foreground-process interface. Follow its official [quickstart and installation guidance](https://docs.sglang.io/docs/get-started/quickstart) for your platform and accelerator, and confirm that the selected model fits the available device memory. The supported integration described here targets the OpenAI-compatible API behavior in [SGLang v0.5.19](https://github.com/sgl-project/sglang/releases/tag/v0.5.19).

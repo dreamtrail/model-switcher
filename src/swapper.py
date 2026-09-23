@@ -13,6 +13,7 @@ import aiohttp
 from aiohttp import web
 
 from src.config import Config
+from src.control import dispatch_control
 from src.health import wait_for_ready
 from src.port_rewrite import create_temp_dir
 from src.process_manager import (
@@ -69,6 +70,7 @@ class Swapper(_SwapperLifecycleMixin):
         self.timeout = timeout
         self.idle_timeout = idle_timeout
         self.quick_switch = quick_switch
+        self.automatic_switch = True
         self._client = client
         self.stats = stats or StatsCollector()
         self._current: ProcessHandle | None = None
@@ -86,6 +88,8 @@ class Swapper(_SwapperLifecycleMixin):
         self._cleanup_task: asyncio.Task | None = None
         self._cancelled_owner_outcome: _LoadOutcome | None = None
         self._shutting_down = False
+        self._stop_only_operation: str | None = None
+        self._cleanup_failed = False
         self._idle_task: asyncio.Task | None = None
         self._idle_timer_expired = False
         self._idle_generation = 0
@@ -150,10 +154,22 @@ class Swapper(_SwapperLifecycleMixin):
         self._waiters[future] = _Waiter(model_name, generation)
         return future
 
-    def _admit_request(self, model_name: str) -> tuple[str, object]:
+    def _admit_request(
+        self, model_name: str, *, automatic: bool = True
+    ) -> tuple[str, object]:
         """Admit one model request without awaiting or taking the lock."""
         if self._shutting_down:
             return "outcome", _LoadOutcome("shutting_down")
+        if self._stop_only_operation is not None:
+            return "outcome", _LoadOutcome("control_busy")
+        if (
+            automatic
+            and not self.automatic_switch
+            and model_name != self.active_model
+        ):
+            return "outcome", _LoadOutcome("automatic_switch_disabled")
+        if not self._swapping and model_name == self.active_model:
+            return "outcome", _LoadOutcome("success", self._current)
 
         if not self._swapping:
             self._swapping = True
@@ -356,6 +372,16 @@ class Swapper(_SwapperLifecycleMixin):
                 "Model swap timed out",
                 "swap_timeout",
             ),
+            "control_busy": (
+                409,
+                "A model lifecycle operation is already in progress",
+                "control_busy",
+            ),
+            "automatic_switch_disabled": (
+                409,
+                "Automatic model switching is disabled",
+                "automatic_switch_disabled",
+            ),
         }
         status, message, code = responses[outcome.kind]
         self.stats.record_rejection(str(status), model_name)
@@ -377,6 +403,10 @@ class Swapper(_SwapperLifecycleMixin):
     ) -> web.Response:
         """Main request handler — route to the correct upstream."""
         path = request.path
+
+        control_response = await dispatch_control(request, self)
+        if control_response is not None:
+            return control_response
 
         # Static /v1/models endpoint
         if path in ("/v1/models", "/models") and request.method == "GET":
@@ -435,11 +465,27 @@ class Swapper(_SwapperLifecycleMixin):
                 status=404,
             )
 
+        outcome = await self._acquire_model(model_name, automatic=True)
+        if outcome.kind != "success" or outcome.handle is None:
+            if outcome.kind == "success":
+                outcome = _LoadOutcome("model_start_failed")
+            return self._response_for_outcome(outcome, model_name)
+        self._begin_activity()
+        return await self._proxy_with_recorded_activity(
+            request, model_name, body, outcome.handle
+        )
+
+    async def _acquire_model(
+        self, model_name: str, *, automatic: bool
+    ) -> _LoadOutcome:
+        """Join or own the cancellation-safe model acquisition state machine."""
         generation: int
         while True:
-            admission, value = self._admit_request(model_name)
+            admission, value = self._admit_request(
+                model_name, automatic=automatic
+            )
             if admission == "outcome":
-                return self._response_for_outcome(value, model_name)
+                return value
             if admission == "owner":
                 generation = value
                 break
@@ -477,17 +523,7 @@ class Swapper(_SwapperLifecycleMixin):
             if joined is None:
                 # Compatibility for legacy callers of _drain_queue().
                 continue
-            if joined.kind != "success":
-                return self._response_for_outcome(joined, model_name)
-            handle = joined.handle
-            if handle is None:
-                return self._response_for_outcome(
-                    _LoadOutcome("model_start_failed"), model_name
-                )
-            self._begin_activity()
-            return await self._proxy_with_recorded_activity(
-                request, model_name, body, handle
-            )
+            return joined
 
         try:
             async with self._lock:
@@ -520,18 +556,60 @@ class Swapper(_SwapperLifecycleMixin):
                 except TimeoutError:
                     outcome = _LoadOutcome("swap_timeout")
                 else:
-                    self._begin_activity()
                     outcome = _LoadOutcome("success", handle)
                 outcome = self._finish_owner(generation, outcome)
         except asyncio.CancelledError:
             self._finish_cancelled_owner(generation)
             raise
+        return outcome
 
-        if outcome.kind != "success":
-            return self._response_for_outcome(outcome, model_name)
-        return await self._proxy_with_recorded_activity(
-            request, model_name, body, outcome.handle
-        )
+    def control_state(self) -> dict:
+        """Return a synchronous control API snapshot."""
+        active_model = self.active_model
+        if self._shutting_down:
+            lifecycle = "shutting_down"
+        elif self._stop_only_operation is not None:
+            lifecycle = "unloading"
+        elif self._swapping:
+            lifecycle = "loading"
+        elif active_model is not None:
+            lifecycle = "ready"
+        elif self._cleanup_failed:
+            lifecycle = "cleanup_failed"
+        else:
+            lifecycle = "idle"
+        return {
+            "models": list(self.config.models.keys()),
+            "active_model": active_model,
+            "pending_model": (
+                self._desired_model if lifecycle == "loading" else None
+            ),
+            "lifecycle": lifecycle,
+            "inflight_requests": self._active_requests,
+            "settings": {
+                "automatic_switch": self.automatic_switch,
+                "quick_switch": self.quick_switch,
+                "idle_timeout_seconds": float(self.idle_timeout),
+            },
+        }
+
+    async def control_load_model(self, model_name: str) -> str:
+        """Synchronously load one model without inference accounting."""
+        if model_name not in self.config.models:
+            return "unknown_model"
+        # Preserve precedence while making an already-active selection a true
+        # no-op that does not rearm its idle countdown.
+        if self._shutting_down:
+            return "shutting_down"
+        if self._stop_only_operation is not None:
+            return "control_busy"
+        if not self._swapping and model_name == self.active_model:
+            return "success"
+
+        outcome = await self._acquire_model(model_name, automatic=False)
+        if outcome.kind == "success":
+            self._schedule_idle_timer()
+        return outcome.kind
 
     def _begin_activity(self) -> None:
         """Mark a model request active and cancel pending idle unload."""

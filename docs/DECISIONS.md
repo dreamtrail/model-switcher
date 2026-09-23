@@ -176,3 +176,32 @@ This proposal made pending-load supersession unconditional. It was superseded be
 
 ### Verification Trade-off
 - **Use pinned deterministic loopback fixtures in automation** — tests derive representative payloads from the immutable v0.1.3 sources and exercise the real config, health, switcher, and proxy paths without importing FreeToken. A live gate would require Linux x86_64, Python 3.10+, an NVIDIA GPU with driver r580+, CUDA 13 and `nvcc`, compatible model weights, substantial memory, and first-use compilation, so README documents an optional non-gating hardware smoke procedure instead.
+
+## P-20260923-01 — Same-Listener Control Panel and Runtime API
+
+### State and Interface Ownership
+- **Keep one listener and one lifecycle owner** — `src/control.py` owns the embedded panel, reserved HTTP namespace, validation, and response mapping. `Swapper` remains the sole writer of lifecycle, admission, idle-timer, shutdown, and runtime-setting state; control code never starts or stops a process directly.
+- **Use a versioned synchronous API** — `/control` and `/api/v1/control/*` intentionally shadow matching upstream routes. Model load/switch and unload calls hold the HTTP response until readiness or terminal cleanup, avoiding an operation-job subsystem.
+- **Return complete snapshots** — state and successful mutations report configured/active/pending models, one of six ordered lifecycle values, in-flight count, and all editable settings without commands, ports, PIDs, environment values, or config paths.
+
+### Lifecycle and Policy Semantics
+- **Share admission and lifecycle machinery** — manual loads use the same generation, bounded waiter, quick-switch, readiness, cancellation-safe ownership, and cleanup paths as inference loads. Manual controls do not create synthetic inference requests or rejection metrics.
+- **Make safe repeats idempotent** — selecting the already-active healthy model does not restart it or reset its idle countdown. Unloading with no tracked model succeeds unchanged.
+- **Reject unload overtaking** — a manual unload publishes shared stop-only ownership and returns `control_busy` instead of cancelling or overtaking a pending load/switch or another unload. Committed idle unload uses the same ownership marker.
+- **Gate request-driven changes only** — `automatic_switch=false` rejects known inference requests that would load, join, or change a model while preserving explicit/model-less routing to the healthy active model. Manual loading bypasses this policy only; unknown-model, shutdown, stop-only busy, policy, and existing admission outcomes retain their defined precedence.
+- **Preserve interruption behavior** — manual switches and unloads may terminate a process serving in-flight requests. Draining remains outside this change.
+
+### Runtime Settings
+- **Replace one exact three-field representation atomically** — automatic switching, quick switching, and idle timeout are validated together and assigned without an await. Idle-timeout changes cancel and restart an uncommitted idle countdown from update time; committed cleanup finishes.
+- **Keep changes process-local** — restart restores automatic switching to enabled and restores quick-switch and idle-timeout values from the existing CLI inputs. Config/YAML, model definitions, commands, listener settings, and CLI contracts are unchanged.
+
+### Trust Boundary
+- **Accept unauthenticated local-network control on the existing listener** — this is the explicit deployment decision from the L4 interview. Every direct client that can reach the listener is trusted and can switch or unload configured models and change runtime settings.
+- **Treat the custom header as CSRF resistance only** — mutations require `X-Model-Switcher-Control: 1`, PUTs require JSON, DELETE is bodyless, and no CORS permission is emitted. The header is not authentication or authorization because a direct client can forge it.
+- **Keep authority constrained** — model commands and process details remain hidden and non-editable. The accepted trade-off is unsuitable outside a trusted local network; changed exposure requires a separate authentication design.
+
+### Rejected Alternatives
+- Bearer/session authentication, TLS, a second listener, persistence, asynchronous operation IDs, frontend dependencies, and model/config editing are excluded because they are unnecessary for the accepted local deployment and would create separate security or lifecycle systems.
+
+### Status
+- Implemented under P-20260923-01. The runtime API, control panel, shared lifecycle integration, persistent control-specific tests, and project documentation are complete; focused, related, and full-suite verification passed, followed by independent implementation and test audits.

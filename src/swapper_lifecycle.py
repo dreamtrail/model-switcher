@@ -61,6 +61,7 @@ class _SwapperLifecycleMixin:
         self._current = handle
         self._current_model = handle.model_name
         self._healthy = False
+        self._cleanup_failed = False
         self.stats.record_model_start(handle.model_name)
 
     def _commit_stopped_handle(
@@ -72,6 +73,7 @@ class _SwapperLifecycleMixin:
             self._current = None
             self._current_model = None
             self._healthy = False
+            self._cleanup_failed = False
 
     async def _stop_tracked(
         self, handle: ProcessHandle, *, record_stop: bool
@@ -104,11 +106,13 @@ class _SwapperLifecycleMixin:
                 except ProcessStopError:
                     if self._current is handle:
                         self._healthy = False
+                        self._cleanup_failed = True
                     raise cancel_exc
                 raise
             except ProcessStopError:
                 if self._current is handle:
                     self._healthy = False
+                    self._cleanup_failed = True
                 raise
         finally:
             if self._cleanup_task is task and task.done():
@@ -333,6 +337,8 @@ class _SwapperLifecycleMixin:
         """Arm idle unload when enabled and no model requests are active."""
         if self.idle_timeout <= 0 or self._active_requests > 0:
             return
+        if self._stop_only_operation is not None or self._swapping:
+            return
         if not (self._current and self._healthy and is_running(self._current)):
             return
 
@@ -370,6 +376,10 @@ class _SwapperLifecycleMixin:
                     return
                 if self._active_requests > 0:
                     return
+                if self._shutting_down or self._swapping:
+                    return
+                if self._stop_only_operation is not None:
+                    return
                 if not (
                     self._current and self._healthy and is_running(self._current)
                 ):
@@ -381,16 +391,79 @@ class _SwapperLifecycleMixin:
                     "Idle timeout reached for %s; unloading model",
                     model_name,
                 )
+                # A zero timeout cannot schedule this coroutine in normal
+                # operation; retaining the legacy direct-helper behavior for
+                # that impossible timer state keeps shutdown recovery usable.
+                owns_stop_only = self.idle_timeout > 0
+                if owns_stop_only:
+                    self._stop_only_operation = "idle"
                 try:
-                    await self._stop_tracked(handle, record_stop=True)
-                except ProcessStopError as exc:
-                    logger.error("Idle unload failed: %s", exc)
+                    try:
+                        await self._stop_tracked(handle, record_stop=True)
+                    except ProcessStopError as exc:
+                        logger.error("Idle unload failed: %s", exc)
+                finally:
+                    # Cleanup has already published confirmed success or the
+                    # retained-handle failure marker before this is cleared.
+                    if owns_stop_only:
+                        self._stop_only_operation = None
         except asyncio.CancelledError:
             pass
         finally:
             self._idle_timer_expired = False
             if self._idle_task is current_task:
                 self._idle_task = None
+
+    def control_apply_settings(
+        self,
+        *,
+        automatic_switch: bool,
+        quick_switch: bool,
+        idle_timeout_seconds: float,
+    ) -> str:
+        """Apply the complete runtime settings representation atomically."""
+        if self._shutting_down:
+            return "shutting_down"
+        timeout_changed = self.idle_timeout != idle_timeout_seconds
+        self.automatic_switch = automatic_switch
+        self.quick_switch = quick_switch
+        self.idle_timeout = idle_timeout_seconds
+        if not timeout_changed:
+            return "success"
+
+        self._idle_generation += 1
+        idle_cleanup_committed = self._stop_only_operation == "idle"
+        self._cancel_idle_timer(force=not idle_cleanup_committed)
+        if not idle_cleanup_committed:
+            self._schedule_idle_timer()
+        return "success"
+
+    async def control_unload_model(self) -> str:
+        """Stop the tracked model, or succeed unchanged when none exists."""
+        if self._shutting_down:
+            return "shutting_down"
+        if self._stop_only_operation is not None or self._swapping:
+            return "control_busy"
+
+        # Publish stop-only ownership before the first await so later model
+        # admissions cannot overtake this operation.
+        self._stop_only_operation = "manual"
+        self._idle_generation += 1
+        self._cancel_idle_timer(force=True)
+        try:
+            async with self._lock:
+                handle = self._current
+                if handle is None:
+                    return "success"
+                try:
+                    await self._stop_tracked(handle, record_stop=True)
+                except ProcessStopError:
+                    return "process_cleanup_failed"
+                return "success"
+        finally:
+            # _stop_tracked commits success or marks retained cleanup failure
+            # before control ownership is released.
+            self._stop_only_operation = None
 
     async def shutdown(self) -> None:
         """Stop lifecycle work, close the client, and clean temp files."""
