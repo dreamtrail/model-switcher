@@ -8,8 +8,15 @@
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to README
 - [P-20260826-03] Remove stray blank line before `handle.stopped` in `stop_process` (deferred P2 from P-20260826-01 audit)
 
+## Discovered
+
+- [P-20260923-04] Add a combined real-process shutdown-hook timeout/cancellation/unresolved-group/retry test; independent review found these cases covered separately, not together
+- [P-20260923-05] Constrain default pytest discovery to maintained tests; root collection currently includes historical tests under ignored artifacts/
+- [P-20260923-06] Develop deployment-specific DGX shutdown scripts and validate remote cleanup; hook support is complete, but real remote shutdown has not been tested (scripts assigned to other agents)
+
 ## Done
 
+- [P-20260923-03] Add optional per-model shutdown hooks with bounded execution and fail-closed cleanup — DONE 2026-09-23 13:13 UTC
 - [P-20260923-01] Add same-listener runtime control panel and API — DONE 2026-09-23 03:39 UTC
 - [P-20260913-03] Split statistics test coverage into focused modules — DONE 2026-09-23 01:13 UTC
 - [P-20260918-04] Split `tests/test_swapper_quick_switch.py` into focused test modules — DONE 2026-09-23 00:41 UTC
@@ -30,9 +37,8 @@
 - [P-20260625-01] Remove repeated model-name prefix from upstream logs — DONE 2026-06-25 02:04 UTC
 - [P-20260621-02] Add `--timestamp` CLI flag to conditionally show timestamps — DONE 2026-06-21 21:20 UTC
 - [P-20260621-01] Fix vLLM log level parsing — DONE 2026-06-21 20:00 UTC
-
-- [P-20260619-02] Render normal upstream output without INFO label — DONE 2026-06-19 04:44 UTC
 - [P-20260619-01] Fix Ctrl+C shutdown hang — DONE 2026-06-19 10:45 UTC
+- [P-20260619-02] Render normal upstream output without INFO label — DONE 2026-06-19 04:44 UTC
 - [P-20260616-01] Clean up upstream process log levels and format — DONE 2026-06-16 01:30 UTC
 - [P-20260613-01] Release VRAM by unloading idle models — DONE 2026-06-12 16:05 UTC
 - [P-20260612-08] Stop model process groups before swaps — DONE 2026-06-12 15:32 UTC

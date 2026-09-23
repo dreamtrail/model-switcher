@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from src.port_rewrite import cleanup_temp_dir, rewrite_command
 from src.process_manager import ProcessHandle, ProcessStopError, is_running
+from src.shutdown_hook import run_shutdown_hook
 
 logger = logging.getLogger("src.swapper")
 
@@ -78,42 +79,51 @@ class _SwapperLifecycleMixin:
     async def _stop_tracked(
         self, handle: ProcessHandle, *, record_stop: bool
     ) -> None:
-        """Shield one stop attempt and commit state only on confirmation."""
+        """Join one owned attempt; retry only unfinished cleanup stages."""
         async def stop_and_commit() -> None:
+            failed = False
             try:
-                await self._stop_process(handle)
-            except ProcessStopError:
-                raise
-            except Exception as exc:
-                raise ProcessStopError(
-                    f"Could not stop {handle.model_name} lifecycle"
-                ) from exc
-            # Commit in the owned cleanup task before it wakes other tasks.
-            self._commit_stopped_handle(handle, record_stop=record_stop)
-
-        task = asyncio.create_task(
-            stop_and_commit(), name=f"stop-{handle.model_name}"
-        )
-        self._cleanup_task = task
-        try:
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError as cancel_exc:
-                # Preserve outer cancellation, but let teardown reach a
-                # terminal success or ProcessStopError first.
+                await run_shutdown_hook(handle)
+            except Exception:
+                failed = True
+            # Launcher cleanup is unconditional, even after hook failure.
+            if not handle.local_cleanup_done:
                 try:
-                    await task
-                except ProcessStopError:
-                    if self._current is handle:
-                        self._healthy = False
-                        self._cleanup_failed = True
-                    raise cancel_exc
-                raise
-            except ProcessStopError:
+                    await self._stop_process(handle)
+                    handle.local_cleanup_done = True
+                except Exception:
+                    failed = True
+            if failed:
                 if self._current is handle:
                     self._healthy = False
                     self._cleanup_failed = True
-                raise
+                raise ProcessStopError("Model lifecycle cleanup failed") from None
+            if not handle.cleanup_committed:
+                self._commit_stopped_handle(handle, record_stop=record_stop)
+                handle.cleanup_committed = True
+
+        task = handle.cleanup_task
+        if task is None or task.done():
+            task = asyncio.create_task(
+                stop_and_commit(), name=f"stop-{handle.model_name}"
+            )
+            handle.cleanup_task = task
+        self._cleanup_task = task
+        cancelled = None
+        try:
+            # Repeated cancellation must never propagate into the owned task.
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError as exc:
+                    cancelled = exc
+                except ProcessStopError:
+                    break
+            if cancelled is not None:
+                # Consume failures, preserving the owner's cancellation.
+                task.exception()
+                raise cancelled
+            task.result()
         finally:
             if self._cleanup_task is task and task.done():
                 self._cleanup_task = None
@@ -128,17 +138,28 @@ class _SwapperLifecycleMixin:
         managed: bool,
     ) -> ProcessHandle:
         """Start a process without allowing owner cancellation to orphan it."""
-        task = asyncio.create_task(
-            self._start_process(model_name, cmd, port),
-            name=f"start-{model_name}",
-        )
+        mc = self.config.models[model_name]
+        shutdown_cmd, shutdown_timeout = mc.shutdown_cmd, mc.shutdown_timeout
+
+        async def spawn() -> ProcessHandle:
+            handle = await self._start_process(model_name, cmd, port)
+            handle.shutdown_cmd = shutdown_cmd
+            handle.shutdown_timeout = shutdown_timeout
+            return handle
+
+        task = asyncio.create_task(spawn(), name=f"start-{model_name}")
         self._spawn_task = task
         try:
             try:
                 handle = await asyncio.shield(task)
             except asyncio.CancelledError as cancel_exc:
                 try:
-                    handle = await task
+                    while not task.done():
+                        try:
+                            await asyncio.shield(task)
+                        except asyncio.CancelledError:
+                            continue
+                    handle = task.result()
                 except asyncio.CancelledError:
                     self._cancelled_owner_outcome = (
                         self._intent_outcome(generation)
@@ -315,6 +336,12 @@ class _SwapperLifecycleMixin:
                     raise cancel_exc
                 self._raise_for_intent(generation, managed=managed)
                 raise
+            except Exception:
+                await self._cleanup_for_terminal_outcome(
+                    handle, record_stop=not self._shutting_down
+                )
+                self._raise_for_intent(generation, managed=managed)
+                raise _ModelStartFailed from None
         finally:
             if self._readiness_task is readiness and readiness.done():
                 self._readiness_task = None

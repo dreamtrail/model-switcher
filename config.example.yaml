@@ -1,6 +1,7 @@
 # Model Switcher Configuration
 # Each key is a model name used in API requests.
-# Each value is the command to start that model's server.
+# Each value is a startup command string, or a mapping with cmd and optional
+# shutdown_cmd / shutdown_timeout. Existing string entries remain supported.
 #
 # The switcher always auto-assigns a free port for each model.
 # Port rewriting works in three ways:
@@ -46,3 +47,15 @@ phi-3: "llama-server --model /path/to/phi-3.gguf --listen-port 8000"
 # --- Mode 5: Script with extra args ---
 # Args after the script path are preserved.
 my-model: "./start-model.sh --ctx 8192 --threads 4"
+
+# --- Optional shutdown hook (user supplies the executable) ---
+# Runs locally BEFORE local launcher termination on every managed stop path.
+# No shell/placeholder expansion or port rewriting; stdin is disconnected.
+# Must be scoped, idempotent, noninteractive, and wait for workers to stop.
+# Exit zero confirms success (already stopped is success); failure blocks swaps.
+# Timeout must be positive and finite, and requires shutdown_cmd; default is 30s.
+# Hook timeout adds to process cleanup/service stop budgets: see docs/SETUP.md.
+# hooked-model:
+#   cmd: "my-model-server --port ${PORT}"
+#   shutdown_cmd: "/path/to/stop-my-model --model hooked-model"
+#   shutdown_timeout: 30

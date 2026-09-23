@@ -11,6 +11,31 @@ See the [README quick start](../README.md#quick-start) (venv, `requirements.txt`
 
 `run.sh` automatically uses `.venv/bin/python` when a virtualenv exists in the repo root. The installed console script is `model-switcher` (same flags as `python -m src`).
 
+## Shutdown-hook stop budgets
+
+Optional per-model `shutdown_cmd` and `shutdown_timeout` are described in the
+[configuration guide](../README.md#optional-shutdown-hooks). Supply your own
+local executable; this project does not provide remote scripts or SSH setup.
+The service's environment, working directory, PATH, and permissions apply to
+hooks. Use absolute executable paths where appropriate and arrange credentials
+outside command arguments. Hooks must never prompt for input.
+
+Budget service stop time for the hook timeout (default 30s), plus hook process
+group cleanup (up to 3s SIGTERM grace and 5s SIGKILL confirmation), plus the same
+local launcher cleanup budget, plus server/request shutdown overhead. Configure
+systemd `TimeoutStopSec` and any external supervisor's deadlines accordingly;
+a hook timeout is not the total switcher shutdown deadline. Hook descendants
+must stay in their process group; daemonized/detached workers cannot be tracked
+by local group cleanup. Scripts must explicitly confirm any remote termination.
+
+Hook failure does not skip local cleanup, but retains a failed lifecycle and
+blocks replacement. A later unload, load, or shutdown attempt retries unfinished
+stages only. Cancellation waits for owned cleanup and does not start overlapping
+hooks. The CLI's second-signal cancellation policy is unchanged; it is not an
+immediate-exit guarantee. SIGKILL, power loss, network failure, or forced service
+termination can leave workers running. There is no persisted cleanup journal or
+recovery across a switcher restart; arrange independent operational recovery.
+
 ## Running as a systemd user service
 
 The production deployment (host `ai`) runs the switcher as a **user** unit at

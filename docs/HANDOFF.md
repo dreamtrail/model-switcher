@@ -1,20 +1,20 @@
 ## Handoff Card
 
-- Goal: Preserve the completed runtime-control-panel context and resume P-20260923-02.
-- As-Of: 2026-09-23 03:53 UTC (2026-09-23 03:53 Z)
-- Branch/HEAD: master @ 7f60757 (before this handoff commit)
+- Goal: Preserve completed shutdown-hook support and resume the canonical queue.
+- As-Of: 2026-09-23 13:13 UTC (2026-09-23 13:13 Z)
+- Branch/HEAD: master @ d163af5 (before this handoff commit)
 - Mode: FINISHED
 - Working On: P-20260923-02
-- Stop Point: `docs/TODO.md:5` — P-20260923-02.
-- Next Step: Run Discover and prepare the plan for the Working On ID.
+- Stop Point: `docs/TODO.md:5`; completed implementation and independent review are ready for this save commit.
+- Next Step: Inspect the Working On ID and propose its plan for approval; DISCOVERED items require explicit promotion.
 - Key Decisions:
-  - Serve the runtime-only control panel and API on the existing listener.
-  - Trust direct local-network clients; the mutation header provides browser CSRF resistance, not authentication.
-  - Preserve shared admission, fail-closed process-group cleanup, and one-model-at-a-time operation.
-- Key Files: `tests/test_control_lifecycle.py` (next size-hygiene target); `src/control.py`, `src/swapper.py`, `src/swapper_lifecycle.py` (completed feature); `docs/TODO.md` (canonical queue).
-- Env Hints: `.venv` available; Python 3.13.5; Node.js required by control-panel JavaScript tests; no GPU required.
-- Critical Context: Runtime settings reset on restart; manual switches/unloads may interrupt in-flight requests. Size scan found two test files over 900 lines and both have NEXT IDs. `master` is five commits ahead of `origin/master` before this handoff commit.
-- Completed Since Last: P-20260923-01
-- Commands: `.venv/bin/python -m compileall -q src`; `.venv/bin/python -m pytest tests/test_control_api.py tests/test_control_lifecycle.py tests/test_control_panel.py --tb=short -q`; `.venv/bin/python -m pytest tests/ --tb=short -q`.
-- Verification: compile passed; control tests passed 84/84; related tests passed 53/53; full suite passed 573/573; final implementation Audit and Audit Tests both PASS with zero Blocker/Major findings.
-- Risks/Blockers: no blocker; the unauthenticated control API is appropriate only for the accepted trusted-local-network deployment, and local commits have not been pushed.
+  - Preserve string/`cmd` configs; optional `shutdown_cmd` runs locally with literal arguments and a 30-second default timeout.
+  - Run the hook before local termination; always attempt local cleanup and block replacement until both stages succeed.
+  - External agents own remote scripts; exit zero confirms cleanup by contract, not by independent remote observation.
+- Key Files: `src/shutdown_hook.py` (hook ownership); `src/swapper_lifecycle.py` (cleanup integration); `tests/test_swapper_shutdown_hooks.py` (lifecycle coverage); `README.md`, `docs/SETUP.md` (script contract/budgets); `docs/TODO.md` (queue).
+- Env Hints: `.venv` available, not active; Python 3.13.5; Node.js v24.15.0 for panel tests; no GPU required for maintained tests.
+- Critical Context: Successful cleanup stages are retained across retries in memory only. No recovery guarantee across restart, SIGKILL, power loss, or network failure. Both oversized test files already have NEXT IDs.
+- Completed Since Last: P-20260923-03
+- Commands: `timeout 120 .venv/bin/python -m pytest -q tests`; `timeout 30 .venv/bin/python -m compileall -q src tests`; `git diff --check`.
+- Verification: Executor reported 141 focused and 614 maintained-suite tests passed; compile passed. Fresh independent static review found no blocking defect; diff/AST checks passed. Tests were not independently rerun.
+- Risks/Blockers: Real DGX shutdown remains unverified; combined cancellation/timeout/retry coverage and root pytest artifact discovery are recorded in DISCOVERED. No implementation blocker.

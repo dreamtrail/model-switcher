@@ -47,6 +47,14 @@ class ProcessHandle:
     stopped: bool = False
     _stdout_task: asyncio.Task | None = None
     _stderr_task: asyncio.Task | None = None
+    shutdown_cmd: str | None = field(default=None, repr=False)
+    shutdown_timeout: float = 30
+    hook_succeeded: bool = False
+    hook_process: ProcessHandle | None = field(default=None, repr=False)
+    hook_exit_ok: bool = False
+    local_cleanup_done: bool = False
+    cleanup_committed: bool = False
+    cleanup_task: asyncio.Task | None = field(default=None, repr=False)
 
 
 async def _drain_stream(reader: asyncio.StreamReader) -> None:

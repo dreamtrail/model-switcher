@@ -42,6 +42,42 @@ mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port ${PORT}"
 - `${PORT}` — replaced at runtime with a free port.
 - Commands run in the foreground; the switcher manages their lifecycle.
 
+### Optional shutdown hooks
+
+String entries and mappings with `cmd` remain supported. A mapping can also
+specify a user-owned local shutdown command:
+
+```yaml
+my-model:
+  cmd: "my-model-server --port ${PORT}"
+  shutdown_cmd: "/path/to/stop-my-model --model my-model"
+  shutdown_timeout: 30
+```
+
+`shutdown_cmd` must be a nonempty, parseable command. `shutdown_timeout` defaults
+to 30 seconds and must be a positive finite number (not a boolean); specifying
+it without a hook is rejected. Hooks run locally by direct execution, with no
+implicit shell, inherited environment and working directory, and disconnected
+stdin. Arguments are literal: no `${PORT}`, environment expansion, or startup
+port rewriting applies. Hook stdout/stderr are discarded; hook commands and
+script output are not included in API errors or hook logs.
+
+The hook runs **before** local process-group termination on switches (including
+supersession), manual/idle unload, post-spawn startup failures or cancellation,
+and graceful shutdown—even if the launcher has already exited. A failed exec
+before a process handle exists does not run a hook. Local termination is always
+attempted, even when the hook fails. A replacement starts only after the hook
+exits zero and local cleanup is confirmed. Missing executables, nonzero exit,
+timeout, or unresolved process groups fail closed as `process_cleanup_failed`.
+Later lifecycle attempts retry only unfinished stages; there is no automatic
+retry loop. Successful stages and stop statistics are not repeated.
+
+Scripts must be model-scoped, idempotent, noninteractive, and wait until their
+workers have actually stopped; already stopped must count as success. Exit zero
+is the script's confirmation, **not independent verification of remote state**.
+No remote scripts or SSH integration are included. See
+[service stop budgets and limitations](docs/SETUP.md#shutdown-hook-stop-budgets).
+
 ## Quick Switching
 
 By default, a request for the model that is already loading joins that load. A request for a different model is refused immediately with HTTP 409 and `error.code: "switch_in_progress"`; it is not queued to trigger another slow load afterward.
@@ -54,7 +90,7 @@ Enable quick switching when a newer different-model request should replace the p
 
 With `--quick-switch`, the latest admitted model wins. Requests for the same target still join one load, while requests made obsolete by a newer target receive HTTP 409 with `error.code: "swap_superseded"`. Supersession interrupts readiness polling only: the obsolete model's process group is stopped before its replacement starts. If the requested model had already been stopped, switching back loads it again.
 
-Process creation failures return HTTP 500 with `error.code: "model_start_failed"`. If SIGTERM, the existing grace period, and SIGKILL cannot confirm that the old process group exited, switching fails closed with HTTP 503 and `error.code: "process_cleanup_failed"`; no replacement starts until cleanup is confirmed. Graceful cleanup can therefore delay a quick switch by several seconds, but prevents overlapping model servers and GPU-memory contention.
+Process creation failures return HTTP 500 with `error.code: "model_start_failed"`. If an optional shutdown hook fails, or SIGTERM, the existing grace period, and SIGKILL cannot confirm that the old process group exited, switching fails closed with HTTP 503 and `error.code: "process_cleanup_failed"`; no replacement starts until cleanup is confirmed. Graceful cleanup can therefore delay a quick switch by several seconds, but prevents overlapping model servers and GPU-memory contention.
 
 ## Control Panel and Runtime API
 
@@ -363,4 +399,4 @@ Colors auto-disable when output is piped or `NO_COLOR` is set.
 
 ## Shutdown
 
-Send `SIGINT` or `SIGTERM` to the switcher. On the first signal, it gracefully stops the active upstream model process group (SIGTERM + 3s grace, then SIGKILL), including servers launched through wrapper scripts. If shutdown appears stuck, send a second `SIGINT` or `SIGTERM` to force shutdown by cancelling the main server task.
+Send `SIGINT` or `SIGTERM` to the switcher. On the first signal, it runs the optional shutdown hook, then gracefully stops the active upstream model process group (SIGTERM + 3s grace, then SIGKILL), including servers launched through wrapper scripts. A second `SIGINT` or `SIGTERM` cancels the main server task; owned cleanup can still delay exit. This signal policy is unchanged and does not guarantee immediate forced exit. SIGKILL, power/network failure, and forced service termination cannot guarantee hooks complete. Cleanup ownership is in memory only, with no persistent recovery after restart.

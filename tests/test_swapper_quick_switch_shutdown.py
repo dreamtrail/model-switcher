@@ -192,7 +192,7 @@ class TestCancellationAndShutdown:
 
             release_final_stop.set()
             with pytest.raises(
-                ProcessStopError, match="failed stop attempt 3"
+                ProcessStopError, match="Model lifecycle cleanup failed"
             ):
                 await asyncio.wait_for(shutdown, 1)
             await asyncio.wait_for(idle, 1)
@@ -454,7 +454,7 @@ class TestCancellationAndShutdown:
         swapper._current_model = "a"
         swapper._healthy = False
 
-        with pytest.raises(ProcessStopError, match="still running"):
+        with pytest.raises(ProcessStopError, match="Model lifecycle cleanup failed"):
             await swapper.shutdown()
 
         assert client.closed is True

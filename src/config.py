@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 import re
+import shlex
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +20,8 @@ class ModelConfig:
     name: str
     cmd: str  # command (rewritten with auto-assigned port)
     port: int = 0  # resolved port
+    shutdown_cmd: str | None = field(default=None, repr=False)
+    shutdown_timeout: float = 30
 
 
 @dataclass
@@ -97,7 +101,43 @@ def load_config(path: str | Path) -> Config:
         if not cmd:
             raise ValueError(f"Model '{name}' has an empty command")
 
-        models[name] = ModelConfig(name=name, cmd=cmd)
+        shutdown_cmd = None
+        shutdown_timeout = 30
+        if isinstance(value, dict):
+            if "shutdown_cmd" in value:
+                shutdown_cmd = value["shutdown_cmd"]
+                try:
+                    args = (
+                        shlex.split(shutdown_cmd)
+                        if isinstance(shutdown_cmd, str) else []
+                    )
+                    valid = bool(args and args[0] and "\x00" not in shutdown_cmd)
+                except ValueError:
+                    valid = False
+                if not valid:
+                    raise ValueError(f"Model '{name}' has an invalid shutdown_cmd")
+            if "shutdown_timeout" in value:
+                shutdown_timeout = value["shutdown_timeout"]
+                if shutdown_cmd is None:
+                    raise ValueError(
+                        f"Model '{name}' shutdown_timeout requires shutdown_cmd"
+                    )
+                try:
+                    valid_timeout = (
+                        not isinstance(shutdown_timeout, bool)
+                        and isinstance(shutdown_timeout, (int, float))
+                        and math.isfinite(shutdown_timeout)
+                        and shutdown_timeout > 0
+                    )
+                except OverflowError:
+                    valid_timeout = False
+                if not valid_timeout:
+                    raise ValueError(f"Model '{name}' has an invalid shutdown_timeout")
+
+        models[name] = ModelConfig(
+            name=name, cmd=cmd, shutdown_cmd=shutdown_cmd,
+            shutdown_timeout=shutdown_timeout,
+        )
 
     if not models:
         raise ValueError("Config must define at least one model")
