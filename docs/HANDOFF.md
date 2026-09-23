@@ -1,20 +1,20 @@
 ## Handoff Card
 
-- Goal: Preserve completed P-20260918-04 context and resume P-20260913-03.
-- As-Of: 2026-09-23 00:41 UTC (2026-09-23 00:41 Z)
-- Branch/HEAD: master @ 1b34938 (before this task commit)
+- Goal: Preserve completed P-20260913-03 context and resume P-20260913-04.
+- As-Of: 2026-09-23 01:13 UTC (2026-09-23 01:13 Z)
+- Branch/HEAD: master @ 208056a (before this task commit)
 - Mode: FINISHED
-- Working On: P-20260913-03
-- Stop Point: `docs/TODO.md:5` — P-20260913-03.
+- Working On: P-20260913-04
+- Stop Point: `docs/TODO.md:5` — P-20260913-04.
 - Next Step: Run Discover and prepare the plan for the Working On ID.
 - Key Decisions:
-  - Delete the oversized quick-switch test monolith and replace it with five responsibility-focused collected modules plus one non-collected shared helper module.
-  - Preserve all helper and test-method behavior exactly; use AST equality and normalized node IDs to verify the move rather than redesigning race/lifecycle setups.
-  - Keep production files byte-identical and retain existing `src.swapper` monkeypatch and private seams.
-- Key Files: `tests/quick_switch_helpers.py`, `tests/test_swapper_quick_switch_admission.py`, `tests/test_swapper_quick_switch_outcomes.py`, `tests/test_swapper_quick_switch_races.py`, `tests/test_swapper_quick_switch_cancellation.py`, `tests/test_swapper_quick_switch_shutdown.py`, `docs/TODO.md`.
-- Env Hints: `.venv` available; Python 3.13.5; automated tests require no GPU.
-- Critical Context: The original 2,000-line / 78,344-byte module is deleted. All six replacements are below 900 lines and 50,000 bytes; the support module is not collected by pytest.
-- Completed Since Last: P-20260918-04
-- Commands: focused five-module pytest run; `.venv/bin/python -m pytest tests/test_swapper_*.py --tb=short -q`; `.venv/bin/python -m pytest tests/ --tb=short -q`.
-- Verification: nine helper and 26 test-method ASTs matched exactly; normalized collection matched 30/30; independent and aggregate split tests passed 30/30; related swapper suite passed 71/71; full suite passed 489/489; production hashes were unchanged; audit PASS with zero findings.
-- Risks/Blockers: no blocker; pytest node module paths intentionally changed with the split, while class, method, parameter identities, assertions, and behavior remain unchanged.
+  - Delete the oversized statistics test monolith and replace it with five responsibility-focused collected modules plus one non-collected helper module.
+  - Preserve three helpers, 11 classes, 91 methods, and 108 collected cases exactly through AST, text, and normalized node-ID accounting.
+  - Keep production files byte-identical, retain the intentionally unused `_wait_for_queue` helper, and update only three stale prose references.
+- Key Files: `tests/stats_helpers.py`, `tests/test_stats_collector.py`, `tests/test_stats_contract.py`, `tests/test_stats_request_integration.py`, `tests/test_stats_max_aggregate.py`, `tests/test_stats_token_integration.py`, `docs/TODO.md`.
+- Env Hints: `.venv` available; Python 3.13.5; Node.js required by existing dashboard JavaScript tests; automated tests require no GPU.
+- Critical Context: The original 2,458-line / 101,690-byte monolith is deleted. Every replacement is below 900 lines and 50,000 bytes, and `tests/stats_helpers.py` intentionally collects no tests.
+- Completed Since Last: P-20260913-03
+- Commands: five-module focused pytest run; `.venv/bin/python -m pytest tests/test_stats_*.py tests/test_proxy.py tests/test_swapper_*.py --tb=short -q`; `.venv/bin/python -m pytest tests/ --tb=short -q`.
+- Verification: helper/class/method accounting passed for 3/11/91 units; normalized collection matched 108/108; independent and aggregate stats tests passed 108/108; related suite passed 240/240; full suite passed 489/489; production hashes were unchanged; audit PASS with zero findings.
+- Risks/Blockers: no blocker; pytest module paths intentionally changed, while class, method, parameter identities, assertions, event timing, and behavior remain unchanged.

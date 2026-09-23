@@ -685,7 +685,7 @@ class TestInjectionEndToEnd:
     The proxy handler mirrors the streaming branch of
     src/swapper.py::_proxy_for_model (parse once -> inject -> stream_proxy);
     the real swapper wiring is covered end-to-end by the streaming
-    integration tests in tests/test_stats.py.
+    integration tests in tests/test_stats_token_integration.py.
     """
 
     async def _proxy_handler(self, request, upstream_url, outcome):

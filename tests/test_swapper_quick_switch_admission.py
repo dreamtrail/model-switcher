@@ -12,7 +12,7 @@ Expected behavior is derived from plan P-20260918-02.  AC-to-test map:
 - AC10: readiness-owner cancellation, shutdown cleanup, and idle-cleanup
   shutdown precedence tests
 - AC11: terminal outcome and shutdown-excluded stop statistics assertions here
-  and in test_stats.py
+  and in test_stats_request_integration.py
 - AC12: test_constructor_and_private_helpers_keep_default_contract plus the
   unchanged lifecycle, idle, proxy, and routing suites
 - AC13: documentation audit (not an executable source contract)
