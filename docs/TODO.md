@@ -2,7 +2,6 @@
 
 ## Next
 
-- [P-20260918-03] Split `src/swapper.py` (1074 LOC) into focused modules
 - [P-20260918-04] Split `tests/test_swapper_quick_switch.py` (2000 LOC) into focused test modules
 - [P-20260913-03] Split `tests/test_stats.py` (1811 LOC) into focused test modules
 - [P-20260913-04] Split `tests/test_proxy.py` (1243 LOC) into focused test modules
@@ -12,6 +11,7 @@
 
 ## Done
 
+- [P-20260918-03] Split `src/swapper.py` into focused modules — DONE 2026-09-23 00:14 UTC
 - [P-20260920-01] Add FlashML FreeToken server compatibility — DONE 2026-09-20 05:36 UTC
 - [P-20260918-05] Add per-model maximum aggregate generation throughput metric — DONE 2026-09-18 06:59 UTC
 - [P-20260918-02] Add configurable quick switching for pending model loads — DONE 2026-09-18 06:00 UTC
