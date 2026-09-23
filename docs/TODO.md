@@ -2,6 +2,7 @@
 
 ## Next
 
+- [P-20260923-02] Split `tests/test_control_lifecycle.py` (1224 LOC) into focused test modules
 - [P-20260913-04] Split `tests/test_proxy.py` (1243 LOC) into focused test modules
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to README
