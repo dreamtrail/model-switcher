@@ -1,10 +1,10 @@
 ## Handoff Card
 
 - Goal: Preserve completed shutdown-hook support and resume the canonical queue.
-- As-Of: 2026-09-24 12:15 UTC (2026-09-24 12:15 Z)
-- Branch/HEAD: master @ d58b25d (before this handoff commit)
+- As-Of: 2026-09-24 13:15 UTC (2026-09-24 13:15 Z)
+- Branch/HEAD: master @ 0a7b6a5 (before this handoff commit)
 - Mode: FINISHED
-- Working On: P-20260923-02
+- Working On: P-20260913-04
 - Stop Point: `docs/TODO.md:5`; completed implementation and independent review are ready for this save commit.
 - Next Step: Inspect the Working On ID and propose its plan for approval; DISCOVERED items require explicit promotion.
 - Key Decisions:
@@ -12,10 +12,11 @@
   - Run the hook before local termination; always attempt local cleanup and block replacement until both stages succeed.
   - External agents own remote scripts; exit zero confirms cleanup by contract, not by independent remote observation.
   - Prefill numerator excludes cached reads when reported (P-20260924-01).
-- Key Files: `src/shutdown_hook.py` (hook ownership); `src/swapper_lifecycle.py` (cleanup integration); `tests/test_swapper_shutdown_hooks.py` (lifecycle coverage); `README.md`, `docs/SETUP.md` (script contract/budgets); `docs/TODO.md` (queue).
+  - Control lifecycle tests split into 6 focused modules + shared control_helpers.py (P-20260924-02).
+- Key Files: `tests/control_helpers.py`, `tests/test_control_lifecycle_*.py` (split control-lifecycle modules); `src/shutdown_hook.py` (hook ownership); `src/swapper_lifecycle.py` (cleanup integration); `tests/test_swapper_shutdown_hooks.py` (lifecycle coverage); `README.md`, `docs/SETUP.md` (script contract/budgets); `docs/TODO.md` (queue).
 - Env Hints: `.venv` available, not active; Python 3.13.5; Node.js v24.15.0 for panel tests; no GPU required for maintained tests.
 - Critical Context: Successful cleanup stages are retained across retries in memory only. No recovery guarantee across restart, SIGKILL, power loss, or network failure. Both oversized test files already have NEXT IDs.
-- Completed Since Last: P-20260924-01
+- Completed Since Last: P-20260924-02
 - Commands: `timeout 120 .venv/bin/python -m pytest -q tests`; `timeout 30 .venv/bin/python -m compileall -q src tests`; `git diff --check`.
-- Verification: 619 maintained tests passed, including 5 new prefill regression tests; compileall and git diff --check clean; audit PASS with one recorded P2 (negative cached_tokens can inflate prefill — documented, not fixed). Tests rerun during this save.
+- Verification: 33/33 split cases and 619 maintained tests passed; AST and normalized node-ID accounting passed; compileall and git diff --check clean. Tests rerun during this save.
 - Risks/Blockers: Real DGX shutdown remains unverified; combined cancellation/timeout/retry coverage and root pytest artifact discovery are recorded in DISCOVERED. No implementation blocker.
