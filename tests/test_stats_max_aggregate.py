@@ -262,16 +262,12 @@ class TestMaxAggregateGenerationThroughput:
             "max_aggregate": None,
         }
 
-    def test_dashboard_has_maximum_header_cell_and_eleven_column_fallback(
-        self,
-    ):
-        # AC7 (P-20260924-01): table shape and per-model field wiring; the
-        # Prefill tok column widens the token-models fallback to 11 cells.
-        assert "<th>Max Agg Gen t/s</th>" in STATS_HTML
-        assert '<tbody id="token-models"><tr><td colspan="11">–</td>' \
+    def test_dashboard_has_best_generation_header_and_field_wiring(self):
+        # AC7, updated for the compact table (P-20260925-01): the maximum is
+        # the "Best gen t/s" column and is wired to the per-model field only.
+        assert "<th>Best gen t/s</th>" in STATS_HTML
+        assert "withBest ? fmtMaxAggregateTps(gt.max_aggregate) : DASH" \
             in STATS_HTML
-        assert 'fillRowless("token-models", 11)' in STATS_HTML
-        assert "fmtMaxAggregateTps(gt.max_aggregate)" in STATS_HTML
 
     @staticmethod
     def _execute_dashboard_javascript(expression):
@@ -292,12 +288,15 @@ class Element {
     this.id = id;
     this.children = [];
     this._textContent = "";
-    this.colSpan = 1;
+    this.className = "";
+    this.hidden = false;
+    this.style = {};
   }
   set textContent(value) {
     this._textContent = String(value);
     if (value === "") this.children = [];
   }
+  setAttribute() {}
   get textContent() {
     return this.children.length
       ? this.children.map((child) => child.textContent).join("")
@@ -305,9 +304,9 @@ class Element {
   }
   appendChild(child) { this.children.push(child); return child; }
 }
-const elements = new Map([
-  ["token-models", new Element("tbody", "token-models")],
-]);
+const elements = new Map(
+  ["models", "totals", "errors"].map((id) => [id, new Element("div", id)])
+);
 const document = {
   getElementById(id) { return elements.get(id) || null; },
   createElement(tagName) { return new Element(tagName); },
@@ -329,7 +328,7 @@ function setInterval() { return 0; }
     @pytest.mark.parametrize(
         ("value_expression", "expected"),
         [
-            ("{tps: 107.76, concurrency: 3}", "107.8@3"),
+            ("{tps: 107.76, concurrency: 3}", "107.8 @3"),
             ("null", "–"),
             ("42", "–"),
             ('"primitive"', "–"),
@@ -363,7 +362,7 @@ function setInterval() { return 0; }
         # AC7: exercise the actual table renderer and DOM textContent result,
         # not merely the formatter's source or return value.
         output = self._execute_dashboard_javascript(r'''
-renderTokenModels({
+render({models: {
   "model-a": {
     requests: {
       tokens: {
@@ -380,19 +379,27 @@ renderTokenModels({
       ttft_ms: {p50: 10, p95: 20},
     },
   },
-});
-const rendered = document.getElementById("token-models");
+}});
+const rendered = document.getElementById("models");
+const totals = document.getElementById("totals");
 console.log(JSON.stringify({
-  rows: rendered.children.length,
+  rows: rendered.children.length + totals.children.length,
   cells: rendered.children[0].children.length,
-  maximumText: rendered.children[0].children[8].textContent,
+  maximumText: rendered.children[0].children[4].textContent,
+  allRowMaximumText: totals.children[0].children[4].textContent,
 }));
 ''')
-        assert output == {"rows": 1, "cells": 11, "maximumText": "107.8@3"}
+        # One model row plus the "All models" totals row (in <tfoot> since
+        # P-20260925-01 rev 2), 8 columns; the global row never
+        # shows a maximum because the global block has no max_aggregate.
+        assert output == {
+            "rows": 2, "cells": 8,
+            "maximumText": "107.8 @3", "allRowMaximumText": "–",
+        }
 
     def test_dashboard_formats_valid_maximum_to_one_decimal_at_concurrency(self):
         # Preserve the static wiring gate alongside executable JS coverage.
-        assert 'return v.tps.toFixed(1) + "@" + v.concurrency;' in STATS_HTML
+        assert 'return v.tps.toFixed(1) + " @" + v.concurrency;' in STATS_HTML
 
     @pytest.mark.parametrize(
         "invalid_contract",
@@ -413,7 +420,8 @@ console.log(JSON.stringify({
         # to DASH, without requiring a browser/runtime dependency.
         formatter = STATS_HTML.split(
             "function fmtMaxAggregateTps(v) {", 1
-        )[1].split("\n}\n\nfunction fmtBytes", 1)[0]
+        )[1].split("\n}\n\nfunction fmtTtft", 1)[0]
+        assert "function fmtTtft" not in formatter
         assert invalid_contract in formatter
         assert "return DASH;" in formatter
         assert 'const DASH = "–"' in STATS_HTML

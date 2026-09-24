@@ -568,88 +568,271 @@ STATS_HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Model Switcher — Statistics</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root {
+    color-scheme: light;
+    --plane: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --hairline: #e1e0d9;
+    --baseline: #c3c2b7;
+    --ring: rgba(11, 11, 11, 0.10);
+    --wash: rgba(11, 11, 11, 0.03);
+    --accent: #2a78d6;
+    --track: #b7d3f6;
+    --good: #0ca30c;
+    --serious: #ec835a;
+    --critical: #d03b3b;
+    --good-tint: rgba(12, 163, 12, 0.10);
+    --critical-tint: rgba(208, 59, 59, 0.08);
+    --shadow: 0 1px 2px rgba(11, 11, 11, 0.04), 0 2px 6px rgba(11, 11, 11, 0.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --plane: #0d0d0d;
+      --surface: #1a1a19;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --hairline: #2c2c2a;
+      --baseline: #383835;
+      --ring: rgba(255, 255, 255, 0.10);
+      --wash: rgba(255, 255, 255, 0.04);
+      --accent: #3987e5;
+      --track: #184f95;
+      --good-tint: rgba(12, 163, 12, 0.18);
+      --critical-tint: rgba(208, 59, 59, 0.16);
+      --shadow: none;
+    }
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { background: var(--plane); }
   body {
-    font-family: system-ui, sans-serif;
-    margin: 0 auto; padding: 1rem; max-width: 60rem;
-    background: light-dark(#fafafa, #1b1b1b); color: light-dark(#222, #eee);
+    margin: 0; background: var(--plane); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 15px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
   }
-  h1 { font-size: 1.4rem; margin: 0; }
-  header p { margin: 0.2rem 0 1rem; color: #888; }
-  .cards { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1.25rem; }
+  main { max-width: 64rem; margin: 0 auto; padding: 2rem 1.5rem 2.5rem; }
+  .top {
+    display: flex; flex-wrap: wrap; align-items: flex-end;
+    justify-content: space-between; gap: 0.5rem 1.5rem; margin-bottom: 1.25rem;
+  }
+  h1 { margin: 0; font-size: 1.375rem; font-weight: 650; letter-spacing: -0.01em; }
+  .subtitle { margin: 0.1rem 0 0; color: var(--ink-2); font-size: 0.9rem; }
+  .live {
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    color: var(--ink-2); font-size: 0.8125rem; white-space: nowrap;
+  }
+  .dot {
+    display: inline-block; width: 0.5rem; height: 0.5rem; border-radius: 50%;
+    flex: none; background: var(--muted);
+  }
+  .dot.good { background: var(--good); }
+  .dot.serious { background: var(--serious); }
+  .dot.critical { background: var(--critical); }
+  .live .dot.good { box-shadow: 0 0 0 3px var(--good-tint); }
   .card {
-    flex: 1 1 8rem; border: 1px solid #8884; border-radius: 0.5rem;
-    padding: 0.75rem 1rem; min-width: 8rem;
+    background: var(--surface); border: 1px solid var(--ring);
+    border-radius: 12px; box-shadow: var(--shadow); min-width: 0;
   }
-  .card .value { font-size: 1.5rem; font-weight: 600; }
-  .card .label { font-size: 0.8rem; color: #888; }
-  table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
-  th, td { border: 1px solid #8884; padding: 0.35rem 0.6rem; text-align: right; }
-  th:first-child, td:first-child { text-align: left; }
-  caption { caption-side: top; text-align: left; font-weight: 600; padding: 0.3rem 0; }
+  .kpis {
+    display: grid; gap: 0.75rem; margin-bottom: 1rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  @media (min-width: 34rem) { .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (min-width: 60rem) { .kpis { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
+  .tile { padding: 0.85rem 1rem 0.8rem; }
+  .tile .label { color: var(--ink-2); font-size: 0.8rem; }
+  .tile .value {
+    margin-top: 0.3rem; font-size: 1.6rem; font-weight: 600; line-height: 1.15;
+    letter-spacing: -0.015em; font-variant-numeric: proportional-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .tile .value.idle { color: var(--muted); }
+  .tile .value.name {
+    display: -webkit-box; -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2; line-clamp: 2;
+    min-height: 1.84rem; font-size: 1.15rem; line-height: 1.6;
+    letter-spacing: 0; white-space: normal; overflow-wrap: anywhere;
+  }
+  .tile .value.name.long {
+    font-size: 1.05rem; line-height: 1.3; word-break: break-all;
+  }
+  .tile .unit {
+    margin-left: 0.25rem; color: var(--muted); font-size: 0.8rem;
+    font-weight: 500; letter-spacing: 0;
+  }
+  .tile .sub {
+    margin-top: 0.3rem; color: var(--muted); font-size: 0.78rem; line-height: 1.35;
+  }
+  .tile .sub .line {
+    display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .tile .sub .dot { margin-right: 0.35rem; vertical-align: 0.05em; }
+  .tile .sub .serving { color: var(--ink-2); }
+  .section { margin-bottom: 1rem; }
+  .section h2 {
+    margin: 0; padding: 0.9rem 1.25rem 0.6rem;
+    font-size: 0.95rem; font-weight: 600;
+  }
+  .table-wrap { overflow-x: auto; padding-bottom: 0.35rem; }
+  table {
+    width: 100%; border-collapse: separate; border-spacing: 0;
+    font-variant-numeric: tabular-nums; font-size: 0.875rem;
+  }
+  th, td { padding: 0.6rem 0.75rem; text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; padding-left: 1.25rem; }
+  th:last-child, td:last-child { padding-right: 1.25rem; }
+  th {
+    color: var(--muted); font-size: 0.75rem; font-weight: 500;
+    padding-top: 0.35rem; padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--hairline);
+  }
+  tbody td { border-bottom: 1px solid var(--hairline); }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: var(--wash); }
+  tfoot td { border-top: 1px solid var(--baseline); color: var(--ink-2); }
+  tfoot td:first-child { color: var(--ink); font-weight: 600; }
+  tbody:empty + tfoot td { border-top: none; }
+  .model-name {
+    display: inline-block; max-width: 12rem; vertical-align: bottom;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-weight: 500;
+  }
+  tr.loaded .model-name { font-weight: 600; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 0.3rem; margin-left: 0.5rem;
+    padding: 0.05rem 0.5rem 0.05rem 0.4rem; border-radius: 999px;
+    background: var(--good-tint); color: var(--ink-2);
+    font-size: 0.7rem; font-weight: 500; vertical-align: 0.1em;
+  }
+  .pill .dot { width: 0.4rem; height: 0.4rem; }
+  .muted { color: var(--muted); }
+  td .dot.critical { margin-right: 0.4rem; vertical-align: 0.1em; }
+  .meter {
+    display: inline-block; width: 4rem; height: 6px; margin-right: 0.6rem;
+    border-radius: 3px; background: var(--track); overflow: hidden;
+    vertical-align: 0.15em;
+  }
+  .meter .fill { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+  .pct { display: inline-block; min-width: 2.5em; }
+  .chips { display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0 1.25rem 1.1rem; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    padding: 0.25rem 0.7rem 0.25rem 0.6rem; border-radius: 999px;
+    background: var(--critical-tint); font-size: 0.8125rem;
+  }
+  .chip .count { color: var(--ink-2); font-weight: 600; font-variant-numeric: tabular-nums; }
+  footer { margin-top: 1.25rem; color: var(--muted); font-size: 0.78rem; }
+  footer a, noscript a { color: inherit; text-underline-offset: 2px; }
+  footer a:hover { color: var(--accent); }
+  @media (max-width: 34rem) {
+    main { padding: 1.25rem 0.875rem 2rem; }
+    .tile .value { font-size: 1.35rem; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>Model Switcher — Statistics</h1>
-  <p>Current model: <span id="current-model">–</span> ·
-     Uptime: <span id="uptime">–</span></p>
+<main>
+<header class="top">
+  <div>
+    <h1>Model Switcher</h1>
+    <p class="subtitle">Statistics</p>
+  </div>
+  <div class="live" role="status">
+    <span id="live-dot" class="dot"></span><span id="live-text">Connecting…</span>
+  </div>
 </header>
-<div class="cards">
-  <div class="card"><div class="value" id="total">–</div><div class="label">Total requests</div></div>
-  <div class="card"><div class="value" id="success-rate">–</div><div class="label">Success rate</div></div>
-  <div class="card"><div class="value" id="concurrency">–</div><div class="label">Active / peak requests</div></div>
-  <div class="card"><div class="value" id="swaps">–</div><div class="label">Swaps</div></div>
-  <div class="card"><div class="value" id="rpm">–</div><div class="label">Requests/min (60s)</div></div>
-  <div class="card"><div class="value" id="gen-tps">–</div><div class="label">Gen tok/s (avg)</div></div>
-  <div class="card"><div class="value" id="completion-tokens">–</div><div class="label">Completion tokens</div></div>
-</div>
 <noscript><p>JavaScript is disabled — raw metrics are available at
 <a href="/stats/json">/stats/json</a>.</p></noscript>
-<table>
-  <caption>Error breakdown</caption>
-  <thead><tr><th>Kind</th><th>Count</th></tr></thead>
-  <tbody id="errors"><tr><td colspan="2">–</td></tr></tbody>
-</table>
-<table>
-  <caption>Per-model statistics</caption>
-  <thead><tr>
-    <th>Model</th><th>Starts</th><th>Stops</th><th>Requests</th>
-    <th>Success</th><th>Failure</th><th>Avg ms</th><th>P50 ms</th>
-    <th>P95 ms</th><th>Max ms</th><th>Bytes in</th><th>Bytes out</th>
-  </tr></thead>
-  <tbody id="models"><tr><td colspan="12">–</td></tr></tbody>
-</table>
-<table>
-  <caption>Token throughput</caption>
-  <thead><tr>
-    <th>Model</th><th>Prompt tok</th><th>Compl tok</th><th>Cached tok</th>
-    <th>Prefill tok</th><th>Cache hit %</th>
-    <th>Prompt t/s</th><th>Gen t/s</th><th>Max Agg Gen t/s</th>
-    <th>TTFT p50 ms</th><th>TTFT p95 ms</th>
-  </tr></thead>
-  <tbody id="token-models"><tr><td colspan="11">–</td></tr></tbody>
-</table>
+<section class="kpis" aria-label="Summary">
+  <div class="card tile">
+    <div class="label">Loaded model</div>
+    <div id="kpi-model" class="value name idle">–</div>
+    <div class="sub"><span id="kpi-model-dot" class="dot good" hidden></span><span id="kpi-model-sub">–</span></div>
+  </div>
+  <div class="card tile">
+    <div class="label">Generation</div>
+    <div class="value"><span id="kpi-gen">–</span><span id="kpi-gen-unit" class="unit" hidden>tok/s</span></div>
+    <div class="sub">average</div>
+  </div>
+  <div class="card tile">
+    <div class="label">Requests</div>
+    <div id="kpi-reqs" class="value">–</div>
+    <div id="kpi-reqs-sub" class="sub">–</div>
+  </div>
+  <div class="card tile">
+    <div class="label">Active now</div>
+    <div id="kpi-active" class="value">–</div>
+    <div id="kpi-active-sub" class="sub">–</div>
+  </div>
+  <div class="card tile">
+    <div class="label">Swaps</div>
+    <div id="kpi-swaps" class="value">–</div>
+    <div id="kpi-swaps-sub" class="sub">–</div>
+  </div>
+  <div class="card tile">
+    <div class="label">Uptime</div>
+    <div id="kpi-uptime" class="value">–</div>
+    <div class="sub">since start</div>
+  </div>
+</section>
+<section class="card section">
+  <h2>Models</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr>
+      <th>Model</th><th>Reqs</th><th>Errors</th><th>Gen t/s</th>
+      <th>Best gen t/s</th><th>Prompt t/s</th><th>TTFT p50 / p95</th><th>Cache</th>
+    </tr></thead>
+    <tbody id="models"></tbody>
+    <tfoot id="totals"></tfoot>
+  </table>
+  </div>
+</section>
+<section id="errors-card" class="card section" hidden>
+  <h2>Errors</h2>
+  <div id="errors" class="chips"></div>
+</section>
+<footer>Raw data: <a href="/stats/json">/stats/json</a></footer>
+</main>
 <script>
 "use strict";
 
 const DASH = "–";
 
+function isNum(v) {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+function obj(v) {
+  return (v && typeof v === "object" && !Array.isArray(v)) ? v : {};
+}
+
 function fmtInt(v) {
-  return (typeof v === "number" && isFinite(v)) ? String(v) : DASH;
-}
-
-function fmtRate(v) {
-  return (typeof v === "number" && isFinite(v))
-    ? (v * 100).toFixed(1) + "%" : DASH;
-}
-
-function fmtMs(v) {
-  return (typeof v === "number" && isFinite(v)) ? v.toFixed(1) : DASH;
+  return isNum(v) ? Math.round(v).toLocaleString("en-US") : DASH;
 }
 
 function fmtTps(v) {
-  return (typeof v === "number" && isFinite(v)) ? v.toFixed(1) : DASH;
+  return isNum(v) ? v.toFixed(1) : DASH;
+}
+
+function fmtCompact(v) {
+  if (!isNum(v)) return DASH;
+  const n = Math.round(v);
+  const a = Math.abs(n);
+  if (a < 10000) return n.toLocaleString("en-US");
+  if (a < 999950) return (n / 1e3).toFixed(1) + "K";
+  if (a < 999995000) return (n / 1e6).toFixed(2) + "M";
+  return (n / 1e9).toFixed(2) + "B";
+}
+
+function fmtPct(v) {
+  return isNum(v) ? Math.round(v * 100) + "%" : DASH;
 }
 
 function fmtMaxAggregateTps(v) {
@@ -661,152 +844,291 @@ function fmtMaxAggregateTps(v) {
         Number.isInteger(v.concurrency) && v.concurrency > 0)) {
     return DASH;
   }
-  return v.tps.toFixed(1) + "@" + v.concurrency;
+  return v.tps.toFixed(1) + " @" + v.concurrency;
 }
 
-function fmtBytes(v) {
-  if (!(typeof v === "number" && isFinite(v))) return DASH;
-  const units = ["B", "KiB", "MiB", "GiB"];
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-  return v.toFixed(i ? 1 : 0) + " " + units[i];
+function fmtTtft(t) {
+  t = obj(t);
+  if (!isNum(t.p50) && !isNum(t.p95)) return DASH;
+  return fmtInt(t.p50) + " / " + fmtInt(t.p95);
 }
 
 function fmtUptime(s) {
-  if (!(typeof s === "number" && isFinite(s))) return DASH;
-  const h = Math.floor(s / 3600);
+  if (!isNum(s) || s < 0) return DASH;
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = Math.floor(s % 60);
-  return (h ? h + "h " : "") + (m ? m + "m " : "") + sec + "s";
+  if (d) return d + "d " + h + "h";
+  if (h) return h + "h " + m + "m";
+  if (m) return m + "m " + sec + "s";
+  return sec + "s";
+}
+
+function fmtSeconds(ms) {
+  return isNum(ms) ? (ms / 1000).toFixed(1) + " s" : DASH;
+}
+
+function byId(id) {
+  return document.getElementById(id);
 }
 
 function setText(id, text) {
-  const el = document.getElementById(id);
+  const el = byId(id);
   if (el) el.textContent = text;
+  return el;
 }
 
-function fillRowless(tbodyId, cols) {
-  const tbody = document.getElementById(tbodyId);
-  if (!tbody) return;
-  tbody.textContent = "";
-  const tr = document.createElement("tr");
-  const td = document.createElement("td");
-  td.colSpan = cols;
-  td.textContent = DASH;
-  tr.appendChild(td);
-  tbody.appendChild(tr);
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+function setCount(id, v) {
+  const node = setText(id, fmtCompact(v));
+  if (node) node.title = isNum(v) ? fmtInt(v) : "";
+  return node;
+}
+
+const LONG_NAME = 12;
+
+function currentName(data) {
+  return data.current_model == null ? null : String(data.current_model);
+}
+
+function renderTiles(data) {
+  const current = currentName(data);
+  const req = obj(data.requests);
+  const conc = obj(data.concurrency);
+  const swaps = obj(data.swaps);
+  const thr = obj(data.throughput);
+
+  const model = setText("kpi-model", current == null ? "None" : current);
+  if (model) {
+    model.className = current == null ? "value name idle" :
+      (current.length > LONG_NAME ? "value name long" : "value name");
+    model.title = current == null ? "" : current;
+  }
+  const dot = byId("kpi-model-dot");
+  if (dot) dot.hidden = current == null;
+  const modelSub = setText("kpi-model-sub", current == null ? "Idle" : "Serving");
+  if (modelSub) modelSub.className = current == null ? "" : "serving";
+
+  const gen = fmtTps(obj(obj(req.rates).generation_tps).avg);
+  setText("kpi-gen", gen);
+  const unit = byId("kpi-gen-unit");
+  if (unit) unit.hidden = gen === DASH;
+
+  setCount("kpi-reqs", req.total);
+  const reqSub = byId("kpi-reqs-sub");
+  if (reqSub) {
+    reqSub.textContent = "";
+    reqSub.appendChild(el("span", "line",
+      fmtInt(req.failure) + (req.failure === 1 ? " error" : " errors")));
+    reqSub.appendChild(el("span", "line", fmtInt(thr.last_60s) + " in last min"));
+  }
+
+  setCount("kpi-active", conc.active);
+  setText("kpi-active-sub", "peak " + fmtInt(conc.peak));
+
+  setCount("kpi-swaps", swaps.count);
+  setText("kpi-swaps-sub", "avg " + fmtSeconds(swaps.avg_ms));
+
+  setText("kpi-uptime", fmtUptime(data.uptime_seconds));
+}
+
+function rowCells(name, req, withBest) {
+  const r = obj(req);
+  const rates = obj(r.rates);
+  const gt = obj(rates.generation_tps);
+  const pt = obj(rates.prompt_tps);
+  return [
+    name,
+    fmtInt(r.total),
+    r.failure,
+    fmtTps(gt.avg),
+    withBest ? fmtMaxAggregateTps(gt.max_aggregate) : DASH,
+    fmtInt(pt.avg),
+    fmtTtft(r.ttft_ms),
+    obj(r.tokens).cache_hit_rate,
+  ];
+}
+
+function nameCell(name, loaded) {
+  const td = el("td");
+  const label = el("span", "model-name", name);
+  label.title = name;
+  td.appendChild(label);
+  if (loaded) {
+    const pill = el("span", "pill");
+    pill.appendChild(el("span", "dot good"));
+    pill.appendChild(el("span", "", "Loaded"));
+    td.appendChild(pill);
+  }
+  return td;
+}
+
+function errorsCell(failure) {
+  const td = el("td");
+  if (isNum(failure) && failure > 0) {
+    td.appendChild(el("span", "dot critical"));
+    td.appendChild(el("span", "", fmtInt(failure)));
+  } else {
+    td.appendChild(el("span", "muted", fmtInt(failure)));
+  }
+  return td;
+}
+
+function ttftCell(text) {
+  const td = el("td");
+  if (text === DASH) {
+    td.appendChild(el("span", "muted", DASH));
+  } else {
+    td.appendChild(el("span", "", text));
+    td.appendChild(el("span", "muted", " ms"));
+  }
+  return td;
+}
+
+function cacheCell(rate) {
+  const td = el("td");
+  if (!isNum(rate)) {
+    td.appendChild(el("span", "muted", DASH));
+    return td;
+  }
+  const meter = el("span", "meter");
+  meter.setAttribute("aria-hidden", "true");
+  const fill = el("span", "fill");
+  fill.style.width = Math.min(100, Math.max(0, rate * 100)).toFixed(1) + "%";
+  meter.appendChild(fill);
+  td.appendChild(meter);
+  td.appendChild(el("span", "pct", fmtPct(rate)));
+  return td;
+}
+
+function plainCell(text) {
+  return el("td", text === DASH ? "muted" : "", text);
+}
+
+function buildRow(cells, loaded, className) {
+  const tr = el("tr", className);
+  tr.appendChild(nameCell(cells[0], loaded));
+  tr.appendChild(plainCell(cells[1]));
+  tr.appendChild(errorsCell(cells[2]));
+  for (const text of cells.slice(3, 6)) tr.appendChild(plainCell(text));
+  tr.appendChild(ttftCell(cells[6]));
+  tr.appendChild(cacheCell(cells[7]));
+  return tr;
+}
+
+function orderedModels(models, current) {
+  const total = (m) => {
+    const t = obj(obj(m).requests).total;
+    return isNum(t) ? t : 0;
+  };
+  return Object.entries(obj(models)).sort(function (a, b) {
+    const aCur = current != null && a[0] === current;
+    const bCur = current != null && b[0] === current;
+    if (aCur !== bCur) return aCur ? -1 : 1;
+    const diff = total(b[1]) - total(a[1]);
+    if (diff) return diff;
+    return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0);
+  });
+}
+
+function renderTable(data) {
+  const tbody = byId("models");
+  const current = currentName(data);
+  if (tbody) {
+    tbody.textContent = "";
+    for (const [name, m] of orderedModels(data.models, current)) {
+      const loaded = name === current;
+      tbody.appendChild(buildRow(rowCells(String(name), obj(m).requests, true),
+        loaded, loaded ? "loaded" : ""));
+    }
+  }
+  const tfoot = byId("totals");
+  if (tfoot) {
+    tfoot.textContent = "";
+    tfoot.appendChild(buildRow(rowCells("All models", data.requests, false),
+      false, "all"));
+  }
 }
 
 function renderErrors(errors) {
-  const tbody = document.getElementById("errors");
-  if (!tbody) return;
-  const entries = errors && typeof errors === "object"
-    ? Object.entries(errors) : [];
-  tbody.textContent = "";
-  if (!entries.length) { fillRowless("errors", 2); return; }
-  for (const [kind, count] of entries) {
-    const tr = document.createElement("tr");
-    const tdKind = document.createElement("td");
-    const tdCount = document.createElement("td");
-    tdKind.textContent = String(kind);
-    tdCount.textContent = fmtInt(count);
-    tr.appendChild(tdKind);
-    tr.appendChild(tdCount);
-    tbody.appendChild(tr);
+  const box = byId("errors");
+  const card = byId("errors-card");
+  const entries = Object.entries(obj(errors))
+    .filter(function (e) { return isNum(e[1]) && e[1] > 0; })
+    .sort(function (a, b) {
+      return (b[1] - a[1]) || (a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0));
+    });
+  if (box) {
+    box.textContent = "";
+    for (const [kind, count] of entries) {
+      const chip = el("span", "chip");
+      chip.appendChild(el("span", "dot critical"));
+      chip.appendChild(el("span", "kind", String(kind)));
+      chip.appendChild(el("span", "count", fmtInt(count)));
+      box.appendChild(chip);
+    }
   }
+  if (card) card.hidden = !entries.length;
 }
 
-function renderModels(models) {
-  const tbody = document.getElementById("models");
-  if (!tbody) return;
-  const entries = models && typeof models === "object"
-    ? Object.entries(models) : [];
-  tbody.textContent = "";
-  if (!entries.length) { fillRowless("models", 12); return; }
-  for (const [name, m] of entries) {
-    const r = (m && m.requests) || {};
-    const lat = r.latency_ms || {};
-    const cells = [
-      String(name),
-      fmtInt(m && m.starts),
-      fmtInt(m && m.stops),
-      fmtInt(r.total),
-      fmtInt(r.success),
-      fmtInt(r.failure),
-      fmtMs(lat.avg), fmtMs(lat.p50), fmtMs(lat.p95), fmtMs(lat.max),
-      fmtBytes(r.bytes_in), fmtBytes(r.bytes_out),
-    ];
-    const tr = document.createElement("tr");
-    for (const text of cells) {
-      const td = document.createElement("td");
-      td.textContent = text;
-      tr.appendChild(td);
-    }
-    tbody.appendChild(tr);
-  }
-}
+let lastOkAt = null;
+let fetchFailed = false;
 
-function renderTokenModels(models) {
-  const tbody = document.getElementById("token-models");
-  if (!tbody) return;
-  const entries = models && typeof models === "object"
-    ? Object.entries(models) : [];
-  tbody.textContent = "";
-  if (!entries.length) { fillRowless("token-models", 11); return; }
-  for (const [name, m] of entries) {
-    const r = (m && m.requests) || {};
-    const toks = r.tokens || {};
-    const rates = r.rates || {};
-    const pt = rates.prompt_tps || {};
-    const gt = rates.generation_tps || {};
-    const ttft = r.ttft_ms || {};
-    const cells = [
-      String(name),
-      fmtInt(toks.prompt), fmtInt(toks.completion), fmtInt(toks.cached),
-      fmtInt(toks.prefill), fmtRate(toks.cache_hit_rate),
-      fmtTps(pt.avg), fmtTps(gt.avg), fmtMaxAggregateTps(gt.max_aggregate),
-      fmtMs(ttft.p50), fmtMs(ttft.p95),
-    ];
-    const tr = document.createElement("tr");
-    for (const text of cells) {
-      const td = document.createElement("td");
-      td.textContent = text;
-      tr.appendChild(td);
-    }
-    tbody.appendChild(tr);
+function renderLive() {
+  const dot = byId("live-dot");
+  let text;
+  let tone;
+  if (fetchFailed) {
+    tone = "serious";
+    text = "Connection lost · " +
+      (lastOkAt == null ? "retrying" : "showing last data");
+  } else if (lastOkAt == null) {
+    tone = "";
+    text = "Connecting…";
+  } else {
+    tone = "good";
+    const secs = Math.max(0, Math.floor((Date.now() - lastOkAt) / 1000));
+    text = "Live · updated " + secs + "s ago";
   }
+  if (dot) dot.className = tone ? "dot " + tone : "dot";
+  setText("live-text", text);
 }
 
 function render(data) {
-  if (!data || typeof data !== "object") return;
-  setText("current-model", data.current_model == null ? DASH : String(data.current_model));
-  setText("uptime", fmtUptime(data.uptime_seconds));
-  const req = data.requests || {};
-  setText("total", fmtInt(req.total));
-  setText("success-rate", fmtRate(req.success_rate));
-  const conc = data.concurrency || {};
-  setText("concurrency",
-    fmtInt(conc.active) + " / " + fmtInt(conc.peak));
-  const swaps = data.swaps || {};
-  setText("swaps", fmtInt(swaps.count));
-  const thr = data.throughput || {};
-  setText("rpm", fmtInt(thr.last_60s));
-  const rates = req.rates || {};
-  setText("gen-tps", fmtTps((rates.generation_tps || {}).avg));
-  setText("completion-tokens", fmtInt((req.tokens || {}).completion));
-  renderErrors(req.errors);
-  renderModels(data.models);
-  renderTokenModels(data.models);
+  if (!data || typeof data !== "object" || Array.isArray(data)) return;
+  renderTiles(data);
+  renderTable(data);
+  renderErrors(obj(data.requests).errors);
 }
 
 function refresh() {
   fetch("/stats/json").then(function (resp) {
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     return resp.json();
-  }).then(render).catch(function () { /* keep last render */ });
+  }).then(function (data) {
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      throw new Error("unexpected payload");
+    }
+    render(data);
+    lastOkAt = Date.now();
+    fetchFailed = false;
+    renderLive();
+  }).catch(function () {
+    /* keep last render */
+    fetchFailed = true;
+    renderLive();
+  });
 }
 
 refresh();
+setInterval(renderLive, 1000);
 setInterval(refresh, 5000);
 </script>
 </body>
