@@ -2,7 +2,6 @@
 
 ## Next
 
-- [P-20260923-02] Split `tests/test_control_lifecycle.py` (1224 LOC) into focused test modules
 - [P-20260913-04] Split `tests/test_proxy.py` (1243 LOC) into focused test modules
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to README
@@ -16,6 +15,7 @@
 
 ## Done
 
+- [P-20260923-02] Split `tests/test_control_lifecycle.py` (1224 LOC) into focused test modules — DONE 2026-09-24 13:08 UTC
 - [P-20260924-01] Fix pp speed: prompt_tps excludes cached reads; expose prefill token counter — DONE 2026-09-24 12:08 UTC
 - [P-20260923-03] Add optional per-model shutdown hooks with bounded execution and fail-closed cleanup — DONE 2026-09-23 13:13 UTC
 - [P-20260923-01] Add same-listener runtime control panel and API — DONE 2026-09-23 03:39 UTC
