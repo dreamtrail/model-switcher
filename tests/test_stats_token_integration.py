@@ -125,7 +125,7 @@ class TestTokenMetricsIntegration:
         assert req["total"] == 1
         assert req["success"] == 1
         assert req["tokens"] == {
-            "prompt": 12, "completion": 9, "cached": 3,
+            "prompt": 12, "completion": 9, "cached": 3, "prefill": 9,
             "cache_hit_rate": 0.25,
         }
         assert req["ttft_ms"]["count"] == 1
@@ -139,7 +139,8 @@ class TestTokenMetricsIntegration:
         # Per-model row mirrors the global record (AC8).
         row = data["models"]["model-a"]["requests"]
         assert row["tokens"] == {
-            "prompt": 12, "completion": 9, "cached": 3, "cache_hit_rate": 0.25,
+            "prompt": 12, "completion": 9, "cached": 3, "prefill": 9,
+            "cache_hit_rate": 0.25,
         }
         assert row["ttft_ms"]["count"] == 1
         assert row["tpot_ms"]["count"] == 1
@@ -331,7 +332,8 @@ class TestTokenMetricsIntegration:
 
         req = data["requests"]
         assert req["tokens"] == {
-            "prompt": 0, "completion": 0, "cached": 0, "cache_hit_rate": None,
+            "prompt": 0, "completion": 0, "cached": 0, "prefill": 0,
+            "cache_hit_rate": None,
         }
         # Content events were observed, so TTFT is still captured (AC4).
         assert req["ttft_ms"]["count"] == 1
@@ -372,7 +374,8 @@ class TestTokenMetricsIntegration:
 
         req = data["requests"]
         assert req["tokens"] == {
-            "prompt": 7, "completion": 3, "cached": 2, "cache_hit_rate": 2 / 7,
+            "prompt": 7, "completion": 3, "cached": 2, "prefill": 0,
+            "cache_hit_rate": 2 / 7,
         }
         assert req["ttft_ms"] is None  # non-streaming never contributes
         assert req["tpot_ms"] is None
@@ -383,7 +386,8 @@ class TestTokenMetricsIntegration:
             pytest.approx(3 / 60)
         row = data["models"]["model-a"]["requests"]
         assert row["tokens"] == {
-            "prompt": 7, "completion": 3, "cached": 2, "cache_hit_rate": 2 / 7,
+            "prompt": 7, "completion": 3, "cached": 2, "prefill": 0,
+            "cache_hit_rate": 2 / 7,
         }
         assert row["ttft_ms"] is None
         assert row["rates"]["generation_tps"]["max_aggregate"] is None
@@ -506,7 +510,8 @@ class TestTokenMetricsIntegration:
         assert failed_req["success"] == 0
         assert failed_req["errors"] == {"stream_error": 1}
         assert failed_req["tokens"] == {
-            "prompt": 8, "completion": 4, "cached": 0, "cache_hit_rate": 0.0,
+            "prompt": 8, "completion": 4, "cached": 0, "prefill": 0,
+            "cache_hit_rate": 0.0,
         }
         assert failed_req["ttft_ms"] is None
         assert failed_req["tpot_ms"] is None
@@ -601,7 +606,7 @@ class TestTokenMetricsIntegration:
             "tokens", "rates", "ttft_ms", "tpot_ms",
         }
         assert set(req["tokens"]) == {
-            "prompt", "completion", "cached", "cache_hit_rate",
+            "prompt", "completion", "cached", "prefill", "cache_hit_rate",
         }
         assert set(req["rates"]) == {"prompt_tps", "generation_tps"}
         assert set(req["rates"]["prompt_tps"]) == {"avg"}
@@ -623,7 +628,10 @@ class TestTokenMetricsIntegration:
         # maximum aggregate generation-rate field (P-20260918-05, AC6).
         row = data["models"]["model-a"]["requests"]
         assert set(row) == set(req)
-        assert row["tokens"] == req["tokens"]
+        assert row["tokens"] == req["tokens"] == {
+            "prompt": 12, "completion": 9, "cached": 3, "prefill": 9,
+            "cache_hit_rate": 0.25,
+        }
         assert set(row["rates"]["generation_tps"]) == {
             "avg", "last_60s", "last_300s", "max_aggregate",
         }
@@ -662,7 +670,7 @@ class TestTokenMetricsIntegration:
         assert 'id="token-models"' in body
         assert "renderTokenModels" in body
         for header in (
-            "Prompt tok", "Compl tok", "Cached tok",
+            "Prompt tok", "Compl tok", "Cached tok", "Prefill tok",
             "Prompt t/s", "Gen t/s", "TTFT p50 ms", "TTFT p95 ms",
         ):
             assert header in body

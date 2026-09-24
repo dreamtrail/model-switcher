@@ -287,7 +287,7 @@ Model-switcher tracks runtime statistics in memory (reset on restart) and serves
     "errors": {"502": 1, "stream_error": 1},
     "latency_ms": {"count": 42, "avg": 120.5, "p50": 100.0, "p95": 300.0, "max": 320.0},
     "bytes_in": 1024, "bytes_out": 40960,
-    "tokens": {"prompt": 8100, "completion": 2300, "cached": 512, "cache_hit_rate": 0.063},
+    "tokens": {"prompt": 8100, "completion": 2300, "cached": 512, "prefill": 7588, "cache_hit_rate": 0.063},
     "rates": {
       "prompt_tps": {"avg": 890.2},
       "generation_tps": {"avg": 38.1, "last_60s": 41.5, "last_300s": 39.0}
@@ -326,12 +326,13 @@ Metric semantics:
 Token metrics (when the upstream reports an OpenAI `usage` field):
 
 - Token counters are exact counts read from `usage`: `prompt`, `completion`, and `cached` (from `prompt_tokens_details.cached_tokens` when present). Counters are recorded whenever usage is available, regardless of request status; there is no estimation — when usage is absent, the fields show no data.
+- `prefill` is the uncached prompt work — `prompt − cached` when the backend reports `cached`, the full `prompt` otherwise — summed only for requests where time-to-first-token was observed.
 - `cache_hit_rate` is the token-weighted lifetime ratio `cached ÷ prompt` (per model and global); it is `null` when no prompt tokens were recorded. Like the counters, it is derived from exact reported counts — no estimation. Backends that report cumulative cached counts may yield a ratio above 1; the value is reported as-is.
 - For streaming requests the switcher transparently adds `"stream_options": {"include_usage": true}` to chat/completions requests (`/v1/chat/completions`, `/v1/completions`) whose clients did not set `stream_options`, so token metrics are available even when the client doesn't ask for them. Client-set values are forwarded untouched; non-JSON and non-streaming bodies pass through unchanged.
 - Timing metrics are streaming-only, since only streamed responses reveal token boundaries:
   - `ttft_ms` (time to first token) — from proxy start to the first content chunk; captures queueing, prompt processing, and model behavior. Percentiles, not averages.
   - `tpot_ms` (time per output token) — decode-window time divided by `(completion_tokens - 1)`; requires at least 2 completion tokens.
-  - `rates.generation_tps` — completion tokens per second of decode time (token-weighted), with trailing `last_60s`/`last_300s` windows; `rates.prompt_tps` — prompt tokens per second of time-to-first-token. The two rates are never blended.
+  - `rates.generation_tps` — completion tokens per second of decode time (token-weighted), with trailing `last_60s`/`last_300s` windows; `rates.prompt_tps` — uncached prompt tokens (`prompt − cached` when the backend reports it; full `prompt` otherwise) per second of time-to-first-token. The two rates are never blended.
   - Per-model `rates.generation_tps.max_aggregate` is separate from those average and rolling rates. It retains the highest completed decode cohort as `{"tps": number, "concurrency": integer}` until restart; it is not added to the global generation-rate object.
   - A cohort is a maximal connected group of positively overlapping decode intervals, from each request's first token through its final stream end. Its aggregate rate is the sum of exact completion tokens divided by the cohort's wall-clock span; concurrency is the peak number of simultaneously decoding eligible streams. Merely touching intervals are separate.
   - Only successful streaming requests with exact usage reporting at least one completion token and a positive decode duration contribute. The dashboard's **Max Agg Gen t/s** column renders the result as `<tps>@<concurrency>` (for example, `107.8@3`) and shows `–` before an eligible cohort completes. A continuously overlapping cohort remains unpublished until it closes.

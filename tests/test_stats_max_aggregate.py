@@ -262,11 +262,15 @@ class TestMaxAggregateGenerationThroughput:
             "max_aggregate": None,
         }
 
-    def test_dashboard_has_maximum_header_cell_and_ten_column_fallback(self):
-        # AC7: table shape and per-model field wiring.
+    def test_dashboard_has_maximum_header_cell_and_eleven_column_fallback(
+        self,
+    ):
+        # AC7 (P-20260924-01): table shape and per-model field wiring; the
+        # Prefill tok column widens the token-models fallback to 11 cells.
         assert "<th>Max Agg Gen t/s</th>" in STATS_HTML
-        assert '<tbody id="token-models"><tr><td colspan="10">–</td>' in STATS_HTML
-        assert 'fillRowless("token-models", 10)' in STATS_HTML
+        assert '<tbody id="token-models"><tr><td colspan="11">–</td>' \
+            in STATS_HTML
+        assert 'fillRowless("token-models", 11)' in STATS_HTML
         assert "fmtMaxAggregateTps(gt.max_aggregate)" in STATS_HTML
 
     @staticmethod
@@ -362,7 +366,10 @@ function setInterval() { return 0; }
 renderTokenModels({
   "model-a": {
     requests: {
-      tokens: {prompt: 12, completion: 9, cached: 3, cache_hit_rate: 0.25},
+      tokens: {
+        prompt: 12, completion: 9, cached: 3, prefill: 9,
+        cache_hit_rate: 0.25,
+      },
       rates: {
         prompt_tps: {avg: 4},
         generation_tps: {
@@ -378,10 +385,10 @@ const rendered = document.getElementById("token-models");
 console.log(JSON.stringify({
   rows: rendered.children.length,
   cells: rendered.children[0].children.length,
-  maximumText: rendered.children[0].children[7].textContent,
+  maximumText: rendered.children[0].children[8].textContent,
 }));
 ''')
-        assert output == {"rows": 1, "cells": 10, "maximumText": "107.8@3"}
+        assert output == {"rows": 1, "cells": 11, "maximumText": "107.8@3"}
 
     def test_dashboard_formats_valid_maximum_to_one_decimal_at_concurrency(self):
         # Preserve the static wiring gate alongside executable JS coverage.

@@ -50,7 +50,7 @@ class TestStatsEndpoints:
                 assert data["requests"]["errors"] == {}
                 assert data["requests"]["tokens"] == {
                     "prompt": 0, "completion": 0, "cached": 0,
-                    "cache_hit_rate": None,
+                    "prefill": 0, "cache_hit_rate": None,
                 }
                 assert data["requests"]["rates"] == {
                     "prompt_tps": {"avg": None},

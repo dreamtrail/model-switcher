@@ -61,7 +61,7 @@ class _ModelStats:
     tpots: list[float] = field(default_factory=list)  # seconds
     decode_tokens: int = 0  # Σ completion_tokens over streaming requests
     decode_time: float = 0.0  # Σ decode seconds
-    prefill_tokens: int = 0  # Σ prompt_tokens over streaming requests
+    prefill_tokens: int = 0  # Σ uncached prompt (prompt − cached) work
     prefill_time: float = 0.0  # Σ TTFT seconds
     token_events: deque = field(default_factory=deque)  # (monotonic, tokens)
     active_decodes: dict[object, float] = field(default_factory=dict)
@@ -199,6 +199,7 @@ def _requests_report(
             "prompt": prompt_tokens,
             "completion": completion_tokens,
             "cached": cached_tokens,
+            "prefill": prefill_tokens,
             # Token-weighted lifetime ratio; null when no prompt tokens.
             "cache_hit_rate": (
                 cached_tokens / prompt_tokens
@@ -340,8 +341,15 @@ class StatsCollector:
             stats.decode_time += decode_s
         if (ttft_s is not None and prompt_tokens is not None
                 and prompt_tokens >= 1):
-            stats.prefill_tokens += prompt_tokens
-            stats.prefill_time += ttft_s
+            # Prompt processing excludes cached reads when the backend reports
+            # them; the reported work is the uncached remainder.
+            if cached_tokens is not None:
+                prefill = max(prompt_tokens - cached_tokens, 0)
+            else:
+                prefill = prompt_tokens
+            if prefill >= 1:
+                stats.prefill_tokens += prefill
+                stats.prefill_time += ttft_s
         events = stats.token_events
         _prune_token_events(events, now_monotonic)
 
@@ -616,11 +624,11 @@ STATS_HTML = """<!DOCTYPE html>
   <caption>Token throughput</caption>
   <thead><tr>
     <th>Model</th><th>Prompt tok</th><th>Compl tok</th><th>Cached tok</th>
-    <th>Cache hit %</th>
+    <th>Prefill tok</th><th>Cache hit %</th>
     <th>Prompt t/s</th><th>Gen t/s</th><th>Max Agg Gen t/s</th>
     <th>TTFT p50 ms</th><th>TTFT p95 ms</th>
   </tr></thead>
-  <tbody id="token-models"><tr><td colspan="10">–</td></tr></tbody>
+  <tbody id="token-models"><tr><td colspan="11">–</td></tr></tbody>
 </table>
 <script>
 "use strict";
@@ -744,7 +752,7 @@ function renderTokenModels(models) {
   const entries = models && typeof models === "object"
     ? Object.entries(models) : [];
   tbody.textContent = "";
-  if (!entries.length) { fillRowless("token-models", 10); return; }
+  if (!entries.length) { fillRowless("token-models", 11); return; }
   for (const [name, m] of entries) {
     const r = (m && m.requests) || {};
     const toks = r.tokens || {};
@@ -755,7 +763,7 @@ function renderTokenModels(models) {
     const cells = [
       String(name),
       fmtInt(toks.prompt), fmtInt(toks.completion), fmtInt(toks.cached),
-      fmtRate(toks.cache_hit_rate),
+      fmtInt(toks.prefill), fmtRate(toks.cache_hit_rate),
       fmtTps(pt.avg), fmtTps(gt.avg), fmtMaxAggregateTps(gt.max_aggregate),
       fmtMs(ttft.p50), fmtMs(ttft.p95),
     ];

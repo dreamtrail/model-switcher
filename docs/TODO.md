@@ -16,6 +16,7 @@
 
 ## Done
 
+- [P-20260924-01] Fix pp speed: prompt_tps excludes cached reads; expose prefill token counter — DONE 2026-09-24 12:08 UTC
 - [P-20260923-03] Add optional per-model shutdown hooks with bounded execution and fail-closed cleanup — DONE 2026-09-23 13:13 UTC
 - [P-20260923-01] Add same-listener runtime control panel and API — DONE 2026-09-23 03:39 UTC
 - [P-20260913-03] Split statistics test coverage into focused modules — DONE 2026-09-23 01:13 UTC

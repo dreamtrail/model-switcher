@@ -191,7 +191,7 @@ class TestStatsCollector:
         assert snap["requests"]["bytes_out"] == 0
         assert snap["requests"]["tokens"] == {
             "prompt": 0, "completion": 0, "cached": 0,
-            "cache_hit_rate": None,
+            "prefill": 0, "cache_hit_rate": None,
         }
         assert snap["requests"]["rates"] == {
             "prompt_tps": {"avg": None},
@@ -324,7 +324,91 @@ class TestTokenMetricCollector:
         rates = collector.snapshot()["requests"]["rates"]
 
         assert rates["generation_tps"]["avg"] == pytest.approx(25 / 4.4)
-        assert rates["prompt_tps"]["avg"] == pytest.approx(650 / 2.5)
+        # Prompt processing excludes the cached reads (row 1: prompt 100,
+        # cached 2): prefill = 98 + 200 + 50 + 300 = 648 over 2.5 s of TTFT.
+        assert rates["prompt_tps"]["avg"] == pytest.approx(648 / 2.5)
+
+    def test_prefill_excludes_cached_reads(self):
+        # P-20260924-01: pp t/s counts the uncached prompt work, not the
+        # full prompt. prompt=100 with cached=90 contributes only 10 tokens.
+        collector = StatsCollector()
+        collector.record_request(
+            "m", ok=True, prompt_tokens=100, cached_tokens=90, ttft_s=0.5,
+        )
+
+        snap = collector.snapshot()
+
+        assert snap["requests"]["tokens"]["prefill"] == 10
+        assert snap["models"]["m"]["requests"]["tokens"]["prefill"] == 10
+        assert snap["requests"]["rates"]["prompt_tps"]["avg"] \
+            == pytest.approx(10 / 0.5)
+
+    def test_fully_cached_request_contributes_no_prefill_work(self):
+        # P-20260924-01: a fully-cached request adds neither numerator nor
+        # time, so it cannot dilute the pp rate (no clamping of the rate).
+        collector = StatsCollector()
+        collector.record_request(
+            "m", ok=True, prompt_tokens=50, cached_tokens=50, ttft_s=0.5,
+        )
+        # The only real work on the same collector:
+        collector.record_request(
+            "m", ok=True, prompt_tokens=100, ttft_s=0.5,
+        )
+
+        snap = collector.snapshot()
+
+        assert snap["requests"]["tokens"]["prefill"] == 100
+        assert snap["requests"]["rates"]["prompt_tps"]["avg"] \
+            == pytest.approx(100 / 0.5)
+
+    def test_oversized_cached_tokens_clamp_to_zero_prefill(self):
+        # P-20260924-01: cumulative backends can report cached > prompt;
+        # clamp to 0, never negative, and skip the request entirely.
+        collector = StatsCollector()
+        collector.record_request(
+            "m", ok=True, prompt_tokens=10, cached_tokens=25, ttft_s=0.5,
+        )
+
+        snap = collector.snapshot()
+
+        assert snap["requests"]["tokens"]["prefill"] == 0
+        assert snap["models"]["m"]["requests"]["tokens"]["prefill"] == 0
+        assert snap["requests"]["rates"]["prompt_tps"]["avg"] is None
+
+    def test_prefill_falls_back_to_full_prompt_without_cached_report(self):
+        # P-20260924-01: no cached_tokens reported -> the full prompt is
+        # the prefill work (prior behavior preserved).
+        collector = StatsCollector()
+        collector.record_request(
+            "m", ok=True, prompt_tokens=200, ttft_s=1.0,
+        )
+
+        snap = collector.snapshot()
+
+        assert snap["requests"]["tokens"]["prefill"] == 200
+        assert snap["models"]["m"]["requests"]["tokens"]["prefill"] == 200
+        assert snap["requests"]["rates"]["prompt_tps"]["avg"] \
+            == pytest.approx(200 / 1.0)
+
+    def test_prefill_mirrors_per_model_and_needs_ttft(self):
+        # P-20260924-01: tokens.prefill aggregates globally and per model,
+        # and counts only prefill work with an observed first token (TTFT).
+        collector = StatsCollector()
+        collector.record_request(
+            "m", ok=True, prompt_tokens=12, cached_tokens=3, ttft_s=0.5,
+        )
+        collector.record_request(
+            "a", ok=True, prompt_tokens=8, cached_tokens=2, ttft_s=0.25,
+        )
+        # Buffered request (no TTFT): counters only, no prefill work.
+        collector.record_request("m", ok=True, prompt_tokens=30,
+                                 cached_tokens=10)
+
+        snap = collector.snapshot()
+
+        assert snap["requests"]["tokens"]["prefill"] == (12 - 3) + (8 - 2)
+        assert snap["models"]["m"]["requests"]["tokens"]["prefill"] == 12 - 3
+        assert snap["models"]["a"]["requests"]["tokens"]["prefill"] == 8 - 2
 
     def test_tps_null_with_no_contributors(self):
         # AC6: both rates null when nothing contributed; empty windows 0.0.
@@ -362,7 +446,8 @@ class TestTokenMetricCollector:
         assert req["rates"]["prompt_tps"]["avg"] is None
         assert req["tpot_ms"] is None
         assert req["tokens"] == {
-            "prompt": 0, "completion": 0, "cached": 0, "cache_hit_rate": None,
+            "prompt": 0, "completion": 0, "cached": 0,
+            "prefill": 0, "cache_hit_rate": None,
         }
 
     def test_cached_tokens_summed_when_present(self):
@@ -376,6 +461,7 @@ class TestTokenMetricCollector:
 
         assert snap["requests"]["tokens"] == {
             "prompt": 150, "completion": 0, "cached": 30,
+            "prefill": 0,  # no TTFT: counter-only rows add no prefill work
             "cache_hit_rate": 0.2,
         }
         assert snap["models"]["m"]["requests"]["tokens"]["cached"] == 30
@@ -394,7 +480,9 @@ class TestTokenMetricCollector:
         req = collector.snapshot()["requests"]
 
         assert req["tokens"] == {
-            "prompt": 10, "completion": 4, "cached": 1, "cache_hit_rate": 0.1,
+            "prompt": 10, "completion": 4, "cached": 1,
+            "prefill": 0,  # no TTFT on failures: no prefill work
+            "cache_hit_rate": 0.1,
         }
         assert req["errors"] == {"stream_error": 1}
         assert req["ttft_ms"] is None
@@ -414,7 +502,8 @@ class TestTokenMetricCollector:
         req = collector.snapshot()["requests"]
 
         assert req["tokens"] == {
-            "prompt": 0, "completion": 0, "cached": 0, "cache_hit_rate": None,
+            "prompt": 0, "completion": 0, "cached": 0,
+            "prefill": 0, "cache_hit_rate": None,
         }
         assert req["ttft_ms"]["count"] == 1  # observable without usage
         assert req["tpot_ms"] is None  # needs usage + completion >= 2
@@ -432,7 +521,8 @@ class TestTokenMetricCollector:
 
         assert req["total"] == 2
         assert req["tokens"] == {
-            "prompt": 0, "completion": 0, "cached": 0, "cache_hit_rate": None,
+            "prompt": 0, "completion": 0, "cached": 0,
+            "prefill": 0, "cache_hit_rate": None,
         }
         assert req["ttft_ms"] is None
         assert req["tpot_ms"] is None
@@ -577,11 +667,14 @@ class TestTokenMetricCollector:
         assert snap["models"]["m"]["requests"]["tokens"]["cache_hit_rate"] \
             is None
 
-    def test_dashboard_html_has_cache_hit_column(self):
-        # Static gate: the Token throughput table carries the new column.
-        assert "<th>Cache hit %</th>" in STATS_HTML
-        assert 'colspan="10"' in STATS_HTML
+    def test_dashboard_html_has_cache_hit_and_prefill_columns(self):
+        # Static gate: the Token throughput table carries both cached and
+        # prefill columns (P-20260924-01: prefill after cached, before hit %).
+        assert "<th>Cached tok</th>" in STATS_HTML
+        assert "<th>Prefill tok</th><th>Cache hit %</th>" in STATS_HTML
+        assert "fmtInt(toks.prefill)" in STATS_HTML
+        assert 'colspan="11"' in STATS_HTML
         assert "fmtRate(toks.cache_hit_rate)" in STATS_HTML
-        assert 'fillRowless("token-models", 10)' in STATS_HTML
+        assert 'fillRowless("token-models", 11)' in STATS_HTML
 
 
