@@ -650,7 +650,7 @@ class TestTokenMetricsIntegration:
         assert row["tpot_ms"]["count"] == req["tpot_ms"]["count"]
 
     async def test_dashboard_renders_token_cards_and_table(self, monkeypatch):
-        # AC9: token-rate columns + unchanged polling (compact page since P-20260925-01).
+        # AC9: new cards + Token throughput table + unchanged polling.
         upstream_app, _ = _make_upstream_with_config("model-a")
         async with _stack(
             monkeypatch, {"model-a": upstream_app}, seed="model-a"
@@ -660,18 +660,23 @@ class TestTokenMetricsIntegration:
                 assert resp.status == 200
                 body = await resp.text()
 
-        # Compact per-model table (P-20260925-01) with token-rate columns;
-        # raw token counts are available from /stats/json only.
-        assert 'id="models"' in body
-        assert "renderTable" in body
+        # Two new summary cards.
+        assert 'id="gen-tps"' in body
+        assert "Gen tok/s (avg)" in body
+        assert 'id="completion-tokens"' in body
+        assert "Completion tokens" in body
+        # Token throughput table and its renderer.
+        assert "Token throughput" in body
+        assert 'id="token-models"' in body
+        assert "renderTokenModels" in body
         for header in (
-            "<th>Gen t/s</th>", "<th>Best gen t/s</th>",
-            "<th>Prompt t/s</th>", "<th>TTFT p50 / p95</th>", "<th>Cache</th>",
+            "Prompt tok", "Compl tok", "Cached tok", "Prefill tok",
+            "Prompt t/s", "Gen t/s", "TTFT p50 ms", "TTFT p95 ms",
         ):
             assert header in body
         # Null-safe "–" formatting helpers for rates and milliseconds.
         assert "fmtTps" in body
-        assert "fmtTtft" in body
+        assert "fmtMs" in body
         assert 'const DASH = "–"' in body
         # All DOM writes via textContent — no innerHTML anywhere.
         assert ".innerHTML" not in body

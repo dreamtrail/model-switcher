@@ -667,12 +667,14 @@ class TestTokenMetricCollector:
         assert snap["models"]["m"]["requests"]["tokens"]["cache_hit_rate"] \
             is None
 
-    def test_dashboard_html_has_cache_hit_column(self):
-        # Static gate: the compact dashboard table (P-20260925-01) keeps the
-        # cache hit rate as its last column (percentage + meter); raw
-        # cached/prefill token counts moved to /stats/json only.
-        assert "<th>Cache</th>" in STATS_HTML
-        assert "obj(r.tokens).cache_hit_rate" in STATS_HTML
-        assert 'el("span", "pct", fmtPct(rate))' in STATS_HTML
+    def test_dashboard_html_has_cache_hit_and_prefill_columns(self):
+        # Static gate: the Token throughput table carries both cached and
+        # prefill columns (P-20260924-01: prefill after cached, before hit %).
+        assert "<th>Cached tok</th>" in STATS_HTML
+        assert "<th>Prefill tok</th><th>Cache hit %</th>" in STATS_HTML
+        assert "fmtInt(toks.prefill)" in STATS_HTML
+        assert 'colspan="11"' in STATS_HTML
+        assert "fmtRate(toks.cache_hit_rate)" in STATS_HTML
+        assert 'fillRowless("token-models", 11)' in STATS_HTML
 
 
