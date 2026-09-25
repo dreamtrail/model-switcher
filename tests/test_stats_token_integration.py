@@ -609,9 +609,9 @@ class TestTokenMetricsIntegration:
             "prompt", "completion", "cached", "prefill", "cache_hit_rate",
         }
         assert set(req["rates"]) == {"prompt_tps", "generation_tps"}
-        assert set(req["rates"]["prompt_tps"]) == {"avg"}
+        assert set(req["rates"]["prompt_tps"]) == {"avg", "avg_aggregate"}
         assert set(req["rates"]["generation_tps"]) == {
-            "avg", "last_60s", "last_300s",
+            "avg", "last_60s", "last_300s", "avg_aggregate",
         }
         assert set(req["ttft_ms"]) == {"count", "avg", "p50", "p95", "max"}
         assert set(req["tpot_ms"]) == {"count", "avg", "p50", "p95", "max"}
@@ -633,7 +633,7 @@ class TestTokenMetricsIntegration:
             "cache_hit_rate": 0.25,
         }
         assert set(row["rates"]["generation_tps"]) == {
-            "avg", "last_60s", "last_300s", "max_aggregate",
+            "avg", "last_60s", "last_300s", "max_aggregate", "avg_aggregate",
         }
         maximum = row["rates"]["generation_tps"]["max_aggregate"]
         assert set(maximum) == {"tps", "concurrency"}
@@ -661,14 +661,17 @@ class TestTokenMetricsIntegration:
                 body = await resp.text()
 
         # Compact per-model table (P-20260925-01) with token-rate columns;
-        # raw token counts are available from /stats/json only.
+        # P-20260925-04 adds busy-time totals and token counts.
         assert 'id="models"' in body
         assert "renderTable" in body
         for header in (
-            "<th>Gen t/s</th>", "<th>Best gen t/s</th>",
-            "<th>Prompt t/s</th>", "<th>TTFT p50 / p95</th>", "<th>Cache</th>",
+            "<th>Gen t/s</th>", ">Gen total</th>",
+            "<th>Prompt t/s</th>", ">Prompt total</th>",
+            "<th>TTFT p50 / p95</th>", "<th>Cache</th>",
+            "<th>Gen tok</th>", "<th>Prefill tok</th>",
         ):
             assert header in body
+        assert "Best gen t/s" not in body
         # Null-safe "–" formatting helpers for rates and milliseconds.
         assert "fmtTps" in body
         assert "fmtTtft" in body

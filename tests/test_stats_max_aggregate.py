@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-import shutil
-import subprocess
 
 import pytest
 
@@ -250,181 +248,32 @@ class TestMaxAggregateGenerationThroughput:
         collector.record_model_start("m")
         snap = collector.snapshot()
 
+        # avg_aggregate (P-20260925-04) is present in both scopes.
         assert snap["requests"]["rates"]["generation_tps"] == {
             "avg": None,
             "last_60s": 0.0,
             "last_300s": 0.0,
+            "avg_aggregate": None,
         }
         assert snap["models"]["m"]["requests"]["rates"]["generation_tps"] == {
             "avg": None,
             "last_60s": 0.0,
             "last_300s": 0.0,
             "max_aggregate": None,
+            "avg_aggregate": None,
         }
 
-    def test_dashboard_has_best_generation_header_and_field_wiring(self):
-        # AC7, updated for the compact table (P-20260925-01): the maximum is
-        # the "Best gen t/s" column and is wired to the per-model field only.
-        assert "<th>Best gen t/s</th>" in STATS_HTML
-        assert "withBest ? fmtMaxAggregateTps(gt.max_aggregate) : DASH" \
-            in STATS_HTML
-
-    @staticmethod
-    def _execute_dashboard_javascript(expression):
-        """Run the actual embedded script with a minimal, browserless DOM."""
-        # Resolve Node through PATH rather than assuming a platform-specific
-        # install location. It is a required test prerequisite because AC7
-        # must execute the embedded JavaScript rather than silently skip it.
-        node = shutil.which("node")
-        if node is None:
-            pytest.fail(
-                "Node.js is required to execute the embedded-JS AC7 tests"
-            )
-        script = STATS_HTML.split("<script>", 1)[1].split("</script>", 1)[0]
-        harness = r'''
-class Element {
-  constructor(tagName, id = null) {
-    this.tagName = tagName;
-    this.id = id;
-    this.children = [];
-    this._textContent = "";
-    this.className = "";
-    this.hidden = false;
-    this.style = {};
-  }
-  set textContent(value) {
-    this._textContent = String(value);
-    if (value === "") this.children = [];
-  }
-  setAttribute() {}
-  get textContent() {
-    return this.children.length
-      ? this.children.map((child) => child.textContent).join("")
-      : this._textContent;
-  }
-  appendChild(child) { this.children.push(child); return child; }
-}
-const elements = new Map(
-  ["models", "totals", "errors"].map((id) => [id, new Element("div", id)])
-);
-const document = {
-  getElementById(id) { return elements.get(id) || null; },
-  createElement(tagName) { return new Element(tagName); },
-};
-function fetch() { return new Promise(() => {}); }
-function setInterval() { return 0; }
-'''
-        completed = subprocess.run(
-            [node, "-"],
-            input=harness + script + "\n" + expression,
-            text=True,
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
-        assert completed.returncode == 0, completed.stderr
-        return json.loads(completed.stdout)
-
-    @pytest.mark.parametrize(
-        ("value_expression", "expected"),
-        [
-            ("{tps: 107.76, concurrency: 3}", "107.8 @3"),
-            ("null", "–"),
-            ("42", "–"),
-            ('"primitive"', "–"),
-            ("true", "–"),
-            ("[]", "–"),
-            ("{tps: NaN, concurrency: 1}", "–"),
-            ("{tps: Infinity, concurrency: 1}", "–"),
-            ("{tps: -Infinity, concurrency: 1}", "–"),
-            ("{tps: 0, concurrency: 1}", "–"),
-            ("{tps: -1, concurrency: 1}", "–"),
-            ("{concurrency: 1}", "–"),
-            ("{tps: 1}", "–"),
-            ("{tps: 1, concurrency: 1.5}", "–"),
-            ("{tps: 1, concurrency: 0}", "–"),
-            ("{tps: 1, concurrency: -1}", "–"),
-        ],
-    )
-    def test_dashboard_executes_maximum_formatter_contract(
-        self, value_expression, expected,
-    ):
-        # AC7: execute the shipped formatter itself, including JavaScript-only
-        # non-finite values that cannot be represented in strict JSON.
-        output = self._execute_dashboard_javascript(
-            "console.log(JSON.stringify(fmtMaxAggregateTps("
-            + value_expression
-            + ")));"
-        )
-        assert output == expected
-
-    def test_dashboard_rendered_maximum_cell_has_observable_text(self):
-        # AC7: exercise the actual table renderer and DOM textContent result,
-        # not merely the formatter's source or return value.
-        output = self._execute_dashboard_javascript(r'''
-render({models: {
-  "model-a": {
-    requests: {
-      tokens: {
-        prompt: 12, completion: 9, cached: 3, prefill: 9,
-        cache_hit_rate: 0.25,
-      },
-      rates: {
-        prompt_tps: {avg: 4},
-        generation_tps: {
-          avg: 9,
-          max_aggregate: {tps: 107.76, concurrency: 3},
-        },
-      },
-      ttft_ms: {p50: 10, p95: 20},
-    },
-  },
-}});
-const rendered = document.getElementById("models");
-const totals = document.getElementById("totals");
-console.log(JSON.stringify({
-  rows: rendered.children.length + totals.children.length,
-  cells: rendered.children[0].children.length,
-  maximumText: rendered.children[0].children[4].textContent,
-  allRowMaximumText: totals.children[0].children[4].textContent,
-}));
-''')
-        # One model row plus the "All models" totals row (in <tfoot> since
-        # P-20260925-01 rev 2), 8 columns; the global row never
-        # shows a maximum because the global block has no max_aggregate.
-        assert output == {
-            "rows": 2, "cells": 8,
-            "maximumText": "107.8 @3", "allRowMaximumText": "–",
-        }
-
-    def test_dashboard_formats_valid_maximum_to_one_decimal_at_concurrency(self):
-        # Preserve the static wiring gate alongside executable JS coverage.
-        assert 'return v.tps.toFixed(1) + " @" + v.concurrency;' in STATS_HTML
-
-    @pytest.mark.parametrize(
-        "invalid_contract",
-        [
-            # null, primitive/non-object, and array values
-            'if (!v || typeof v !== "object" || Array.isArray(v)) return DASH;',
-            # missing/non-number/nonfinite/nonpositive tps
-            'typeof v.tps === "number" && Number.isFinite(v.tps) && v.tps > 0',
-            # missing/non-number/non-integer/nonpositive concurrency
-            'typeof v.concurrency === "number" &&\n'
-            '        Number.isInteger(v.concurrency) && v.concurrency > 0',
-        ],
-    )
-    def test_dashboard_malformed_maximum_contract_falls_back_to_dash(
-        self, invalid_contract,
-    ):
-        # AC7 static formatter contract: each complete validation guard leads
-        # to DASH, without requiring a browser/runtime dependency.
-        formatter = STATS_HTML.split(
-            "function fmtMaxAggregateTps(v) {", 1
-        )[1].split("\n}\n\nfunction fmtTtft", 1)[0]
-        assert "function fmtTtft" not in formatter
-        assert invalid_contract in formatter
-        assert "return DASH;" in formatter
-        assert 'const DASH = "–"' in STATS_HTML
+    def test_dashboard_drops_best_column_but_json_keeps_maximum(self):
+        # P-20260925-04 rev 2: the "Best gen t/s" column is removed from the
+        # page; max_aggregate stays in the per-model JSON (additive contract).
+        assert "Best gen t/s" not in STATS_HTML
+        assert "max_aggregate" not in STATS_HTML
+        collector = StatsCollector()
+        collector.record_model_start("m")
+        generation = collector.snapshot()["models"]["m"]["requests"][
+            "rates"
+        ]["generation_tps"]
+        assert "max_aggregate" in generation
 
     def test_dashboard_keeps_safe_dom_writes_and_refresh_behavior(self):
         # AC7/AC8: text-only rendering and existing polling are unchanged.

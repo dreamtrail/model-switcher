@@ -641,6 +641,8 @@ class Swapper(_SwapperLifecycleMixin):
             ),
         )
         resp: web.Response | None = None
+        # Paired with record_prefill_end in the finally block below.
+        self.stats.record_request_start(model_name, decode_identity, started)
         try:
             resp = await self._proxy_for_model(
                 request, model_name, body, handle, outcome=outcome,
@@ -673,6 +675,14 @@ class Swapper(_SwapperLifecycleMixin):
                 completion_tokens=(
                     outcome.completion_tokens if ok else None
                 ),
+            )
+            self.stats.record_prefill_end(
+                model_name,
+                decode_identity,
+                first_token_at=outcome.first_token_at,
+                ok=ok,
+                prompt_tokens=outcome.prompt_tokens,
+                cached_tokens=outcome.cached_tokens,
             )
             self.stats.record_request(
                 model_name,

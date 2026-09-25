@@ -230,3 +230,25 @@ This proposal made pending-load supersession unconditional. It was superseded be
 
 ### Status
 - Implemented under P-20260925-01 with an executable Node-based page test (`tests/test_stats_page.py`).
+
+## P-20260925-04 — Average Aggregate Speed and Token Totals
+
+### Metric Definitions
+- **Busy-time average, not wall-clock average** — `rates.generation_tps.avg_aggregate` is total cohort completion tokens divided by total cohort span, where a cohort is a connected group of overlapping eligible decode intervals (the same cohorts as `max_aggregate`). Only time with at least one eligible stream decoding counts; idle gaps between cohorts are excluded, so a quiet server does not look slow. `concurrency` is total per-stream decode time divided by the same busy time: the average number of streams decoding at once. A single stream gives concurrency 1.0 and the stream's own speed.
+- **Same definition for prompt processing** — `rates.prompt_tps.avg_aggregate` uses one prefill interval per request, from proxy start to the first content chunk (`[first_token_at − ttft, first_token_at)`), carrying the uncached prompt tokens (`prompt − cached`, or `prompt` when cached is unknown). Eligibility follows `prompt_tps.avg` (successful streaming requests with a first token and at least one uncached prompt token) plus a positive prefill interval.
+- **Global = sum of per-model totals** — the global block adds each model's tokens, busy time, and stream time. Busy time on different models is added, not merged into one timeline; this is fine because only one model is served at a time. (The plan's wording, "sums of per-model accumulators", is implemented literally.)
+- **Shape** — `{"tps": number, "concurrency": number}` or `null` before any group closes; additive to the JSON contract, present per model and globally.
+
+### Publication Rule
+- **Publish only closed groups** — decode cohorts follow the existing `max_aggregate` rule (held while an active decode started before the cohort ended). A prefill group `[start, end)` is held while any in-flight request of that model started before `end` and has no first token yet or got its first token after `start`; such a request could still add an overlapping interval. Requests whose prefill ended before the group started, or that started at or after its end, do not hold it.
+- **Hook** — the swapper records each proxied request's start (`record_request_start`) and closes it in the same `finally` block that closes the decode (`record_prefill_end`), sharing the request identity used for decode start/end. Every started request is released whether it succeeds, fails, or never produces a first token, so no pending state is left behind.
+- **Accepted limitation** — while overlap continues (a never-idle server), nothing new is published until a gap occurs, the same as `max_aggregate`.
+
+### Page
+- **Columns** — Model, Reqs, Errors, Gen t/s, Gen total, Prompt t/s, Prompt total, TTFT p50 / p95, Cache, Gen tok, Prefill tok. The two "total" headers carry the tooltip "Combined speed while busy @ average concurrent requests". Gen total renders `85.3 @2.4` (one-decimal tps); Prompt total renders like Prompt t/s (whole number with thousands separators) plus one-decimal concurrency, e.g. `2,140 @1.8`; `–` when null or malformed. The All models row uses the global values.
+- **Token totals return to the page** — Gen tok (`tokens.completion`) and Prefill tok (`tokens.prefill`) per model and in the All models row, shortened like the tiles (`45.2K`, `1.23M`) with the full number on hover. Reqs keeps full numbers.
+- **Wider page** — the page max width grew from 64rem to 80rem so all 11 columns fit on a typical desktop (user choice); narrow screens still scroll the table sideways.
+- **Best gen t/s dropped from the page, kept in JSON** — the column and its formatter were removed (user revision 2); per-model `max_aggregate` stays in `/stats/json` unchanged because the JSON contract is additive-only.
+
+### Status
+- Implemented under P-20260925-04 (rev 2) with collector unit tests, a real-stack JSON test, and Node page tests.

@@ -23,10 +23,16 @@ FULL = {
         "success": 1398,
         "failure": 2,
         "errors": {"502": 1, "stream_error": 3, "upstream_timeout": 3},
-        "tokens": {"cache_hit_rate": 0.584},
+        "tokens": {"cache_hit_rate": 0.584, "completion": 1234567, "prefill": 9876},
         "rates": {
-            "prompt_tps": {"avg": 2204.4},
-            "generation_tps": {"avg": 52.66},
+            "prompt_tps": {
+                "avg": 2204.4,
+                "avg_aggregate": {"tps": 3140.46, "concurrency": 1.84},
+            },
+            "generation_tps": {
+                "avg": 52.66,
+                "avg_aggregate": {"tps": 77.71, "concurrency": 2.14},
+            },
         },
         "ttft_ms": {"p50": 180.2, "p95": 849.6},
     },
@@ -39,10 +45,12 @@ FULL = {
             "requests": {
                 "total": 88,
                 "failure": 0,
-                "tokens": {"cache_hit_rate": 0.31},
+                "tokens": {"cache_hit_rate": 0.31, "completion": 0, "prefill": 0},
                 "rates": {
-                    "prompt_tps": {"avg": 4120.0},
-                    "generation_tps": {"avg": 96.44, "max_aggregate": None},
+                    "prompt_tps": {"avg": 4120.0, "avg_aggregate": None},
+                    "generation_tps": {
+                        "avg": 96.44, "max_aggregate": None, "avg_aggregate": None,
+                    },
                 },
                 "ttft_ms": {"p50": 95.0, "p95": 310.4},
             },
@@ -53,12 +61,16 @@ FULL = {
             "requests": {
                 "total": 312,
                 "failure": 2,
-                "tokens": {"cache_hit_rate": 0.64},
+                "tokens": {"cache_hit_rate": 0.64, "completion": 45210, "prefill": 9876},
                 "rates": {
-                    "prompt_tps": {"avg": 1830.2},
+                    "prompt_tps": {
+                        "avg": 1830.2,
+                        "avg_aggregate": {"tps": 2140.2, "concurrency": 1.0},
+                    },
                     "generation_tps": {
                         "avg": 42.1,
                         "max_aggregate": {"tps": 118.44, "concurrency": 4},
+                        "avg_aggregate": {"tps": 85.34, "concurrency": 2.36},
                     },
                 },
                 "ttft_ms": {"p50": 210.4, "p95": 890.0},
@@ -268,13 +280,19 @@ class TestStatsPageStatic:
         assert "<title>Model Switcher — Statistics</title>" in STATS_HTML
         assert "<noscript>" in STATS_HTML
 
-    def test_table_has_the_eight_compact_columns(self):
+    def test_table_has_the_eleven_compact_columns(self):
         head = STATS_HTML.split("<thead>", 1)[1].split("</thead>", 1)[0]
-        headers = [cell.split("</th>", 1)[0] for cell in head.split("<th>")[1:]]
-        assert headers == [
-            "Model", "Reqs", "Errors", "Gen t/s", "Best gen t/s",
-            "Prompt t/s", "TTFT p50 / p95", "Cache",
+        cells = re.findall(r"<th([^>]*)>([^<]*)</th>", head)
+        assert [label for _, label in cells] == [
+            "Model", "Reqs", "Errors", "Gen t/s", "Gen total",
+            "Prompt t/s", "Prompt total", "TTFT p50 / p95", "Cache",
+            "Gen tok", "Prefill tok",
         ]
+        tip = ' title="Combined speed while busy @ average concurrent requests"'
+        assert [attrs for attrs, _ in cells] == [
+            "", "", "", "", tip, "", tip, "", "", "", "",
+        ]
+        assert "Best gen t/s" not in STATS_HTML
         assert '<tbody id="models"></tbody>' in STATS_HTML
         assert '<tfoot id="totals"></tfoot>' in STATS_HTML
 
@@ -342,36 +360,48 @@ class TestStatsPageRendering:
         assert all(_pill(row) is None for row in rows[1:])
 
         assert _cells(rows[0]) == [
-            "qwen3-32b", "312", "2", "42.1", "118.4 @4", "1,830", "210 / 890 ms", "64%",
+            "qwen3-32b", "312", "2", "42.1", "85.3 @2.4", "1,830", "2,140 @1.0",
+            "210 / 890 ms", "64%", "45.2K", "9,876",
         ]
         assert _cells(rows[3]) == [
-            "llama-3.1-8b", "88", "0", "96.4", "–", "4,120", "95 / 310 ms", "31%",
+            "llama-3.1-8b", "88", "0", "96.4", "–", "4,120", "–",
+            "95 / 310 ms", "31%", "0", "0",
         ]
-        assert _cells(rows[1]) == ["big", "1,000", "–", "–", "–", "–", "–", "–"]
+        assert _cells(rows[1]) == [
+            "big", "1,000", "–", "–", "–", "–", "–", "–", "–", "–", "–",
+        ]
+        # Token counts compact like the tiles, full value on hover.
+        assert rows[0]["children"][9]["title"] == "45,210"
+        assert rows[0]["children"][10]["title"] == "9,876"
+        assert rows[1]["children"][9]["title"] == ""
+        assert rows[1]["children"][9]["className"] == "muted"
 
         # Errors: critical dot only when > 0; zero is muted.
         assert _classes(rows[0]["children"][2]) == ["dot critical", ""]
         assert _classes(rows[3]["children"][2]) == ["muted"]
         # TTFT: numbers in primary ink, unit muted.
-        assert _classes(rows[0]["children"][6]) == ["", "muted"]
-        assert rows[0]["children"][6]["children"][1]["text"] == " ms"
+        assert _classes(rows[0]["children"][7]) == ["", "muted"]
+        assert rows[0]["children"][7]["children"][1]["text"] == " ms"
         # Cache: decorative meter + percentage; none when null.
-        meter = _meter(rows[0]["children"][7])
+        meter = _meter(rows[0]["children"][8])
         assert meter["attributes"] == {"aria-hidden": "true"}
         assert meter["text"] == ""
         assert meter["children"][0]["className"] == "fill"
         assert meter["children"][0]["width"] == "64.0%"
-        assert _meter(rows[3]["children"][7])["children"][0]["width"] == "31.0%"
-        assert _meter(rows[1]["children"][7]) is None
+        assert _meter(rows[3]["children"][8])["children"][0]["width"] == "31.0%"
+        assert _meter(rows[1]["children"][8]) is None
 
         totals = _rows(page, "totals")
         assert len(totals) == 1
         assert totals[0]["className"] == "all"
         assert _pill(totals[0]) is None
+        # The All models row uses the global aggregates and token totals.
         assert _cells(totals[0]) == [
-            "All models", "1,400", "2", "52.7", "–", "2,204", "180 / 850 ms", "58%",
+            "All models", "1,400", "2", "52.7", "77.7 @2.1", "2,204", "3,140 @1.8",
+            "180 / 850 ms", "58%", "1.23M", "9,876",
         ]
-        assert _meter(totals[0]["children"][7])["children"][0]["width"] == "58.4%"
+        assert totals[0]["children"][9]["title"] == "1,234,567"
+        assert _meter(totals[0]["children"][8])["children"][0]["width"] == "58.4%"
 
     def test_full_data_shows_errors_card_with_chips(self):
         page = _render(FULL)
@@ -405,8 +435,10 @@ class TestStatsPageRendering:
 
         assert _rows(page) == []
         totals = _rows(page, "totals")
-        assert _cells(totals[0]) == ["All models", "0", "0", "–", "–", "–", "–", "–"]
-        assert _meter(totals[0]["children"][7]) is None
+        assert _cells(totals[0]) == [
+            "All models", "0", "0", "–", "–", "–", "–", "–", "–", "–", "–",
+        ]
+        assert _meter(totals[0]["children"][8]) is None
         assert page["errors-card"]["hidden"] is True
         assert page["errors"]["children"] == []
 
@@ -480,16 +512,45 @@ class TestStatsPageRendering:
     )
     def test_cache_meter_width_is_clamped(self, rate, width, text):
         page = _render({"models": {"m": {"requests": {"tokens": {"cache_hit_rate": rate}}}}})
-        cell = _rows(page)[0]["children"][7]
+        cell = _rows(page)[0]["children"][8]
         assert cell["text"] == text
         assert _meter(cell)["children"][0]["width"] == width
 
     @pytest.mark.parametrize("rate", [None, "0.5", [], {}])
     def test_cache_without_numeric_rate_has_no_meter(self, rate):
         page = _render({"models": {"m": {"requests": {"tokens": {"cache_hit_rate": rate}}}}})
-        cell = _rows(page)[0]["children"][7]
+        cell = _rows(page)[0]["children"][8]
         assert cell["text"] == "–"
         assert _meter(cell) is None
+
+    @pytest.mark.parametrize(
+        ("value_expression", "rate", "expected"),
+        [
+            ("{tps: 85.34, concurrency: 2.36}", "fmtTps", "85.3 @2.4"),
+            ("{tps: 85.34, concurrency: 1}", "fmtTps", "85.3 @1.0"),
+            ("{tps: 2140.4, concurrency: 1.84}", "fmtInt", "2,140 @1.8"),
+            ("null", "fmtTps", "–"),
+            ("42", "fmtTps", "–"),
+            ('"primitive"', "fmtTps", "–"),
+            ("[]", "fmtTps", "–"),
+            ("{tps: NaN, concurrency: 1}", "fmtTps", "–"),
+            ("{tps: Infinity, concurrency: 1}", "fmtTps", "–"),
+            ("{tps: 0, concurrency: 1}", "fmtTps", "–"),
+            ("{tps: -1, concurrency: 1}", "fmtTps", "–"),
+            ('{tps: "5", concurrency: 1}', "fmtTps", "–"),
+            ("{concurrency: 1}", "fmtTps", "–"),
+            ("{tps: 1}", "fmtTps", "–"),
+            ("{tps: 1, concurrency: 0}", "fmtTps", "–"),
+            ("{tps: 1, concurrency: -Infinity}", "fmtTps", "–"),
+            ("{tps: 1, concurrency: NaN}", "fmtInt", "–"),
+        ],
+    )
+    def test_aggregate_formatter_contract(self, value_expression, rate, expected):
+        output = _execute(
+            "console.log(JSON.stringify(fmtAggregate("
+            + value_expression + ", " + rate + ")));\n"
+        )
+        assert output == expected
 
     def test_errors_card_hides_again_after_errors_clear(self):
         output = _execute(
@@ -516,9 +577,12 @@ class TestStatsPageRendering:
                 "models": {"m": {"requests": {
                     "total": float("nan"),
                     "failure": "2",
-                    "rates": {"generation_tps": {"avg": "fast", "max_aggregate": {"tps": 5, "concurrency": 1.5}}},
+                    "rates": {
+                        "generation_tps": {"avg": "fast", "avg_aggregate": {"tps": float("nan"), "concurrency": 1}},
+                        "prompt_tps": {"avg_aggregate": {"tps": 5, "concurrency": float("inf")}},
+                    },
                     "ttft_ms": {"p50": None, "p95": 12.6},
-                    "tokens": {"cache_hit_rate": float("inf")},
+                    "tokens": {"cache_hit_rate": float("inf"), "completion": float("nan"), "prefill": "9"},
                 }}},
                 "requests": {"errors": {"x": "many", "y": None, "z": -1}, "failure": float("nan")},
                 "uptime_seconds": -3,
@@ -535,7 +599,7 @@ class TestStatsPageRendering:
         )
         totals = _rows(output, "totals")
         assert _cells(totals[0])[0] == "All models"
-        assert all(len(row["children"]) == 8 for row in _rows(output) + totals)
+        assert all(len(row["children"]) == 11 for row in _rows(output) + totals)
         assert output["errors-card"]["hidden"] is True
         for node in output.values():
             for text in _all_text(node):
@@ -550,12 +614,18 @@ class TestStatsPageRendering:
             "current_model": "m",
             "models": {"m": {"requests": {
                 "total": 3,
-                "rates": {"generation_tps": {"avg": "fast", "max_aggregate": {"tps": 5, "concurrency": 1.5}}},
+                "rates": {
+                    "generation_tps": {"avg": "fast", "avg_aggregate": {"tps": "5", "concurrency": 1}},
+                    "prompt_tps": {"avg_aggregate": [5, 1]},
+                },
                 "ttft_ms": {"p50": None, "p95": 12.6},
+                "tokens": {"completion": None, "prefill": {}},
             }}},
         })
         row = _rows(page)[0]
-        assert _cells(row) == ["m", "3", "–", "–", "–", "–", "– / 13 ms", "–"]
+        assert _cells(row) == [
+            "m", "3", "–", "–", "–", "–", "–", "– / 13 ms", "–", "–", "–",
+        ]
         assert row["className"] == "loaded"
         assert _pill(row)["text"] == "Loaded"
 

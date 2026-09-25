@@ -194,8 +194,11 @@ class TestStatsCollector:
             "prefill": 0, "cache_hit_rate": None,
         }
         assert snap["requests"]["rates"] == {
-            "prompt_tps": {"avg": None},
-            "generation_tps": {"avg": None, "last_60s": 0.0, "last_300s": 0.0},
+            "prompt_tps": {"avg": None, "avg_aggregate": None},
+            "generation_tps": {
+                "avg": None, "last_60s": 0.0, "last_300s": 0.0,
+                "avg_aggregate": None,
+            },
         }
         assert snap["requests"]["ttft_ms"] is None  # no samples
         assert snap["requests"]["tpot_ms"] is None  # no samples
@@ -669,10 +672,10 @@ class TestTokenMetricCollector:
 
     def test_dashboard_html_has_cache_hit_column(self):
         # Static gate: the compact dashboard table (P-20260925-01) keeps the
-        # cache hit rate as its last column (percentage + meter); raw
-        # cached/prefill token counts moved to /stats/json only.
-        assert "<th>Cache</th>" in STATS_HTML
-        assert "obj(r.tokens).cache_hit_rate" in STATS_HTML
+        # cache hit rate column (percentage + meter); P-20260925-04 adds the
+        # generated and prefill token counts after it.
+        assert "<th>Cache</th><th>Gen tok</th><th>Prefill tok</th>" in STATS_HTML
+        assert "tokens.cache_hit_rate" in STATS_HTML
         assert 'el("span", "pct", fmtPct(rate))' in STATS_HTML
 
 

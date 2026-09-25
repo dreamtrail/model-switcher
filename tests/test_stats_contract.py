@@ -53,9 +53,10 @@ class TestStatsEndpoints:
                     "prefill": 0, "cache_hit_rate": None,
                 }
                 assert data["requests"]["rates"] == {
-                    "prompt_tps": {"avg": None},
+                    "prompt_tps": {"avg": None, "avg_aggregate": None},
                     "generation_tps": {
                         "avg": None, "last_60s": 0.0, "last_300s": 0.0,
+                        "avg_aggregate": None,
                     },
                 }
                 assert data["requests"]["ttft_ms"] is None

@@ -42,6 +42,50 @@ class _DecodeInterval:
     completion_tokens: int
 
 
+@dataclass(frozen=True)
+class _PrefillInterval:
+    """One completed, aggregate-eligible prefill (start → first token)."""
+
+    started_at: float
+    ended_at: float
+    prefill_tokens: int
+
+
+@dataclass
+class _ActiveRequest:
+    """An in-flight proxied request whose prefill may still be unpublished."""
+
+    started_at: float
+    first_token_at: float | None = None
+
+
+@dataclass
+class _AggregateTotals:
+    """Busy-time accumulators over published interval groups.
+
+    tokens / busy_time is the average aggregate speed while at least one
+    stream was busy; stream_time / busy_time is the average concurrency.
+    """
+
+    tokens: int = 0
+    busy_time: float = 0.0
+    stream_time: float = 0.0
+
+    def add(self, other: _AggregateTotals) -> None:
+        self.tokens += other.tokens
+        self.busy_time += other.busy_time
+        self.stream_time += other.stream_time
+
+    def report(self) -> dict | None:
+        """JSON block ``{"tps", "concurrency"}``, or None before any group."""
+        if self.busy_time <= 0 or self.tokens <= 0:
+            return None
+        return {
+            "tps": self.tokens / self.busy_time,
+            "concurrency": self.stream_time / self.busy_time,
+        }
+
+
 @dataclass
 class _ModelStats:
     """Per-model counters and samples."""
@@ -68,16 +112,25 @@ class _ModelStats:
     decode_frontier: list[_DecodeInterval] = field(default_factory=list)
     max_aggregate_tps: float | None = None
     max_aggregate_concurrency: int | None = None
+    decode_aggregate: _AggregateTotals = field(default_factory=_AggregateTotals)
+    active_requests: dict[object, _ActiveRequest] = field(default_factory=dict)
+    prefill_frontier: list[_PrefillInterval] = field(default_factory=list)
+    prefill_aggregate: _AggregateTotals = field(
+        default_factory=_AggregateTotals,
+    )
 
 
-def _decode_components(
-    intervals: list[_DecodeInterval],
-) -> list[list[_DecodeInterval]]:
+_Interval = _DecodeInterval | _PrefillInterval
+
+
+def _interval_components(
+    intervals: list[_Interval],
+) -> list[list[_Interval]]:
     """Partition intervals into positive-overlap connected components."""
     ordered = sorted(
         intervals, key=lambda interval: (interval.started_at, interval.ended_at)
     )
-    components: list[list[_DecodeInterval]] = []
+    components: list[list[_Interval]] = []
     component_end: float | None = None
     for interval in ordered:
         if component_end is None or interval.started_at >= component_end:
@@ -87,6 +140,47 @@ def _decode_components(
             components[-1].append(interval)
             component_end = max(component_end, interval.ended_at)
     return components
+
+
+def _component_totals(
+    component: list[_Interval], tokens: int,
+) -> _AggregateTotals | None:
+    """Busy span and summed stream time of one connected component.
+
+    A component has no internal gaps, so its span is its busy time.
+    Returns None when the values are not finite and positive.
+    """
+    span = (
+        max(interval.ended_at for interval in component)
+        - min(interval.started_at for interval in component)
+    )
+    stream_time = sum(
+        interval.ended_at - interval.started_at for interval in component
+    )
+    if not (
+        math.isfinite(span) and span > 0
+        and math.isfinite(stream_time) and stream_time > 0
+        and tokens >= 1
+    ):
+        return None
+    return _AggregateTotals(
+        tokens=tokens, busy_time=span, stream_time=stream_time,
+    )
+
+
+def _uncached_prefill(
+    prompt_tokens: int | None, cached_tokens: int | None,
+) -> int | None:
+    """Uncached prompt work (prompt − cached, or prompt when cached unknown)."""
+    if prompt_tokens is None or prompt_tokens < 1:
+        return None
+    if cached_tokens is not None:
+        return max(prompt_tokens - cached_tokens, 0)
+    return prompt_tokens
+
+
+def _is_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _peak_decode_concurrency(intervals: list[_DecodeInterval]) -> int:
@@ -171,12 +265,17 @@ def _requests_report(
     now_monotonic: float = 0.0,
     max_aggregate: tuple[float, int] | None = None,
     include_max_aggregate: bool = False,
+    decode_aggregate: _AggregateTotals | None = None,
+    prefill_aggregate: _AggregateTotals | None = None,
 ) -> dict:
     """Build the requests block shared by global and per-model reports."""
     generation_tps = {
         "avg": (decode_tokens / decode_time) if decode_time > 0 else None,
         "last_60s": _window_tps(token_events, now_monotonic, WINDOW_SHORT_S),
         "last_300s": _window_tps(token_events, now_monotonic, WINDOW_LONG_S),
+        "avg_aggregate": (
+            decode_aggregate.report() if decode_aggregate is not None else None
+        ),
     }
     if include_max_aggregate:
         generation_tps["max_aggregate"] = (
@@ -208,6 +307,10 @@ def _requests_report(
         "rates": {
             "prompt_tps": {
                 "avg": (prefill_tokens / prefill_time) if prefill_time > 0 else None,
+                "avg_aggregate": (
+                    prefill_aggregate.report()
+                    if prefill_aggregate is not None else None
+                ),
             },
             "generation_tps": generation_tps,
         },
@@ -339,15 +442,11 @@ class StatsCollector:
                 and completion_tokens >= 1):
             stats.decode_tokens += completion_tokens
             stats.decode_time += decode_s
-        if (ttft_s is not None and prompt_tokens is not None
-                and prompt_tokens >= 1):
+        if ttft_s is not None:
             # Prompt processing excludes cached reads when the backend reports
             # them; the reported work is the uncached remainder.
-            if cached_tokens is not None:
-                prefill = max(prompt_tokens - cached_tokens, 0)
-            else:
-                prefill = prompt_tokens
-            if prefill >= 1:
+            prefill = _uncached_prefill(prompt_tokens, cached_tokens)
+            if prefill is not None and prefill >= 1:
                 stats.prefill_tokens += prefill
                 stats.prefill_time += ttft_s
         events = stats.token_events
@@ -381,13 +480,105 @@ class StatsCollector:
         if n > self._peak_inflight:
             self._peak_inflight = n
 
+    def record_request_start(
+        self, model: str, request_id: object, started_at: float,
+    ) -> None:
+        """Record an in-flight request whose prefill starts at started_at.
+
+        Must be paired with record_prefill_end for the same request_id
+        (the swapper calls it from a ``finally`` block).
+        """
+        active = self._model(model).active_requests
+        if request_id not in active:
+            active[request_id] = _ActiveRequest(started_at=started_at)
+
     def record_decode_start(
         self, model: str, request_id: object, started_at: float,
     ) -> None:
         """Record one request's first-token boundary at most once."""
-        active = self._model(model).active_decodes
+        stats = self._model(model)
+        active = stats.active_decodes
         if request_id not in active:
             active[request_id] = started_at
+        request = stats.active_requests.get(request_id)
+        if request is not None and request.first_token_at is None:
+            request.first_token_at = started_at
+
+    def record_prefill_end(
+        self,
+        model: str,
+        request_id: object,
+        *,
+        first_token_at: float | None,
+        ok: bool,
+        prompt_tokens: int | None,
+        cached_tokens: int | None,
+    ) -> None:
+        """Close an in-flight request and publish closed prefill groups.
+
+        Eligibility matches rates.prompt_tps: a successful request with a
+        first token and at least one uncached prompt token.
+        """
+        stats = self._models.get(model)
+        if stats is None:
+            return
+        request = stats.active_requests.pop(request_id, None)
+        if request is None:
+            return
+        started_at = request.started_at
+        prefill = (
+            _uncached_prefill(prompt_tokens, cached_tokens)
+            if _is_count(prompt_tokens)
+            and (cached_tokens is None or _is_count(cached_tokens))
+            else None
+        )
+        eligible = (
+            ok
+            and prefill is not None
+            and prefill >= 1
+            and first_token_at is not None
+            and math.isfinite(started_at)
+            and math.isfinite(first_token_at)
+            and first_token_at > started_at
+        )
+        if eligible:
+            stats.prefill_frontier.append(_PrefillInterval(
+                started_at=started_at,
+                ended_at=first_token_at,
+                prefill_tokens=prefill,
+            ))
+        self._finalize_prefill_frontier(stats)
+
+    @staticmethod
+    def _finalize_prefill_frontier(stats: _ModelStats) -> None:
+        """Publish closed prefill groups no in-flight request can overlap.
+
+        An in-flight request can still add an interval [start, first token)
+        overlapping a group [g_start, g_end) only if it started before g_end
+        and its first token is unknown or later than g_start.
+        """
+        retained: list[_PrefillInterval] = []
+        active = tuple(stats.active_requests.values())
+        for component in _interval_components(stats.prefill_frontier):
+            group_start = min(interval.started_at for interval in component)
+            group_end = max(interval.ended_at for interval in component)
+            if any(
+                request.started_at < group_end
+                and (
+                    request.first_token_at is None
+                    or request.first_token_at > group_start
+                )
+                for request in active
+            ):
+                retained.extend(component)
+                continue
+            totals = _component_totals(
+                component,
+                sum(interval.prefill_tokens for interval in component),
+            )
+            if totals is not None:
+                stats.prefill_aggregate.add(totals)
+        stats.prefill_frontier = retained
 
     def record_decode_end(
         self,
@@ -427,7 +618,7 @@ class StatsCollector:
         """Publish ended components no active decode can still bridge."""
         retained: list[_DecodeInterval] = []
         active_starts = tuple(stats.active_decodes.values())
-        for component in _decode_components(stats.decode_frontier):
+        for component in _interval_components(stats.decode_frontier):
             component_end = max(interval.ended_at for interval in component)
             if any(started_at < component_end for started_at in active_starts):
                 retained.extend(component)
@@ -446,6 +637,9 @@ class StatsCollector:
                 continue
             if not math.isfinite(tps) or tps <= 0:
                 continue
+            totals = _component_totals(component, tokens)
+            if totals is not None:
+                stats.decode_aggregate.add(totals)
             concurrency = _peak_decode_concurrency(component)
             if (
                 stats.max_aggregate_tps is None
@@ -515,10 +709,18 @@ class StatsCollector:
                         and ms.max_aggregate_concurrency is not None
                     ) else None,
                     include_max_aggregate=True,
+                    decode_aggregate=ms.decode_aggregate,
+                    prefill_aggregate=ms.prefill_aggregate,
                 ),
             }
             for name, ms in self._models.items()
         }
+        # Global busy-time averages sum the per-model accumulators.
+        global_decode = _AggregateTotals()
+        global_prefill = _AggregateTotals()
+        for ms in self._models.values():
+            global_decode.add(ms.decode_aggregate)
+            global_prefill.add(ms.prefill_aggregate)
         return {
             "uptime_seconds": uptime,
             "current_model": current_model,
@@ -544,6 +746,8 @@ class StatsCollector:
                 prefill_time=self.prefill_time,
                 token_events=self.token_events,
                 now_monotonic=now_monotonic,
+                decode_aggregate=global_decode,
+                prefill_aggregate=global_prefill,
             ),
             "throughput": {
                 "last_60s": sum(
@@ -616,7 +820,7 @@ STATS_HTML = """<!DOCTYPE html>
     font-size: 15px; line-height: 1.45;
     -webkit-font-smoothing: antialiased;
   }
-  main { max-width: 64rem; margin: 0 auto; padding: 2rem 1.5rem 2.5rem; }
+  main { max-width: 80rem; margin: 0 auto; padding: 2rem 1.5rem 2.5rem; }
   .top {
     display: flex; flex-wrap: wrap; align-items: flex-end;
     justify-content: space-between; gap: 0.5rem 1.5rem; margin-bottom: 1.25rem;
@@ -787,7 +991,10 @@ STATS_HTML = """<!DOCTYPE html>
   <table>
     <thead><tr>
       <th>Model</th><th>Reqs</th><th>Errors</th><th>Gen t/s</th>
-      <th>Best gen t/s</th><th>Prompt t/s</th><th>TTFT p50 / p95</th><th>Cache</th>
+      <th title="Combined speed while busy @ average concurrent requests">Gen total</th>
+      <th>Prompt t/s</th>
+      <th title="Combined speed while busy @ average concurrent requests">Prompt total</th>
+      <th>TTFT p50 / p95</th><th>Cache</th><th>Gen tok</th><th>Prefill tok</th>
     </tr></thead>
     <tbody id="models"></tbody>
     <tfoot id="totals"></tfoot>
@@ -835,16 +1042,11 @@ function fmtPct(v) {
   return isNum(v) ? Math.round(v * 100) + "%" : DASH;
 }
 
-function fmtMaxAggregateTps(v) {
+function fmtAggregate(v, fmtRate) {
   if (!v || typeof v !== "object" || Array.isArray(v)) return DASH;
-  if (!(typeof v.tps === "number" && Number.isFinite(v.tps) && v.tps > 0)) {
-    return DASH;
-  }
-  if (!(typeof v.concurrency === "number" &&
-        Number.isInteger(v.concurrency) && v.concurrency > 0)) {
-    return DASH;
-  }
-  return v.tps.toFixed(1) + " @" + v.concurrency;
+  if (!(isNum(v.tps) && v.tps > 0)) return DASH;
+  if (!(isNum(v.concurrency) && v.concurrency > 0)) return DASH;
+  return fmtRate(v.tps) + " @" + v.concurrency.toFixed(1);
 }
 
 function fmtTtft(t) {
@@ -939,20 +1141,24 @@ function renderTiles(data) {
   setText("kpi-uptime", fmtUptime(data.uptime_seconds));
 }
 
-function rowCells(name, req, withBest) {
+function rowCells(name, req) {
   const r = obj(req);
   const rates = obj(r.rates);
   const gt = obj(rates.generation_tps);
   const pt = obj(rates.prompt_tps);
+  const tokens = obj(r.tokens);
   return [
     name,
     fmtInt(r.total),
     r.failure,
     fmtTps(gt.avg),
-    withBest ? fmtMaxAggregateTps(gt.max_aggregate) : DASH,
+    fmtAggregate(gt.avg_aggregate, fmtTps),
     fmtInt(pt.avg),
+    fmtAggregate(pt.avg_aggregate, fmtInt),
     fmtTtft(r.ttft_ms),
-    obj(r.tokens).cache_hit_rate,
+    tokens.cache_hit_rate,
+    tokens.completion,
+    tokens.prefill,
   ];
 }
 
@@ -1012,14 +1218,22 @@ function plainCell(text) {
   return el("td", text === DASH ? "muted" : "", text);
 }
 
+function countCell(v) {
+  const td = plainCell(fmtCompact(v));
+  td.title = isNum(v) ? fmtInt(v) : "";
+  return td;
+}
+
 function buildRow(cells, loaded, className) {
   const tr = el("tr", className);
   tr.appendChild(nameCell(cells[0], loaded));
   tr.appendChild(plainCell(cells[1]));
   tr.appendChild(errorsCell(cells[2]));
-  for (const text of cells.slice(3, 6)) tr.appendChild(plainCell(text));
-  tr.appendChild(ttftCell(cells[6]));
-  tr.appendChild(cacheCell(cells[7]));
+  for (const text of cells.slice(3, 7)) tr.appendChild(plainCell(text));
+  tr.appendChild(ttftCell(cells[7]));
+  tr.appendChild(cacheCell(cells[8]));
+  tr.appendChild(countCell(cells[9]));
+  tr.appendChild(countCell(cells[10]));
   return tr;
 }
 
@@ -1045,14 +1259,14 @@ function renderTable(data) {
     tbody.textContent = "";
     for (const [name, m] of orderedModels(data.models, current)) {
       const loaded = name === current;
-      tbody.appendChild(buildRow(rowCells(String(name), obj(m).requests, true),
+      tbody.appendChild(buildRow(rowCells(String(name), obj(m).requests),
         loaded, loaded ? "loaded" : ""));
     }
   }
   const tfoot = byId("totals");
   if (tfoot) {
     tfoot.textContent = "";
-    tfoot.appendChild(buildRow(rowCells("All models", data.requests, false),
+    tfoot.appendChild(buildRow(rowCells("All models", data.requests),
       false, "all"));
   }
 }

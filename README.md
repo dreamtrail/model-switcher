@@ -274,7 +274,7 @@ NInfer's `/health` becomes available after model loading and warm-up. Model-swit
 
 Model-switcher tracks runtime statistics in memory (reset on restart) and serves them at two switcher-local endpoints:
 
-- `GET /stats` — human-readable dashboard that refreshes every 5 seconds and follows the system light/dark theme. A header shows a live indicator: "Connecting…" before the first response, "Live · updated Ns ago" after each good response, and "Connection lost · showing last data" when a refresh fails (the last good data stays on screen), or "Connection lost · retrying" if no data has arrived yet. Six stat tiles show the loaded model, average generation speed (tok/s), requests (with errors and requests in the last minute), active requests (with peak), swaps (with average swap time), and uptime; large tile numbers are shortened (for example `12.3K`, `1.23M`) with the full number on hover. A **Models** card holds one compact table with a row per model plus an **All models** totals row (Reqs, Errors, Gen t/s, Best gen t/s, Prompt t/s, TTFT p50 / p95, Cache hit % with a small bar); the loaded model is listed first with a "Loaded" badge, and other models are sorted by request count. An **Errors** card with one chip per error kind appears only when failures exist. The page intentionally shows a subset of the metrics; the full data (latency, bytes, token counts, starts/stops, windows) is in `/stats/json`.
+- `GET /stats` — human-readable dashboard that refreshes every 5 seconds and follows the system light/dark theme. A header shows a live indicator: "Connecting…" before the first response, "Live · updated Ns ago" after each good response, and "Connection lost · showing last data" when a refresh fails (the last good data stays on screen), or "Connection lost · retrying" if no data has arrived yet. Six stat tiles show the loaded model, average generation speed (tok/s), requests (with errors and requests in the last minute), active requests (with peak), swaps (with average swap time), and uptime; large tile numbers are shortened (for example `12.3K`, `1.23M`) with the full number on hover. A **Models** card holds one compact table with a row per model plus an **All models** totals row (Reqs, Errors, Gen t/s, Gen total, Prompt t/s, Prompt total, TTFT p50 / p95, Cache hit % with a small bar, Gen tok, Prefill tok). **Gen total** and **Prompt total** show the combined speed while busy and the average number of requests running at once, for example `85.3 @2.4` (see `avg_aggregate` below); **Gen tok** and **Prefill tok** are the generated and uncached prompt token totals, shortened like the tiles with the full number on hover. The loaded model is listed first with a "Loaded" badge, and other models are sorted by request count. An **Errors** card with one chip per error kind appears only when failures exist. The page intentionally shows a subset of the metrics; the full data (latency, bytes, prompt/cached token counts, starts/stops, windows, the per-model best cohort `max_aggregate`) is in `/stats/json`.
 - `GET /stats/json` — the same data as JSON:
 
 ```json
@@ -289,8 +289,11 @@ Model-switcher tracks runtime statistics in memory (reset on restart) and serves
     "bytes_in": 1024, "bytes_out": 40960,
     "tokens": {"prompt": 8100, "completion": 2300, "cached": 512, "prefill": 7588, "cache_hit_rate": 0.063},
     "rates": {
-      "prompt_tps": {"avg": 890.2},
-      "generation_tps": {"avg": 38.1, "last_60s": 41.5, "last_300s": 39.0}
+      "prompt_tps": {"avg": 890.2, "avg_aggregate": {"tps": 1240.6, "concurrency": 1.4}},
+      "generation_tps": {
+        "avg": 38.1, "last_60s": 41.5, "last_300s": 39.0,
+        "avg_aggregate": {"tps": 85.3, "concurrency": 2.4}
+      }
     },
     "ttft_ms": {"count": 40, "avg": 210.0, "p50": 180.0, "p95": 640.0, "max": 700.0},
     "tpot_ms": {"count": 40, "avg": 26.3, "p50": 25.0, "p95": 30.0, "max": 31.0}
@@ -307,6 +310,7 @@ Model-switcher tracks runtime statistics in memory (reset on restart) and serves
             "avg": 38.1,
             "last_60s": 41.5,
             "last_300s": 39.0,
+            "avg_aggregate": {"tps": 85.3, "concurrency": 2.4},
             "max_aggregate": {"tps": 107.8, "concurrency": 3}
           }
         }
@@ -335,7 +339,10 @@ Token metrics (when the upstream reports an OpenAI `usage` field):
   - `rates.generation_tps` — completion tokens per second of decode time (token-weighted), with trailing `last_60s`/`last_300s` windows; `rates.prompt_tps` — uncached prompt tokens (`prompt − cached` when the backend reports it; full `prompt` otherwise) per second of time-to-first-token. The two rates are never blended.
   - Per-model `rates.generation_tps.max_aggregate` is separate from those average and rolling rates. It retains the highest completed decode cohort as `{"tps": number, "concurrency": integer}` until restart; it is not added to the global generation-rate object.
   - A cohort is a maximal connected group of positively overlapping decode intervals, from each request's first token through its final stream end. Its aggregate rate is the sum of exact completion tokens divided by the cohort's wall-clock span; concurrency is the peak number of simultaneously decoding eligible streams. Merely touching intervals are separate.
-  - Only successful streaming requests with exact usage reporting at least one completion token and a positive decode duration contribute. The dashboard's **Best gen t/s** column renders the result as `<tps> @<concurrency>` (for example, `107.8 @3`) and shows `–` before an eligible cohort completes. A continuously overlapping cohort remains unpublished until it closes.
+  - Only successful streaming requests with exact usage reporting at least one completion token and a positive decode duration contribute. A continuously overlapping cohort remains unpublished until it closes. The dashboard no longer shows this value (P-20260925-04); it stays in the JSON.
+  - `rates.generation_tps.avg_aggregate` (per model and global) is the busy-time average over all completed cohorts: `tps` = total cohort tokens ÷ total cohort span, and `concurrency` = total per-stream decode time ÷ total cohort span (the average number of streams decoding at once). Only time with at least one eligible stream decoding counts, so idle gaps do not lower it. One stream alone gives `concurrency` 1.0 and the same `tps` as that stream. It is `null` until a cohort closes. The global value sums the per-model totals: busy time on different models is added, not merged into one timeline, which is fine because only one model is served at a time.
+  - `rates.prompt_tps.avg_aggregate` is the same busy-time average for prompt processing. Each request's prefill interval runs from proxy start to its first content chunk (its TTFT) and carries its uncached prompt tokens (eligibility follows `prompt_tps.avg` — successful streaming requests with a first token and at least one uncached prompt token — plus a positive prefill interval). The global value sums the per-model totals in the same way. Overlapping intervals form groups; a group is published only when no in-flight request of that model could still overlap it (one that started before the group ended and has no first token yet, or whose first token came after the group started). Requests that fail or never produce a first token are released and never hold a group once they end.
+  - The dashboard renders both as `<tps> @<concurrency>` with one-decimal concurrency — **Gen total** with one-decimal tps (for example `85.3 @2.4`) and **Prompt total** as a whole number like **Prompt t/s** (for example `2,140 @1.8`) — and `–` before any group is published. Like `max_aggregate`, a server that is never idle publishes nothing until a gap occurs.
 - Non-streaming requests contribute token counts only; no timing split is observable from a single whole-body response.
 
 Known limitations: these paths shadow upstreams serving the same paths (like `/v1/models`); latency samples are unbounded in memory (fine for a local dev tool); requests naming unknown models each create a per-model stats row keyed by the client-supplied name; the pending SSE line buffer is capped (~64 KiB) — once the cap is hit, non-line-shaped content (e.g. a binary audio stream without newlines) is discarded, so token metrics may be absent for such streams (byte counts remain exact).
