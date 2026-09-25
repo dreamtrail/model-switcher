@@ -280,6 +280,11 @@ class TestStatsPageStatic:
         assert "<title>Model Switcher — Statistics</title>" in STATS_HTML
         assert "<noscript>" in STATS_HTML
 
+    def test_header_links_to_control_panel(self):
+        header = STATS_HTML.split('<header class="top">', 1)[1].split("</header>", 1)[0]
+        assert '<p class="subtitle">Statistics · <a href="/control">Control panel</a></p>' in header
+        assert ".subtitle a" in STATS_HTML
+
     def test_table_has_the_eleven_compact_columns(self):
         head = STATS_HTML.split("<thead>", 1)[1].split("</thead>", 1)[0]
         cells = re.findall(r"<th([^>]*)>([^<]*)</th>", head)

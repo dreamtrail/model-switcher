@@ -932,8 +932,8 @@ STATS_HTML = """<!DOCTYPE html>
   }
   .chip .count { color: var(--ink-2); font-weight: 600; font-variant-numeric: tabular-nums; }
   footer { margin-top: 1.25rem; color: var(--muted); font-size: 0.78rem; }
-  footer a, noscript a { color: inherit; text-underline-offset: 2px; }
-  footer a:hover { color: var(--accent); }
+  footer a, noscript a, .subtitle a { color: inherit; text-underline-offset: 2px; }
+  footer a:hover, .subtitle a:hover { color: var(--accent); }
   @media (max-width: 34rem) {
     main { padding: 1.25rem 0.875rem 2rem; }
     .tile .value { font-size: 1.35rem; }
@@ -945,7 +945,7 @@ STATS_HTML = """<!DOCTYPE html>
 <header class="top">
   <div>
     <h1>Model Switcher</h1>
-    <p class="subtitle">Statistics</p>
+    <p class="subtitle">Statistics · <a href="/control">Control panel</a></p>
   </div>
   <div class="live" role="status">
     <span id="live-dot" class="dot"></span><span id="live-text">Connecting…</span>
