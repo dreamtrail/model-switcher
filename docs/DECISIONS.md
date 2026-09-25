@@ -149,7 +149,7 @@ This proposal made pending-load supersession unconditional. It was superseded be
 ## P-20260918-05 — Maximum Aggregate Generation Throughput
 
 ### Measurement Contract
-- **Per-model completed cohorts only** — `models.<name>.requests.rates.generation_tps.max_aggregate` is either `null` or `{"tps": number, "concurrency": integer}`. The global generation-rate object remains unchanged. The dashboard renders this as **Max Agg Gen t/s**, using one decimal and `@` (for example, `107.8@3`), or `–` before data exists.
+- **Per-model completed cohorts only** — `models.<name>.requests.rates.generation_tps.max_aggregate` is either `null` or `{"tps": number, "concurrency": integer}`. The global generation-rate object remains unchanged. The dashboard renders this as **Max Agg Gen t/s**, using one decimal and `@` (for example, `107.8@3`), or `–` before data exists. (Renamed to **Best gen t/s**, rendered `107.8 @3`, under P-20260925-01.)
 - **Exact cohort rate** — a cohort is a maximal connected component of positively overlapping decode intervals. Its rate is the sum of exact completion tokens divided by the wall-clock span from the earliest first token to the latest final stream end; concurrency is the peak simultaneous decode count.
 - **Half-open intervals** — decode intervals are `[first token, stream end)`, so intervals that merely touch are separate and do not increase concurrency. Failed, cancelled, non-streaming, usage-less, zero-token, and nonpositive-duration requests are excluded and cannot bridge eligible cohorts.
 - **Strict lifetime maximum** — compare unrounded rates and replace only on a strict increase; equal rates keep the earlier result. State is per model, in memory, and resets with the process.
@@ -206,3 +206,27 @@ This proposal made pending-load supersession unconditional. It was superseded be
 
 ### Status
 - Implemented under P-20260923-01. The runtime API, control panel, shared lifecycle integration, persistent control-specific tests, and project documentation are complete; focused, related, and full-suite verification passed, followed by independent implementation and test audits.
+
+## P-20260925-01 — Simplified Stats Dashboard
+
+### Scope
+- **Change the page only** — only the embedded `STATS_HTML` in `src/stats.py` changed. `StatsCollector`, `snapshot()`, and the `/stats/json` contract are unchanged, so JSON consumers are unaffected.
+
+### Layout (revision 1; superseded by Revision 2 below)
+- **Use one status line, one compact table, and one errors line** — the seven summary cards and two wide tables (23 columns) were replaced by a status line (loaded model, uptime, active/peak, swaps with average time in seconds, requests per minute), an 8-column table (Model, Reqs, Errors, Gen t/s, Best gen t/s, Prompt t/s, TTFT p50 / p95, Cache), and an errors line shown only when failures exist. *Superseded by Revision 2: the status line became six stat tiles and the errors line became an Errors card with chips.*
+- **Put the loaded model first** — the loaded model's row is highlighted and listed first; other models are sorted by request count (ties by name). A final **All** row shows global totals; Best gen t/s is always `–` there because the global block has no `max_aggregate`. *Superseded by Revision 2: the **All** row became an **All models** totals row in `<tfoot>`; ordering is unchanged.*
+- **Keep rendering safe and null-tolerant** — text-only DOM updates (no `innerHTML`), `–` for null, missing, or non-finite values, thousands separators for integers, 5-second refresh, and keep-last-render on fetch failure. No new dependencies.
+
+### Dropped From the Page (Still in JSON)
+- Request latency (avg/p50/p95/max), bytes in/out, raw token counts (prompt/completion/cached/prefill), process starts/stops, success rate, and `avg_rpm`. These are low-value at a glance or duplicate what the kept columns show; the user chose to keep speed, cache, response time (TTFT), and health/errors on the page.
+
+### Revision 2 — Visual Polish
+- **Same data, calmer presentation** — requested as "make it more aesthetically appealing". Metrics, table formatting, ordering, and the JSON contract are unchanged; only the `STATS_HTML` markup, CSS, and render code changed. Formatting changes are limited to the tiles: "req/min" is shown as "N in last min" under Requests, and large tile numbers are compacted (`1,234`, `12.3K`, `1.23M`) with the full number in the tooltip; table cells keep full numbers.
+- **Palette via CSS custom properties** — page, surface, ink, hairline, baseline, accent, meter track, and status colors (good/serious/critical) are variables in `:root`, with dark values under `@media (prefers-color-scheme: dark)`. No categorical series colors are used: one accent plus a fixed status palette.
+- **Stat tiles instead of a status line** — six tiles (Loaded model, Generation, Requests, Active now, Swaps, Uptime), each a label, a large value, and a small muted sub-line. Tiles use a fixed 6/3/2-column grid by width so they never leave a single orphan tile on its own row.
+- **Status is dot + label, never color alone** — the header live indicator ("Connecting…", "Live · updated Ns ago", "Connection lost · showing last data" or "· retrying" before any data; a 200 response whose body is not a JSON object counts as a failure), the "Loaded" badge, error counts, and error chips all pair a colored dot with text.
+- **Errors card instead of an errors line** — the rev-1 errors line became an **Errors** card with one chip (dot, kind, count) per error kind, shown only when failures exist.
+- **Table stays the single detail view** — same 8 columns; the totals row is now "All models" in `<tfoot>` (separate border model so its top rule renders); Cache adds a small decorative meter (`aria-hidden`, width clamped to 0–100%, none when the rate is missing). Tabular figures are used only in the table.
+
+### Status
+- Implemented under P-20260925-01 with an executable Node-based page test (`tests/test_stats_page.py`).
