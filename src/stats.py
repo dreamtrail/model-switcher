@@ -13,6 +13,12 @@ WINDOW_SHORT_S = 60
 WINDOW_LONG_S = 300
 # Request timestamps older than this are pruned from the deque.
 REQUEST_RETENTION_S = 3600
+# Live-rate calibration: finished streaming requests kept per model.
+GEN_CALIBRATION_SAMPLES = 50
+# Live generation-rate window (seconds); exact-token windows stay above.
+LIVE_WINDOW_S = 15
+# Floor for the live-rate busy-time denominator (seconds).
+LIVE_BUSY_FLOOR_S = 1.0
 
 
 @dataclass
@@ -35,6 +41,8 @@ class Outcome:
     gen_chunk_observer: Callable[[int], None] | None = field(
         default=None, repr=False,
     )
+    # Streaming only: total output chunks seen (live-rate calibration).
+    gen_chunks: int = 0
 
 
 @dataclass(frozen=True)
@@ -114,6 +122,12 @@ class _ModelStats:
     token_events: deque = field(default_factory=deque)  # (monotonic, tokens)
     gen_chunk_events: deque = field(default_factory=deque)  # (monotonic, units)
     active_decodes: dict[object, float] = field(default_factory=dict)
+    # Live rate: recently ended decodes (started_at, ended_at), any outcome.
+    live_decode_intervals: deque = field(default_factory=deque)
+    # Live rate: (completion_tokens, chunks) of recent finished streams.
+    gen_calibration: deque = field(
+        default_factory=lambda: deque(maxlen=GEN_CALIBRATION_SAMPLES),
+    )
     decode_frontier: list[_DecodeInterval] = field(default_factory=list)
     max_aggregate_tps: float | None = None
     max_aggregate_concurrency: int | None = None
@@ -241,8 +255,48 @@ def _prune_token_events(events: deque, now_monotonic: float) -> None:
 
 def _prune_gen_chunk_events(events: deque, now_monotonic: float) -> None:
     """Drop streamed-chunk events older than the live window."""
-    while events and now_monotonic - events[0][0] > WINDOW_SHORT_S:
+    while events and now_monotonic - events[0][0] > LIVE_WINDOW_S:
         events.popleft()
+
+
+def _prune_live_decode_intervals(
+    intervals: deque, now_monotonic: float,
+) -> None:
+    """Drop ended decode intervals that end before the live window."""
+    while intervals and now_monotonic - intervals[0][1] > LIVE_WINDOW_S:
+        intervals.popleft()
+
+
+def _busy_seconds(
+    intervals: list[tuple[float, float]], now_monotonic: float,
+) -> float:
+    """Length of the union of intervals clipped to the live window."""
+    window_start = now_monotonic - LIVE_WINDOW_S
+    clipped = sorted(
+        (max(start, window_start), min(end, now_monotonic))
+        for start, end in intervals
+    )
+    busy = 0.0
+    cur_start = cur_end = None
+    for start, end in clipped:
+        if end <= start:
+            continue
+        if cur_end is None or start > cur_end:
+            if cur_end is not None:
+                busy += cur_end - cur_start
+            cur_start, cur_end = start, end
+        elif end > cur_end:
+            cur_end = end
+    if cur_end is not None:
+        busy += cur_end - cur_start
+    return busy
+
+
+def _tokens_per_chunk(samples: deque) -> float:
+    """Calibrated tokens per streamed chunk (1.0 without samples)."""
+    tokens = sum(t for t, _ in samples)
+    chunks = sum(c for _, c in samples)
+    return tokens / chunks if tokens > 0 and chunks > 0 else 1.0
 
 
 def _window_tps(
@@ -278,7 +332,7 @@ def _requests_report(
     include_max_aggregate: bool = False,
     decode_aggregate: _AggregateTotals | None = None,
     prefill_aggregate: _AggregateTotals | None = None,
-    live_tps: float = 0.0,
+    live: dict | None = None,
 ) -> dict:
     """Build the requests block shared by global and per-model reports."""
     generation_tps = {
@@ -288,9 +342,11 @@ def _requests_report(
         "avg_aggregate": (
             decode_aggregate.report() if decode_aggregate is not None else None
         ),
-        # Estimate: streamed output chunks (not exact tokens) per second.
+        # Estimate: calibrated streamed chunks per busy second.
         "live": {
-            "tps": live_tps, "window_s": WINDOW_SHORT_S, "estimate": True,
+            "tps": 0.0, "window_s": LIVE_WINDOW_S, "estimate": True,
+            "busy_s": 0.0, "tokens_per_chunk": None,
+            **(live or {}),
         },
     }
     if include_max_aggregate:
@@ -477,6 +533,20 @@ class StatsCollector:
         events.append((now_monotonic, n))
         _prune_gen_chunk_events(events, now_monotonic)
 
+    def record_gen_calibration(
+        self, model: str, completion_tokens: object, chunks: object,
+    ) -> None:
+        """Record one finished successful stream's exact tokens and chunks.
+
+        Samples need completion_tokens >= 1 and chunks >= 1; invalid input
+        is ignored without raising. Only the last 50 samples are kept.
+        """
+        if not (_is_count(completion_tokens) and _is_count(chunks)):
+            return
+        if completion_tokens < 1 or chunks < 1:
+            return
+        self._model(model).gen_calibration.append((completion_tokens, chunks))
+
     def record_rejection(self, kind: str, model: str | None = None) -> None:
         """Record a request rejected before proxying."""
         self._total += 1
@@ -621,6 +691,17 @@ class StatsCollector:
         started_at = stats.active_decodes.pop(request_id, None)
         if started_at is None:
             return
+        # Live-rate busy time counts every ended decode, any outcome.
+        if (
+            isinstance(ended_at, (int, float))
+            and math.isfinite(started_at)
+            and math.isfinite(ended_at)
+            and ended_at > started_at
+        ):
+            stats.live_decode_intervals.append((started_at, ended_at))
+            _prune_live_decode_intervals(
+                stats.live_decode_intervals, time.monotonic(),
+            )
         eligible = (
             ok
             and isinstance(completion_tokens, int)
@@ -680,6 +761,56 @@ class StatsCollector:
         while times and now_monotonic - times[0] > REQUEST_RETENTION_S:
             times.popleft()
 
+    def _live_reports(
+        self, now_monotonic: float,
+    ) -> tuple[dict[str, dict], dict]:
+        """Per-model and global live generation-rate estimates.
+
+        Calibrated tokens (chunks in the 15 s window × tokens per chunk)
+        divided by busy time: the union of ended and active decode
+        intervals clipped to the window, floored at 1 s. The rate is 0
+        while no decode is active.
+        """
+        per_model: dict[str, dict] = {}
+        all_intervals: list[tuple[float, float]] = []
+        total_tokens = 0.0
+        any_active = False
+        for name, ms in self._models.items():
+            intervals = list(ms.live_decode_intervals)
+            intervals.extend(
+                (started_at, now_monotonic)
+                for started_at in ms.active_decodes.values()
+                if math.isfinite(started_at)
+            )
+            all_intervals.extend(intervals)
+            busy = _busy_seconds(intervals, now_monotonic)
+            ratio = _tokens_per_chunk(ms.gen_calibration)
+            chunks = sum(
+                n for t, n in ms.gen_chunk_events
+                if now_monotonic - t <= LIVE_WINDOW_S
+            )
+            tokens = chunks * ratio
+            total_tokens += tokens
+            active = bool(ms.active_decodes)
+            any_active = any_active or active
+            per_model[name] = {
+                "tps": (
+                    tokens / max(busy, LIVE_BUSY_FLOOR_S) if active else 0.0
+                ),
+                "busy_s": busy,
+                "tokens_per_chunk": ratio,
+            }
+        busy = _busy_seconds(all_intervals, now_monotonic)
+        global_live = {
+            "tps": (
+                total_tokens / max(busy, LIVE_BUSY_FLOOR_S)
+                if any_active else 0.0
+            ),
+            "busy_s": busy,
+            "tokens_per_chunk": None,
+        }
+        return per_model, global_live
+
     def snapshot(
         self,
         current_model: str | None = None,
@@ -692,11 +823,11 @@ class StatsCollector:
         for ms in self._models.values():
             _prune_token_events(ms.token_events, now_monotonic)
             _prune_gen_chunk_events(ms.gen_chunk_events, now_monotonic)
+            _prune_live_decode_intervals(
+                ms.live_decode_intervals, now_monotonic,
+            )
         now_monotonic = time.monotonic()
-        live_tps = {
-            name: _window_tps(ms.gen_chunk_events, now_monotonic, WINDOW_SHORT_S)
-            for name, ms in self._models.items()
-        }
+        live, global_live = self._live_reports(now_monotonic)
         uptime = max(time.time() - self._started_at, 0.0)
         if self._swap_durations:
             ordered = sorted(self._swap_durations)
@@ -741,7 +872,7 @@ class StatsCollector:
                     include_max_aggregate=True,
                     decode_aggregate=ms.decode_aggregate,
                     prefill_aggregate=ms.prefill_aggregate,
-                    live_tps=live_tps[name],
+                    live=live[name],
                 ),
             }
             for name, ms in self._models.items()
@@ -779,8 +910,8 @@ class StatsCollector:
                 now_monotonic=now_monotonic,
                 decode_aggregate=global_decode,
                 prefill_aggregate=global_prefill,
-                # Global live estimate = sum of the per-model estimates.
-                live_tps=sum(live_tps.values()),
+                # Global: Σ calibrated tokens / union busy time (all models).
+                live=global_live,
             ),
             "throughput": {
                 "last_60s": sum(
@@ -1000,10 +1131,10 @@ STATS_HTML = """<!DOCTYPE html>
     <div class="value"><span id="kpi-gen">–</span><span id="kpi-gen-unit" class="unit" hidden>tok/s</span></div>
     <div class="sub">average</div>
   </div>
-  <div class="card tile" title="Estimated from streamed chunks over the last 60 s">
+  <div class="card tile" title="Estimated combined speed while generating, last 15 s (streamed chunks × tokens per chunk)">
     <div class="label">Live gen t/s ≈</div>
     <div id="kpi-live" class="value">–</div>
-    <div class="sub">estimate · 60 s</div>
+    <div class="sub">estimate · 15 s</div>
   </div>
   <div class="card tile">
     <div class="label">Requests</div>
@@ -1032,7 +1163,7 @@ STATS_HTML = """<!DOCTYPE html>
   <table>
     <thead><tr>
       <th>Model</th><th>Reqs</th><th>Errors</th><th>Gen t/s</th>
-      <th title="Estimated from streamed chunks over the last 60 s">Live t/s ≈</th>
+      <th title="Estimated combined speed while generating, last 15 s (streamed chunks × tokens per chunk)">Live t/s ≈</th>
       <th title="Combined speed while busy @ average concurrent requests">Gen total</th>
       <th>Prompt t/s</th>
       <th title="Combined speed while busy @ average concurrent requests">Prompt total</th>

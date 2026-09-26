@@ -99,6 +99,24 @@ class TestProcessSseLineChunkCount:
         # First-token timing and usage extraction still happen.
         assert outcome.first_token_at is not None
         assert outcome.completion_tokens == 1
+        # P-20260926-04 AC7: the calibration count still advances.
+        assert outcome.gen_chunks == 1
+
+    def test_gen_chunks_totals_units_with_or_without_observer(self):
+        # P-20260926-04: per-stream total used for tokens-per-chunk.
+        lines = [
+            b'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+            b'data: {"choices":[{"delta":{"content":"a"}}]}',
+            b'data: {"choices":[{"index":0,"delta":{"content":"b"}},'
+            b'{"index":1,"delta":{"content":"c"}}]}',
+            b'data: {"choices":[],"usage":{"completion_tokens":4}}',
+            b"data: [DONE]",
+        ]
+        for outcome in (Outcome(), _recording_outcome()[0]):
+            for line in lines:
+                _process_sse_line(line, outcome)
+            assert outcome.gen_chunks == 3
+            assert outcome.completion_tokens == 4
 
     def test_without_observer_parsing_is_unchanged(self):
         outcome = Outcome()
@@ -168,6 +186,7 @@ class TestProxyPathsChunkCount:
         assert status == 200
         assert '"content":"Hi"' in text
         assert calls == [1, 1]
+        assert outcome.gen_chunks == 2
         assert outcome.completion_tokens == 3
 
     async def test_buffered_proxy_never_calls_observer(self):
@@ -184,4 +203,5 @@ class TestProxyPathsChunkCount:
 
         assert status == 200
         assert calls == []
+        assert outcome.gen_chunks == 0
         assert outcome.completion_tokens == 1

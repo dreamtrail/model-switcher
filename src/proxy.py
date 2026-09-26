@@ -260,9 +260,11 @@ def _process_sse_line(line: bytes, outcome: Outcome) -> None:
         outcome.first_token_at = first_token_at
         if outcome.first_token_observer is not None:
             outcome.first_token_observer(first_token_at)
-    if outcome.gen_chunk_observer is not None:
-        units = _count_gen_chunks(event)
-        if units:
+    units = _count_gen_chunks(event)
+    if units:
+        # Total per stream calibrates tokens per chunk after the request.
+        outcome.gen_chunks += units
+        if outcome.gen_chunk_observer is not None:
             try:
                 outcome.gen_chunk_observer(units)
             except Exception:

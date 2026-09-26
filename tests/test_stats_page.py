@@ -32,7 +32,7 @@ FULL = {
             "generation_tps": {
                 "avg": 52.66,
                 "avg_aggregate": {"tps": 77.71, "concurrency": 2.14},
-                "live": {"tps": 38.25, "window_s": 60, "estimate": True},
+                "live": {"tps": 38.25, "window_s": 15, "estimate": True},
             },
         },
         "ttft_ms": {"p50": 180.2, "p95": 849.6},
@@ -51,7 +51,7 @@ FULL = {
                     "prompt_tps": {"avg": 4120.0, "avg_aggregate": None},
                     "generation_tps": {
                         "avg": 96.44, "max_aggregate": None, "avg_aggregate": None,
-                        "live": {"tps": 0.0, "window_s": 60, "estimate": True},
+                        "live": {"tps": 0.0, "window_s": 15, "estimate": True},
                     },
                 },
                 "ttft_ms": {"p50": 95.0, "p95": 310.4},
@@ -73,7 +73,7 @@ FULL = {
                         "avg": 42.1,
                         "max_aggregate": {"tps": 118.44, "concurrency": 4},
                         "avg_aggregate": {"tps": 85.34, "concurrency": 2.36},
-                        "live": {"tps": 38.25, "window_s": 60, "estimate": True},
+                        "live": {"tps": 38.25, "window_s": 15, "estimate": True},
                     },
                 },
                 "ttft_ms": {"p50": 210.4, "p95": 890.0},
@@ -297,7 +297,7 @@ class TestStatsPageStatic:
             "Gen tok", "Prefill tok",
         ]
         tip = ' title="Combined speed while busy @ average concurrent requests"'
-        live = ' title="Estimated from streamed chunks over the last 60 s"'
+        live = ' title="Estimated combined speed while generating, last 15 s (streamed chunks × tokens per chunk)"'
         assert [attrs for attrs, _ in cells] == [
             "", "", "", "", live, tip, "", tip, "", "", "", "",
         ]
@@ -700,16 +700,19 @@ class TestStatsPageRendering:
 
 
 class TestStatsPageLiveRate:
-    """P-20260926-01: estimated live generation rate tile and column."""
+    """P-20260926-01: estimated live generation rate tile and column.
 
-    TIP = "Estimated from streamed chunks over the last 60 s"
+    Tooltip text updated by P-20260926-04 (busy-time, calibrated).
+    """
+
+    TIP = "Estimated combined speed while generating, last 15 s (streamed chunks × tokens per chunk)"
 
     def test_tile_markup_is_labelled_as_estimate_with_tooltip(self):
         tiles = STATS_HTML.split('<section class="kpis"', 1)[1].split("</section>", 1)[0]
         assert f'<div class="card tile" title="{self.TIP}">' in tiles
         assert '<div class="label">Live gen t/s ≈</div>' in tiles
         assert '<div id="kpi-live" class="value">–</div>' in tiles
-        assert "estimate · 60 s" in tiles
+        assert "estimate · 15 s" in tiles
         # Seven tiles: the wide model tile keeps 2/4/8-column rows full.
         assert tiles.count('class="card tile') == 7
         assert '<div class="card tile wide">' in tiles
@@ -721,7 +724,7 @@ class TestStatsPageLiveRate:
     @pytest.mark.parametrize(
         ("value_expression", "expected"),
         [
-            ("{tps: 12.34, window_s: 60, estimate: true}", "12.3"),
+            ("{tps: 12.34, window_s: 15, estimate: true}", "12.3"),
             ("{tps: 0.05}", "0.1"),
             ("{tps: 0}", "–"),
             ("{tps: -1}", "–"),
@@ -743,7 +746,7 @@ class TestStatsPageLiveRate:
         assert output == expected
 
     def test_live_values_render_per_model_and_in_all_models_row(self):
-        live = lambda tps: {"tps": tps, "window_s": 60, "estimate": True}
+        live = lambda tps: {"tps": tps, "window_s": 15, "estimate": True}
         page = _render({
             "current_model": "a",
             "requests": {"total": 3, "rates": {"generation_tps": {"live": live(7.5)}}},

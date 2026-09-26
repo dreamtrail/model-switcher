@@ -688,6 +688,11 @@ class Swapper(_SwapperLifecycleMixin):
                 prompt_tokens=outcome.prompt_tokens,
                 cached_tokens=outcome.cached_tokens,
             )
+            if decode_s is not None:
+                # Successful stream: calibrate live-rate tokens per chunk.
+                self.stats.record_gen_calibration(
+                    model_name, outcome.completion_tokens, outcome.gen_chunks,
+                )
             self.stats.record_request(
                 model_name,
                 ok=ok,

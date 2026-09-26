@@ -644,8 +644,20 @@ class TestTokenMetricsIntegration:
         assert {
             key: value
             for key, value in row["rates"]["generation_tps"].items()
-            if key != "max_aggregate"
-        } == req["rates"]["generation_tps"]
+            if key not in ("max_aggregate", "live")
+        } == {
+            key: value
+            for key, value in req["rates"]["generation_tps"].items()
+            if key != "live"
+        }
+        # Live estimate (P-20260926-04): tokens per chunk is per model only.
+        row_live = row["rates"]["generation_tps"]["live"]
+        req_live = req["rates"]["generation_tps"]["live"]
+        assert set(row_live) == set(req_live)
+        assert req_live["tokens_per_chunk"] is None
+        assert row_live["tokens_per_chunk"] == pytest.approx(9.0)
+        assert row_live["tps"] == req_live["tps"] == 0.0
+        assert row_live["busy_s"] == pytest.approx(req_live["busy_s"])
         assert row["rates"]["prompt_tps"] == req["rates"]["prompt_tps"]
         assert row["ttft_ms"]["count"] == req["ttft_ms"]["count"]
         assert row["tpot_ms"]["count"] == req["tpot_ms"]["count"]

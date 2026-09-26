@@ -261,16 +261,16 @@ This proposal made pending-load supersession unconditional. It was superseded be
 
 ### Definition
 - **Unit** — one per choice in an OpenAI-style SSE `data:` event whose delta has non-empty `content`, `reasoning_content`, `reasoning`, or `tool_calls`, or (completions) non-empty `text`. Role-only, empty, usage-only, unparseable, and named non-OpenAI events count 0.
-- **Rate** — `rates.generation_tps.live = {"tps": units in the last 60 s / 60, "window_s": 60, "estimate": true}` per model; global = sum of the per-model values. `tps` is `0` with no data, following the existing `last_60s` convention.
-- **Wiring** — `proxy.py` reports units through an optional `Outcome.gen_chunk_observer`, like `first_token_observer`, and never touches the collector. The swapper wires it to `StatsCollector.record_gen_chunks`, which keeps a per-model deque pruned to 60 s. An observer failure is caught in the proxy so it cannot break a stream.
+- **Rate** — superseded by § P-20260926-04 (busy-time denominator and tokens-per-chunk calibration). Originally `rates.generation_tps.live = {"tps": units in the last 60 s / 60, "window_s": 60, "estimate": true}` per model; global = sum of the per-model values; `tps` is `0` with no data.
+- **Wiring** — `proxy.py` reports units through an optional `Outcome.gen_chunk_observer`, like `first_token_observer`, and never touches the collector. The swapper wires it to `StatsCollector.record_gen_chunks`, which keeps a per-model deque pruned to the live window (60 s originally, 15 s since § P-20260926-04). An observer failure is caught in the proxy so it cannot break a stream.
 
 ### Limits
 - **OpenAI `data:` streams only** — FreeToken/Anthropic `/v1/messages` and `/v1/responses` named-event streams are not counted, and non-streaming requests never are.
-- **One chunk is not always one token** — batched or speculative decoding can send several tokens per delta (undercount); backends that split output into tiny deltas can overcount.
-- **Lag** — the 60 s window rises and fades gradually; the page still polls every 5 s.
+- **One chunk is not always one token** — superseded by § P-20260926-04: chunks are now scaled by a per-model tokens-per-chunk ratio calibrated from finished streams. The ratio can still lag when chunk packing changes.
+- **Lag** — superseded by § P-20260926-04: the rate now divides by busy time over a 15 s window and reads `0` when nothing is generating. The page still polls every 5 s.
 
 ### Page
-- **"Live gen t/s ≈" tile and "Live t/s ≈" column** (after Gen t/s, per model and in the All models row), both with the tooltip "Estimated from streamed chunks over the last 60 s". Values use one decimal; `–` when the value is missing, non-numeric, or zero.
+- **"Live gen t/s ≈" tile and "Live t/s ≈" column** (after Gen t/s, per model and in the All models row), both with a tooltip (text updated by § P-20260926-04). Values use one decimal; `–` when the value is missing, non-numeric, or zero.
 - **Seven tiles without orphans** — the Loaded model tile spans two columns, so the tile grid is 2/4/8 columns (breakpoints 40rem and 72rem) instead of the 6/3/2 grid from P-20260925-01.
 
 ### Status
@@ -290,3 +290,29 @@ This proposal made pending-load supersession unconditional. It was superseded be
 
 ### Status
 - Implemented under P-20260926-02 with static look tests and executable Node tests for the loaded-model marker and lifecycle dot; the 6 original control-panel tests are unedited, and one API check moved from the old heading to the unchanged `<title>`.
+
+## P-20260926-04 — Live Generation Rate: Busy Time and Calibration
+
+Supersedes the **Rate** line of § P-20260926-01. Units, wiring, limits of
+chunk detection, and page layout from that section still apply.
+
+### Problem
+- **Slow to react** (Revision 2, user request 2026-09-26: "short the window") — the live window is now 15 s (`LIVE_WINDOW_S`), separate from the exact-token windows; `last_60s` / `last_300s` keep 60 s / 300 s.
+- **Undercount** — "Live gen t/s ≈" divided chunks by a flat 60 s, so idle seconds counted as zero speed (15 s of generation at 400 t/s showed 100), and one chunk was counted as one token although vLLM/SGLang often pack several tokens per chunk under load. The value was already aggregate across streams.
+
+### Definition
+- **Busy time** — per model, the length of the union of decode intervals (first token → stream end) that ended in the last 15 s (any outcome) plus active decodes (`[first token, now]`), clipped to `[now − 15 s, now]`. An ended interval that straddles the window start counts only its part inside the window. Overlapping streams count once.
+- **Tokens per chunk** — per model, Σ exact `completion_tokens` / Σ chunks over the last 50 finished successful streaming requests with `completion_tokens ≥ 1` and chunks ≥ 1; `1.0` with no samples. Failed, non-streaming, and usage-less requests add no sample. The proxy keeps a per-stream total in `Outcome.gen_chunks`; the swapper records the sample after a successful stream.
+- **Rate** — per model: `tps = chunks in the last 15 s × tokens per chunk / max(busy time, 1 s)`; `0` while the model has no active decode (the page shows `–`). Global: Σ per-model calibrated tokens / max(union busy time across all models, 1 s) — a model finished before a swap and the new model's active decode both count, once each; `0` while no decode is active anywhere.
+- **JSON** — `rates.generation_tps.live = {"tps", "window_s": 15, "estimate": true, "busy_s", "tokens_per_chunk"}`; `busy_s` is the unfloored busy time; `tokens_per_chunk` is per model and `null` in the global block. Additive to the P-20260926-01 shape.
+
+### Limits
+- **Average, not instant** — the value averages the last 15 s of busy time, so a speed change shows fully after about 15 s.
+- **Still an estimate** — calibration uses past requests, so it lags when the chunk packing changes; a stream that is open but silent still counts as busy.
+- **Exact metrics unchanged** — `tokens`, `last_60s`/`last_300s`, `avg`, and the aggregates never use chunks or the ratio. Observer and calibration input errors are ignored and cannot break a stream.
+
+### Page
+- **Tooltip** — the "Live gen t/s ≈" tile and "Live t/s ≈" column read "Estimated combined speed while generating, last 15 s (streamed chunks × tokens per chunk)"; the tile subtitle reads "estimate · 15 s". No layout change.
+
+### Status
+- Implemented under P-20260926-04 with fake-clock collector tests (busy time, union, clipping including an ended interval straddling the window start, union across a model swap, floor, calibration cap, `last_60s` still 60 s), proxy chunk-total tests, and swapper integration tests for calibration and failed/usage-less/non-streaming requests.
