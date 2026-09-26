@@ -2,7 +2,7 @@
 
 ## Next
 
-- [P-20260925-05] Split `src/stats.py` (1350 LOC): move the embedded `STATS_HTML` page into its own module
+- [P-20260925-05] Split `src/stats.py` (1401 LOC): move the embedded `STATS_HTML` page into its own module; also share the page CSS that `/control` copies from `/stats` (P-20260926-02)
 - [P-20260913-04] Split `tests/test_proxy.py` (1243 LOC) into focused test modules
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to README
@@ -10,6 +10,7 @@
 
 ## Discovered
 
+- [P-20260926-03] Stats table overflows at 80rem when a long model name and a 7-digit request count coincide (12 columns since P-20260926-01); it scrolls sideways and clips Prefill tok (see `artifacts/P-20260926-01/outputs/light-bignum.png`)
 - [P-20260923-04] Add a combined real-process shutdown-hook timeout/cancellation/unresolved-group/retry test; independent review found these cases covered separately, not together
 - [P-20260923-05] Constrain default pytest discovery to maintained tests; root collection currently includes historical tests under ignored artifacts/
 - [P-20260923-06] Develop deployment-specific DGX shutdown scripts and validate remote cleanup; hook support is complete, but real remote shutdown has not been tested (scripts assigned to other agents)
