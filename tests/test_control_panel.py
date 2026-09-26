@@ -13,6 +13,7 @@ from aiohttp.test_utils import TestClient
 import pytest
 
 from src.control import CONTROL_HTML
+from src.stats import STATS_HTML
 from tests.stats_helpers import _stack
 
 
@@ -335,4 +336,125 @@ async function flush() {
                 "/api/v1/control/state",
             ],
             "remaining": 0,
+        }
+
+
+# ---------------------------------------------------------------------------
+# P-20260926-02: /control looks like /stats and links to it
+# ---------------------------------------------------------------------------
+
+
+def _style(html: str) -> str:
+    return html.split("<style>", 1)[1].split("</style>", 1)[0]
+
+
+def _palette(style: str) -> tuple[dict, dict]:
+    """(light, dark) custom-property values from a page stylesheet."""
+    light, dark = style.split("@media (prefers-color-scheme: dark)", 1)
+    pattern = r"(--[a-z0-9-]+):\s*([^;]+);"
+    return dict(re.findall(pattern, light)), dict(re.findall(pattern, dark))
+
+
+class TestPanelMatchesStatsLook:
+    def test_header_links_to_stats_and_stats_links_back(self):
+        header = CONTROL_HTML.split('<header class="top">', 1)[1].split("</header>", 1)[0]
+        assert "<h1>Model Switcher</h1>" in header
+        assert '<p class="subtitle">Control panel · <a href="/stats">Statistics</a></p>' in header
+        assert '<a href="/control">Control panel</a>' in STATS_HTML
+
+    def test_palette_type_and_width_match_stats(self):
+        control_light, control_dark = _palette(_style(CONTROL_HTML))
+        stats_light, stats_dark = _palette(_style(STATS_HTML))
+        # Every colour both pages use has the same light and dark value.
+        shared = set(control_light) & set(stats_light)
+        assert {
+            "--plane", "--surface", "--ink", "--ink-2", "--muted", "--hairline",
+            "--baseline", "--ring", "--accent", "--good", "--serious",
+            "--critical", "--good-tint", "--critical-tint", "--shadow",
+        } <= shared
+        for name in shared:
+            assert control_light[name] == stats_light[name], name
+        for name in set(control_dark) & set(stats_dark):
+            assert control_dark[name] == stats_dark[name], name
+        assert {"--plane", "--surface", "--ink", "--accent"} <= set(control_dark)
+        style = _style(CONTROL_HTML)
+        assert "main { max-width: 80rem;" in style
+        assert "light-dark(" not in style
+        body_font = 'font-family: system-ui, -apple-system, "Segoe UI", Roboto'
+        assert body_font in style and body_font in _style(STATS_HTML)
+
+    def test_status_tiles_and_section_cards_replace_fieldsets(self):
+        assert "<fieldset" not in CONTROL_HTML
+        tiles = CONTROL_HTML.split('<section class="kpis"', 1)[1].split("</section>", 1)[0]
+        assert tiles.count('<div class="card tile">') == 4
+        for ident in ("lifecycle", "active-model", "pending-model", "inflight"):
+            assert f'id="{ident}"' in tiles
+        assert CONTROL_HTML.count('<section class="card section">') == 2
+        assert "<h2>Models</h2>" in CONTROL_HTML
+        assert "<h2>Runtime settings</h2>" in CONTROL_HTML
+        assert '<button id="save-settings" class="primary" type="button">' in CONTROL_HTML
+
+
+class TestPanelStatusMarkers:
+    _execute = staticmethod(TestExecutablePanelJavaScript._execute)
+
+    def test_loaded_model_button_has_text_loaded_pill(self):
+        output = self._execute(r'''
+(async () => {
+  await flush();
+  render({
+    models: ["a", "b"], active_model: "b", pending_model: null,
+    lifecycle: "ready", inflight_requests: 0, settings: {},
+  });
+  const dump = (node) => ({
+    tag: node.tagName, className: node.className, text: node.textContent,
+    children: node.children.map(dump),
+  });
+  console.log(JSON.stringify(byId("models").children.map(dump)));
+})();
+''')
+        plain, loaded = output
+        assert plain["className"] == "model"
+        assert plain["text"] == "a"
+        assert [c["className"] for c in plain["children"]] == [""]
+        assert loaded["className"] == "model loaded"
+        label, pill = loaded["children"]
+        assert label["text"] == "b"
+        # Colour is always paired with a word: dot + "Loaded".
+        assert pill["className"] == "pill"
+        assert [(c["className"], c["text"]) for c in pill["children"]] == [
+            ("dot good", ""), ("", "Loaded"),
+        ]
+
+    @pytest.mark.parametrize(
+        ("lifecycle", "dot", "sub"),
+        [
+            ("ready", "dot good", "Serving"),
+            ("loading", "dot serious", "Loading a model"),
+            ("unloading", "dot serious", "Unloading"),
+            ("idle", "dot", "No model loaded"),
+            ("shutting_down", "dot serious", "Shutting down"),
+            ("cleanup_failed", "dot critical", "Cleanup failed"),
+            ("mystery", "dot", "Unknown state"),
+            (None, "dot", "–"),
+        ],
+    )
+    def test_lifecycle_tile_pairs_status_dot_with_text(self, lifecycle, dot, sub):
+        output = self._execute(r'''
+elements.set("lifecycle-dot", new Element("span", "lifecycle-dot"));
+elements.set("lifecycle-sub", new Element("span", "lifecycle-sub"));
+(async () => {
+  await flush();
+  render({models: [], lifecycle: LIFECYCLE_VALUE, settings: {}});
+  console.log(JSON.stringify({
+    value: byId("lifecycle").textContent,
+    dot: byId("lifecycle-dot").className,
+    sub: byId("lifecycle-sub").textContent,
+  }));
+})();
+'''.replace("LIFECYCLE_VALUE", json.dumps(lifecycle)))
+        assert output == {
+            "value": lifecycle if lifecycle is not None else "–",
+            "dot": dot,
+            "sub": sub,
         }

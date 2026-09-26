@@ -163,7 +163,7 @@ class TestStateAndReservedRoutes:
                 panel = await client.get("/control")
                 state = await client.get("/api/v1/control/state")
                 assert panel.status == state.status == 200
-                assert "Model Switcher Control" in await panel.text()
+                assert "<title>Model Switcher — Control</title>" in await panel.text()
                 assert (await state.json())["active_model"] == "model-a"
         assert hits == []
 

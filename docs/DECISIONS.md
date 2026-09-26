@@ -275,3 +275,18 @@ This proposal made pending-load supersession unconditional. It was superseded be
 
 ### Status
 - Implemented under P-20260926-01 with proxy chunk-count tests, collector window tests (fake clock), a mid-stream swapper integration test, and Node page tests.
+
+## P-20260926-02 — Control Panel Matches the Stats Dashboard
+
+### Scope
+- **Page only** — only the embedded `CONTROL_HTML` markup, CSS, and render helpers in `src/control.py` changed. The control API, request headers, security rules, element IDs, and the 3 s refresh are unchanged. The 6 original control-panel tests pass unedited; one API test (`tests/test_control_api.py`) now checks the unchanged `<title>` instead of the old heading and still proves `/control` is served locally.
+
+### Look
+- **Copied, not shared, CSS** — `/control` copies the `/stats` colour variables (light plus a `prefers-color-scheme: dark` block), fonts, card, tile, dot, and pill styles, and the 80rem width. Sharing one stylesheet is deferred to the `src/stats.py` split (P-20260925-05); until then the two copies can drift, and a test checks that shared colour values match.
+- **Header link** — title "Model Switcher" with the subtitle "Control panel · Statistics" linking to `/stats`, mirroring the `/stats` subtitle that links to `/control`.
+- **Tiles and cards** — Lifecycle, Active model, Pending model, and In-flight requests are `/stats`-style tiles (2 columns, 4 from 40rem). Models and Runtime settings are cards with headings instead of fieldsets.
+- **Status is dot + text** — the Lifecycle tile pairs a dot with a plain-language line (ready "Serving", loading/unloading/shutting down in orange, cleanup failed in red, idle grey); the loaded model's button has a green-bordered style plus a "Loaded" pill; errors show as a red-tinted message with a dot and the error text.
+- **Themed controls** — shared button style, accent-coloured "Apply settings", accent checkboxes, and a matching number input. No live indicator (left out by the approved plan).
+
+### Status
+- Implemented under P-20260926-02 with static look tests and executable Node tests for the loaded-model marker and lifecycle dot; the 6 original control-panel tests are unedited, and one API check moved from the old heading to the unchanged `<title>`.

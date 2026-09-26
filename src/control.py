@@ -314,48 +314,191 @@ CONTROL_HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Model Switcher — Control</title>
 <style>
-  :root { color-scheme: light dark; }
-  body {
-    font-family: system-ui, sans-serif; margin: 0 auto; padding: 1rem;
-    max-width: 52rem; background: light-dark(#fafafa, #1b1b1b);
-    color: light-dark(#222, #eee);
+  /* Palette, type, and card styles copied from the /stats page (STATS_HTML
+     in src/stats.py); a shared stylesheet is deferred to P-20260925-05. */
+  :root {
+    color-scheme: light;
+    --plane: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --hairline: #e1e0d9;
+    --baseline: #c3c2b7;
+    --ring: rgba(11, 11, 11, 0.10);
+    --wash: rgba(11, 11, 11, 0.03);
+    --accent: #2a78d6;
+    --on-accent: #ffffff;
+    --good: #0ca30c;
+    --serious: #ec835a;
+    --critical: #d03b3b;
+    --good-tint: rgba(12, 163, 12, 0.10);
+    --critical-tint: rgba(208, 59, 59, 0.08);
+    --shadow: 0 1px 2px rgba(11, 11, 11, 0.04), 0 2px 6px rgba(11, 11, 11, 0.04);
   }
-  h1 { font-size: 1.5rem; }
-  fieldset { border: 1px solid #8886; border-radius: .5rem; margin: 1rem 0; }
-  .status { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: .75rem; }
-  .card { border: 1px solid #8884; border-radius: .5rem; padding: .75rem; }
-  .label { color: #888; font-size: .8rem; }
-  .value { font-size: 1.15rem; font-weight: 600; overflow-wrap: anywhere; }
-  .models { display: flex; flex-wrap: wrap; gap: .5rem; }
-  label { display: block; margin: .6rem 0; }
-  input[type="number"] { width: 9rem; }
-  button { padding: .45rem .8rem; }
-  #message { min-height: 1.5rem; white-space: pre-wrap; }
-  .error { color: #d33; }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --plane: #0d0d0d;
+      --surface: #1a1a19;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --hairline: #2c2c2a;
+      --baseline: #383835;
+      --ring: rgba(255, 255, 255, 0.10);
+      --wash: rgba(255, 255, 255, 0.04);
+      --accent: #3987e5;
+      --good-tint: rgba(12, 163, 12, 0.18);
+      --critical-tint: rgba(208, 59, 59, 0.16);
+      --shadow: none;
+    }
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { background: var(--plane); }
+  body {
+    margin: 0; background: var(--plane); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 15px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 80rem; margin: 0 auto; padding: 2rem 1.5rem 2.5rem; }
+  .top { margin-bottom: 1.25rem; }
+  h1 { margin: 0; font-size: 1.375rem; font-weight: 650; letter-spacing: -0.01em; }
+  .subtitle { margin: 0.1rem 0 0; color: var(--ink-2); font-size: 0.9rem; }
+  .subtitle a, noscript a { color: inherit; text-underline-offset: 2px; }
+  .subtitle a:hover { color: var(--accent); }
+  .dot {
+    display: inline-block; width: 0.5rem; height: 0.5rem; border-radius: 50%;
+    flex: none; background: var(--muted);
+  }
+  .dot.good { background: var(--good); }
+  .dot.serious { background: var(--serious); }
+  .dot.critical { background: var(--critical); }
+  .card {
+    background: var(--surface); border: 1px solid var(--ring);
+    border-radius: 12px; box-shadow: var(--shadow); min-width: 0;
+  }
+  .kpis {
+    display: grid; gap: 0.75rem; margin-bottom: 1rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  @media (min-width: 40rem) { .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+  .tile { padding: 0.85rem 1rem 0.8rem; }
+  .tile .label { color: var(--ink-2); font-size: 0.8rem; }
+  .tile .value {
+    margin-top: 0.3rem; font-size: 1.6rem; font-weight: 600; line-height: 1.15;
+    letter-spacing: -0.015em; font-variant-numeric: proportional-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .tile .value.name {
+    font-size: 1.15rem; line-height: 1.6; letter-spacing: 0;
+    white-space: normal; overflow-wrap: anywhere;
+  }
+  .tile .sub {
+    margin-top: 0.3rem; color: var(--muted); font-size: 0.78rem; line-height: 1.35;
+  }
+  .tile .sub .dot { margin-right: 0.35rem; vertical-align: 0.05em; }
+  .section { margin-bottom: 1rem; }
+  .section h2 {
+    margin: 0; padding: 0.9rem 1.25rem 0.6rem;
+    font-size: 0.95rem; font-weight: 600;
+  }
+  .body { padding: 0.1rem 1.25rem 1.1rem; }
+  .models { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.9rem; }
+  button {
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    padding: 0.4rem 0.85rem; border-radius: 8px;
+    border: 1px solid var(--ring); background: var(--surface); color: var(--ink);
+    font: inherit; font-size: 0.875rem; cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--wash); border-color: var(--baseline); }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button:disabled { opacity: 0.55; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  button.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+  button.model.loaded { border-color: var(--good); font-weight: 600; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    padding: 0.05rem 0.5rem 0.05rem 0.4rem; border-radius: 999px;
+    background: var(--good-tint); color: var(--ink-2);
+    font-size: 0.7rem; font-weight: 500;
+  }
+  .pill .dot { width: 0.4rem; height: 0.4rem; }
+  .setting {
+    display: flex; align-items: center; gap: 0.6rem; margin: 0 0 0.75rem;
+    color: var(--ink-2); font-size: 0.9rem;
+  }
+  input[type="checkbox"] { width: 1rem; height: 1rem; margin: 0; accent-color: var(--accent); }
+  input[type="number"] {
+    width: 9rem; padding: 0.35rem 0.55rem; border-radius: 8px;
+    border: 1px solid var(--ring); background: var(--plane); color: var(--ink);
+    font: inherit; font-size: 0.875rem; font-variant-numeric: tabular-nums;
+  }
+  #message { min-height: 1.5rem; margin: 0; color: var(--ink-2); font-size: 0.875rem; white-space: pre-wrap; }
+  #message.error {
+    display: inline-block; padding: 0.25rem 0.7rem; border-radius: 8px;
+    background: var(--critical-tint); color: var(--ink);
+  }
+  #message.error::before {
+    content: ""; display: inline-block; width: 0.5rem; height: 0.5rem;
+    margin-right: 0.45rem; border-radius: 50%; background: var(--critical);
+    vertical-align: 0.05em;
+  }
+  @media (max-width: 34rem) {
+    main { padding: 1.25rem 0.875rem 2rem; }
+    .tile .value { font-size: 1.35rem; }
+  }
 </style>
 </head>
 <body>
-<h1>Model Switcher Control</h1>
-<div class="status">
-  <div class="card"><div class="label">Lifecycle</div><div id="lifecycle" class="value">–</div></div>
-  <div class="card"><div class="label">Active model</div><div id="active-model" class="value">–</div></div>
-  <div class="card"><div class="label">Pending model</div><div id="pending-model" class="value">–</div></div>
-  <div class="card"><div class="label">In-flight requests</div><div id="inflight" class="value">–</div></div>
-</div>
-<fieldset>
-  <legend>Models</legend>
-  <div id="models" class="models"></div>
-  <p><button id="unload" type="button">Unload active model</button></p>
-</fieldset>
-<fieldset>
-  <legend>Runtime settings</legend>
-  <label><input id="automatic-switch" type="checkbox"> Allow request-driven model changes</label>
-  <label><input id="quick-switch" type="checkbox"> Let a newer target supersede a pending load</label>
-  <label>Idle timeout (seconds) <input id="idle-timeout" type="number" min="0" step="any"></label>
-  <button id="save-settings" type="button">Apply settings</button>
-</fieldset>
+<main>
+<header class="top">
+  <h1>Model Switcher</h1>
+  <p class="subtitle">Control panel · <a href="/stats">Statistics</a></p>
+</header>
+<section class="kpis" aria-label="Status">
+  <div class="card tile">
+    <div class="label">Lifecycle</div>
+    <div id="lifecycle" class="value">–</div>
+    <div class="sub"><span id="lifecycle-dot" class="dot"></span><span id="lifecycle-sub">–</span></div>
+  </div>
+  <div class="card tile">
+    <div class="label">Active model</div>
+    <div id="active-model" class="value name">–</div>
+    <div class="sub">serving requests</div>
+  </div>
+  <div class="card tile">
+    <div class="label">Pending model</div>
+    <div id="pending-model" class="value name">–</div>
+    <div class="sub">loading next</div>
+  </div>
+  <div class="card tile">
+    <div class="label">In-flight requests</div>
+    <div id="inflight" class="value">–</div>
+    <div class="sub">running now</div>
+  </div>
+</section>
+<section class="card section">
+  <h2>Models</h2>
+  <div class="body">
+    <div id="models" class="models"></div>
+    <button id="unload" type="button">Unload active model</button>
+  </div>
+</section>
+<section class="card section">
+  <h2>Runtime settings</h2>
+  <div class="body">
+    <label class="setting"><input id="automatic-switch" type="checkbox"> Allow request-driven model changes</label>
+    <label class="setting"><input id="quick-switch" type="checkbox"> Let a newer target supersede a pending load</label>
+    <label class="setting">Idle timeout (seconds) <input id="idle-timeout" type="number" min="0" step="any"></label>
+    <button id="save-settings" class="primary" type="button">Apply settings</button>
+  </div>
+</section>
 <p id="message" role="status"></p>
 <noscript><p>JavaScript is required. State JSON is available at <a href="/api/v1/control/state">/api/v1/control/state</a>.</p></noscript>
+</main>
 <script>
 "use strict";
 const API = "/api/v1/control";
@@ -378,10 +521,46 @@ function setDisabled(disabled) {
   const controls = document.querySelectorAll("button, input");
   for (const control of controls) control.disabled = disabled;
 }
+// Lifecycle value -> [status dot tone, plain-language sub-line].
+const LIFECYCLE = {
+  ready: ["good", "Serving"],
+  loading: ["serious", "Loading a model"],
+  unloading: ["serious", "Unloading"],
+  idle: ["", "No model loaded"],
+  shutting_down: ["serious", "Shutting down"],
+  cleanup_failed: ["critical", "Cleanup failed"],
+};
+function renderLifecycle(value) {
+  const known = LIFECYCLE[value] || ["", value == null ? DASH : "Unknown state"];
+  const dot = byId("lifecycle-dot");
+  if (dot) dot.className = known[0] ? "dot " + known[0] : "dot";
+  text("lifecycle-sub", known[1]);
+}
+function modelButton(name, loaded) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = loaded ? "model loaded" : "model";
+  const label = document.createElement("span");
+  label.textContent = name;
+  button.appendChild(label);
+  if (loaded) {
+    const pill = document.createElement("span");
+    pill.className = "pill";
+    const dot = document.createElement("span");
+    dot.className = "dot good";
+    pill.appendChild(dot);
+    const word = document.createElement("span");
+    word.textContent = "Loaded";
+    pill.appendChild(word);
+    button.appendChild(pill);
+  }
+  return button;
+}
 function render(state) {
   if (!state || typeof state !== "object") return;
   latestState = state;
   text("lifecycle", state.lifecycle);
+  renderLifecycle(state.lifecycle);
   text("active-model", state.active_model);
   text("pending-model", state.pending_model);
   text("inflight", state.inflight_requests);
@@ -392,9 +571,7 @@ function render(state) {
   const list = byId("models");
   list.textContent = "";
   for (const name of Array.isArray(state.models) ? state.models : []) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = String(name);
+    const button = modelButton(String(name), name === state.active_model);
     button.disabled = mutating;
     button.addEventListener("click", function () { loadModel(String(name)); });
     list.appendChild(button);

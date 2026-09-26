@@ -94,7 +94,7 @@ Process creation failures return HTTP 500 with `error.code: "model_start_failed"
 
 ## Control Panel and Runtime API
 
-Open `http://localhost:8080/control` to use the dependency-free control panel on the existing listener. It shows configured, active, and pending models, lifecycle state, in-flight request count, and the three runtime settings. It can load or switch to a model, unload the active model, and update settings. It never displays or edits model commands, assigned ports, process IDs, environment values, or the config path.
+Open `http://localhost:8080/control` to use the dependency-free control panel on the existing listener. It shows configured, active, and pending models, lifecycle state, in-flight request count, and the three runtime settings. It can load or switch to a model, unload the active model, and update settings. It uses the same look as the statistics dashboard (light and dark theme, status tiles, cards); the loaded model's button carries a "Loaded" badge, and the header links to `/stats` (the dashboard links back to `/control`). It never displays or edits model commands, assigned ports, process IDs, environment values, or the config path.
 
 > **Network trust warning:** the control API has no authentication or authorization. `X-Model-Switcher-Control: 1` protects browsers against cross-site request forgery; it does **not** prove who the caller is. Binding model-switcher to `0.0.0.0` or another shared interface grants every network-reachable client process-control authority. Use this only on a trusted local network. If the listener is exposed beyond that boundary, put an authenticated service in front of it or do not expose it.
 
