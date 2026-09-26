@@ -254,6 +254,7 @@ class TestMaxAggregateGenerationThroughput:
             "last_60s": 0.0,
             "last_300s": 0.0,
             "avg_aggregate": None,
+            "live": {"tps": 0.0, "window_s": 60, "estimate": True},
         }
         assert snap["models"]["m"]["requests"]["rates"]["generation_tps"] == {
             "avg": None,
@@ -261,6 +262,7 @@ class TestMaxAggregateGenerationThroughput:
             "last_300s": 0.0,
             "max_aggregate": None,
             "avg_aggregate": None,
+            "live": {"tps": 0.0, "window_s": 60, "estimate": True},
         }
 
     def test_dashboard_drops_best_column_but_json_keeps_maximum(self):

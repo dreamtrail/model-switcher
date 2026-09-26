@@ -31,6 +31,10 @@ class Outcome:
     first_token_observer: Callable[[float], None] | None = field(
         default=None, repr=False,
     )
+    # Streaming only: called with the number of output chunks in each event.
+    gen_chunk_observer: Callable[[int], None] | None = field(
+        default=None, repr=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -108,6 +112,7 @@ class _ModelStats:
     prefill_tokens: int = 0  # Σ uncached prompt (prompt − cached) work
     prefill_time: float = 0.0  # Σ TTFT seconds
     token_events: deque = field(default_factory=deque)  # (monotonic, tokens)
+    gen_chunk_events: deque = field(default_factory=deque)  # (monotonic, units)
     active_decodes: dict[object, float] = field(default_factory=dict)
     decode_frontier: list[_DecodeInterval] = field(default_factory=list)
     max_aggregate_tps: float | None = None
@@ -234,6 +239,12 @@ def _prune_token_events(events: deque, now_monotonic: float) -> None:
         events.popleft()
 
 
+def _prune_gen_chunk_events(events: deque, now_monotonic: float) -> None:
+    """Drop streamed-chunk events older than the live window."""
+    while events and now_monotonic - events[0][0] > WINDOW_SHORT_S:
+        events.popleft()
+
+
 def _window_tps(
     events: deque,
     now_monotonic: float,
@@ -267,6 +278,7 @@ def _requests_report(
     include_max_aggregate: bool = False,
     decode_aggregate: _AggregateTotals | None = None,
     prefill_aggregate: _AggregateTotals | None = None,
+    live_tps: float = 0.0,
 ) -> dict:
     """Build the requests block shared by global and per-model reports."""
     generation_tps = {
@@ -276,6 +288,10 @@ def _requests_report(
         "avg_aggregate": (
             decode_aggregate.report() if decode_aggregate is not None else None
         ),
+        # Estimate: streamed output chunks (not exact tokens) per second.
+        "live": {
+            "tps": live_tps, "window_s": WINDOW_SHORT_S, "estimate": True,
+        },
     }
     if include_max_aggregate:
         generation_tps["max_aggregate"] = (
@@ -451,6 +467,15 @@ class StatsCollector:
                 stats.prefill_time += ttft_s
         events = stats.token_events
         _prune_token_events(events, now_monotonic)
+
+    def record_gen_chunks(self, model: str, n: int) -> None:
+        """Record n streamed output chunks for the live rate estimate."""
+        if not _is_count(n) or n < 1:
+            return
+        now_monotonic = time.monotonic()
+        events = self._model(model).gen_chunk_events
+        events.append((now_monotonic, n))
+        _prune_gen_chunk_events(events, now_monotonic)
 
     def record_rejection(self, kind: str, model: str | None = None) -> None:
         """Record a request rejected before proxying."""
@@ -666,7 +691,12 @@ class StatsCollector:
         _prune_token_events(self.token_events, now_monotonic)
         for ms in self._models.values():
             _prune_token_events(ms.token_events, now_monotonic)
+            _prune_gen_chunk_events(ms.gen_chunk_events, now_monotonic)
         now_monotonic = time.monotonic()
+        live_tps = {
+            name: _window_tps(ms.gen_chunk_events, now_monotonic, WINDOW_SHORT_S)
+            for name, ms in self._models.items()
+        }
         uptime = max(time.time() - self._started_at, 0.0)
         if self._swap_durations:
             ordered = sorted(self._swap_durations)
@@ -711,6 +741,7 @@ class StatsCollector:
                     include_max_aggregate=True,
                     decode_aggregate=ms.decode_aggregate,
                     prefill_aggregate=ms.prefill_aggregate,
+                    live_tps=live_tps[name],
                 ),
             }
             for name, ms in self._models.items()
@@ -748,6 +779,8 @@ class StatsCollector:
                 now_monotonic=now_monotonic,
                 decode_aggregate=global_decode,
                 prefill_aggregate=global_prefill,
+                # Global live estimate = sum of the per-model estimates.
+                live_tps=sum(live_tps.values()),
             ),
             "throughput": {
                 "last_60s": sum(
@@ -847,8 +880,11 @@ STATS_HTML = """<!DOCTYPE html>
     display: grid; gap: 0.75rem; margin-bottom: 1rem;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  @media (min-width: 34rem) { .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-  @media (min-width: 60rem) { .kpis { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
+  /* Seven tiles; the loaded-model tile spans two columns so 2/4/8-column
+     grids fill every row without an orphan tile. */
+  .kpis .tile.wide { grid-column: span 2; }
+  @media (min-width: 40rem) { .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+  @media (min-width: 72rem) { .kpis { grid-template-columns: repeat(8, minmax(0, 1fr)); } }
   .tile { padding: 0.85rem 1rem 0.8rem; }
   .tile .label { color: var(--ink-2); font-size: 0.8rem; }
   .tile .value {
@@ -954,7 +990,7 @@ STATS_HTML = """<!DOCTYPE html>
 <noscript><p>JavaScript is disabled — raw metrics are available at
 <a href="/stats/json">/stats/json</a>.</p></noscript>
 <section class="kpis" aria-label="Summary">
-  <div class="card tile">
+  <div class="card tile wide">
     <div class="label">Loaded model</div>
     <div id="kpi-model" class="value name idle">–</div>
     <div class="sub"><span id="kpi-model-dot" class="dot good" hidden></span><span id="kpi-model-sub">–</span></div>
@@ -963,6 +999,11 @@ STATS_HTML = """<!DOCTYPE html>
     <div class="label">Generation</div>
     <div class="value"><span id="kpi-gen">–</span><span id="kpi-gen-unit" class="unit" hidden>tok/s</span></div>
     <div class="sub">average</div>
+  </div>
+  <div class="card tile" title="Estimated from streamed chunks over the last 60 s">
+    <div class="label">Live gen t/s ≈</div>
+    <div id="kpi-live" class="value">–</div>
+    <div class="sub">estimate · 60 s</div>
   </div>
   <div class="card tile">
     <div class="label">Requests</div>
@@ -991,6 +1032,7 @@ STATS_HTML = """<!DOCTYPE html>
   <table>
     <thead><tr>
       <th>Model</th><th>Reqs</th><th>Errors</th><th>Gen t/s</th>
+      <th title="Estimated from streamed chunks over the last 60 s">Live t/s ≈</th>
       <th title="Combined speed while busy @ average concurrent requests">Gen total</th>
       <th>Prompt t/s</th>
       <th title="Combined speed while busy @ average concurrent requests">Prompt total</th>
@@ -1036,6 +1078,11 @@ function fmtCompact(v) {
   if (a < 999950) return (n / 1e3).toFixed(1) + "K";
   if (a < 999995000) return (n / 1e6).toFixed(2) + "M";
   return (n / 1e9).toFixed(2) + "B";
+}
+
+function fmtLive(live) {
+  const tps = obj(live).tps;
+  return isNum(tps) && tps > 0 ? fmtTps(tps) : DASH;
 }
 
 function fmtPct(v) {
@@ -1118,10 +1165,13 @@ function renderTiles(data) {
   const modelSub = setText("kpi-model-sub", current == null ? "Idle" : "Serving");
   if (modelSub) modelSub.className = current == null ? "" : "serving";
 
-  const gen = fmtTps(obj(obj(req.rates).generation_tps).avg);
+  const genRates = obj(obj(req.rates).generation_tps);
+  const gen = fmtTps(genRates.avg);
   setText("kpi-gen", gen);
   const unit = byId("kpi-gen-unit");
   if (unit) unit.hidden = gen === DASH;
+  const live = setText("kpi-live", fmtLive(genRates.live));
+  if (live) live.className = live.textContent === DASH ? "value idle" : "value";
 
   setCount("kpi-reqs", req.total);
   const reqSub = byId("kpi-reqs-sub");
@@ -1152,6 +1202,7 @@ function rowCells(name, req) {
     fmtInt(r.total),
     r.failure,
     fmtTps(gt.avg),
+    fmtLive(gt.live),
     fmtAggregate(gt.avg_aggregate, fmtTps),
     fmtInt(pt.avg),
     fmtAggregate(pt.avg_aggregate, fmtInt),
@@ -1229,11 +1280,11 @@ function buildRow(cells, loaded, className) {
   tr.appendChild(nameCell(cells[0], loaded));
   tr.appendChild(plainCell(cells[1]));
   tr.appendChild(errorsCell(cells[2]));
-  for (const text of cells.slice(3, 7)) tr.appendChild(plainCell(text));
-  tr.appendChild(ttftCell(cells[7]));
-  tr.appendChild(cacheCell(cells[8]));
-  tr.appendChild(countCell(cells[9]));
+  for (const text of cells.slice(3, 8)) tr.appendChild(plainCell(text));
+  tr.appendChild(ttftCell(cells[8]));
+  tr.appendChild(cacheCell(cells[9]));
   tr.appendChild(countCell(cells[10]));
+  tr.appendChild(countCell(cells[11]));
   return tr;
 }
 

@@ -32,6 +32,7 @@ FULL = {
             "generation_tps": {
                 "avg": 52.66,
                 "avg_aggregate": {"tps": 77.71, "concurrency": 2.14},
+                "live": {"tps": 38.25, "window_s": 60, "estimate": True},
             },
         },
         "ttft_ms": {"p50": 180.2, "p95": 849.6},
@@ -50,6 +51,7 @@ FULL = {
                     "prompt_tps": {"avg": 4120.0, "avg_aggregate": None},
                     "generation_tps": {
                         "avg": 96.44, "max_aggregate": None, "avg_aggregate": None,
+                        "live": {"tps": 0.0, "window_s": 60, "estimate": True},
                     },
                 },
                 "ttft_ms": {"p50": 95.0, "p95": 310.4},
@@ -71,6 +73,7 @@ FULL = {
                         "avg": 42.1,
                         "max_aggregate": {"tps": 118.44, "concurrency": 4},
                         "avg_aggregate": {"tps": 85.34, "concurrency": 2.36},
+                        "live": {"tps": 38.25, "window_s": 60, "estimate": True},
                     },
                 },
                 "ttft_ms": {"p50": 210.4, "p95": 890.0},
@@ -285,17 +288,18 @@ class TestStatsPageStatic:
         assert '<p class="subtitle">Statistics · <a href="/control">Control panel</a></p>' in header
         assert ".subtitle a" in STATS_HTML
 
-    def test_table_has_the_eleven_compact_columns(self):
+    def test_table_has_the_twelve_compact_columns(self):
         head = STATS_HTML.split("<thead>", 1)[1].split("</thead>", 1)[0]
         cells = re.findall(r"<th([^>]*)>([^<]*)</th>", head)
         assert [label for _, label in cells] == [
-            "Model", "Reqs", "Errors", "Gen t/s", "Gen total",
+            "Model", "Reqs", "Errors", "Gen t/s", "Live t/s ≈", "Gen total",
             "Prompt t/s", "Prompt total", "TTFT p50 / p95", "Cache",
             "Gen tok", "Prefill tok",
         ]
         tip = ' title="Combined speed while busy @ average concurrent requests"'
+        live = ' title="Estimated from streamed chunks over the last 60 s"'
         assert [attrs for attrs, _ in cells] == [
-            "", "", "", "", tip, "", tip, "", "", "", "",
+            "", "", "", "", live, tip, "", tip, "", "", "", "",
         ]
         assert "Best gen t/s" not in STATS_HTML
         assert '<tbody id="models"></tbody>' in STATS_HTML
@@ -341,6 +345,8 @@ class TestStatsPageRendering:
         assert _text(page, "kpi-model-sub") == "Serving"
         assert _text(page, "kpi-gen") == "52.7"
         assert page["kpi-gen-unit"]["hidden"] is False
+        assert _text(page, "kpi-live") == "38.3"
+        assert page["kpi-live"]["className"] == "value"
         assert _text(page, "kpi-reqs") == "1,400"
         assert page["kpi-reqs"]["title"] == "1,400"
         assert _lines(page, "kpi-reqs-sub") == ["2 errors", "7 in last min"]
@@ -365,36 +371,36 @@ class TestStatsPageRendering:
         assert all(_pill(row) is None for row in rows[1:])
 
         assert _cells(rows[0]) == [
-            "qwen3-32b", "312", "2", "42.1", "85.3 @2.4", "1,830", "2,140 @1.0",
+            "qwen3-32b", "312", "2", "42.1", "38.3", "85.3 @2.4", "1,830", "2,140 @1.0",
             "210 / 890 ms", "64%", "45.2K", "9,876",
         ]
         assert _cells(rows[3]) == [
-            "llama-3.1-8b", "88", "0", "96.4", "–", "4,120", "–",
+            "llama-3.1-8b", "88", "0", "96.4", "–", "–", "4,120", "–",
             "95 / 310 ms", "31%", "0", "0",
         ]
         assert _cells(rows[1]) == [
-            "big", "1,000", "–", "–", "–", "–", "–", "–", "–", "–", "–",
+            "big", "1,000", "–", "–", "–", "–", "–", "–", "–", "–", "–", "–",
         ]
         # Token counts compact like the tiles, full value on hover.
-        assert rows[0]["children"][9]["title"] == "45,210"
-        assert rows[0]["children"][10]["title"] == "9,876"
-        assert rows[1]["children"][9]["title"] == ""
-        assert rows[1]["children"][9]["className"] == "muted"
+        assert rows[0]["children"][10]["title"] == "45,210"
+        assert rows[0]["children"][11]["title"] == "9,876"
+        assert rows[1]["children"][10]["title"] == ""
+        assert rows[1]["children"][10]["className"] == "muted"
 
         # Errors: critical dot only when > 0; zero is muted.
         assert _classes(rows[0]["children"][2]) == ["dot critical", ""]
         assert _classes(rows[3]["children"][2]) == ["muted"]
         # TTFT: numbers in primary ink, unit muted.
-        assert _classes(rows[0]["children"][7]) == ["", "muted"]
-        assert rows[0]["children"][7]["children"][1]["text"] == " ms"
+        assert _classes(rows[0]["children"][8]) == ["", "muted"]
+        assert rows[0]["children"][8]["children"][1]["text"] == " ms"
         # Cache: decorative meter + percentage; none when null.
-        meter = _meter(rows[0]["children"][8])
+        meter = _meter(rows[0]["children"][9])
         assert meter["attributes"] == {"aria-hidden": "true"}
         assert meter["text"] == ""
         assert meter["children"][0]["className"] == "fill"
         assert meter["children"][0]["width"] == "64.0%"
-        assert _meter(rows[3]["children"][8])["children"][0]["width"] == "31.0%"
-        assert _meter(rows[1]["children"][8]) is None
+        assert _meter(rows[3]["children"][9])["children"][0]["width"] == "31.0%"
+        assert _meter(rows[1]["children"][9]) is None
 
         totals = _rows(page, "totals")
         assert len(totals) == 1
@@ -402,11 +408,11 @@ class TestStatsPageRendering:
         assert _pill(totals[0]) is None
         # The All models row uses the global aggregates and token totals.
         assert _cells(totals[0]) == [
-            "All models", "1,400", "2", "52.7", "77.7 @2.1", "2,204", "3,140 @1.8",
+            "All models", "1,400", "2", "52.7", "38.3", "77.7 @2.1", "2,204", "3,140 @1.8",
             "180 / 850 ms", "58%", "1.23M", "9,876",
         ]
-        assert totals[0]["children"][9]["title"] == "1,234,567"
-        assert _meter(totals[0]["children"][8])["children"][0]["width"] == "58.4%"
+        assert totals[0]["children"][10]["title"] == "1,234,567"
+        assert _meter(totals[0]["children"][9])["children"][0]["width"] == "58.4%"
 
     def test_full_data_shows_errors_card_with_chips(self):
         page = _render(FULL)
@@ -430,6 +436,8 @@ class TestStatsPageRendering:
         assert _text(page, "kpi-model-sub") == "Idle"
         assert _text(page, "kpi-gen") == "–"
         assert page["kpi-gen-unit"]["hidden"] is True
+        assert _text(page, "kpi-live") == "–"
+        assert page["kpi-live"]["className"] == "value idle"
         assert _text(page, "kpi-reqs") == "0"
         assert _lines(page, "kpi-reqs-sub") == ["0 errors", "0 in last min"]
         assert _text(page, "kpi-active") == "0"
@@ -441,9 +449,9 @@ class TestStatsPageRendering:
         assert _rows(page) == []
         totals = _rows(page, "totals")
         assert _cells(totals[0]) == [
-            "All models", "0", "0", "–", "–", "–", "–", "–", "–", "–", "–",
+            "All models", "0", "0", "–", "–", "–", "–", "–", "–", "–", "–", "–",
         ]
-        assert _meter(totals[0]["children"][8]) is None
+        assert _meter(totals[0]["children"][9]) is None
         assert page["errors-card"]["hidden"] is True
         assert page["errors"]["children"] == []
 
@@ -517,14 +525,14 @@ class TestStatsPageRendering:
     )
     def test_cache_meter_width_is_clamped(self, rate, width, text):
         page = _render({"models": {"m": {"requests": {"tokens": {"cache_hit_rate": rate}}}}})
-        cell = _rows(page)[0]["children"][8]
+        cell = _rows(page)[0]["children"][9]
         assert cell["text"] == text
         assert _meter(cell)["children"][0]["width"] == width
 
     @pytest.mark.parametrize("rate", [None, "0.5", [], {}])
     def test_cache_without_numeric_rate_has_no_meter(self, rate):
         page = _render({"models": {"m": {"requests": {"tokens": {"cache_hit_rate": rate}}}}})
-        cell = _rows(page)[0]["children"][8]
+        cell = _rows(page)[0]["children"][9]
         assert cell["text"] == "–"
         assert _meter(cell) is None
 
@@ -604,7 +612,7 @@ class TestStatsPageRendering:
         )
         totals = _rows(output, "totals")
         assert _cells(totals[0])[0] == "All models"
-        assert all(len(row["children"]) == 11 for row in _rows(output) + totals)
+        assert all(len(row["children"]) == 12 for row in _rows(output) + totals)
         assert output["errors-card"]["hidden"] is True
         for node in output.values():
             for text in _all_text(node):
@@ -629,7 +637,7 @@ class TestStatsPageRendering:
         })
         row = _rows(page)[0]
         assert _cells(row) == [
-            "m", "3", "–", "–", "–", "–", "–", "– / 13 ms", "–", "–", "–",
+            "m", "3", "–", "–", "–", "–", "–", "–", "– / 13 ms", "–", "–", "–",
         ]
         assert row["className"] == "loaded"
         assert _pill(row)["text"] == "Loaded"
@@ -689,6 +697,72 @@ class TestStatsPageRendering:
                 yield from tags(child)
         created = {t for node in page.values() for t in tags(node)}
         assert created <= {"div", "tr", "td", "span"}
+
+
+class TestStatsPageLiveRate:
+    """P-20260926-01: estimated live generation rate tile and column."""
+
+    TIP = "Estimated from streamed chunks over the last 60 s"
+
+    def test_tile_markup_is_labelled_as_estimate_with_tooltip(self):
+        tiles = STATS_HTML.split('<section class="kpis"', 1)[1].split("</section>", 1)[0]
+        assert f'<div class="card tile" title="{self.TIP}">' in tiles
+        assert '<div class="label">Live gen t/s ≈</div>' in tiles
+        assert '<div id="kpi-live" class="value">–</div>' in tiles
+        assert "estimate · 60 s" in tiles
+        # Seven tiles: the wide model tile keeps 2/4/8-column rows full.
+        assert tiles.count('class="card tile') == 7
+        assert '<div class="card tile wide">' in tiles
+        style = STATS_HTML.split("<style>", 1)[1].split("</style>", 1)[0]
+        assert ".kpis .tile.wide { grid-column: span 2; }" in style
+        assert "repeat(8, minmax(0, 1fr))" in style
+        assert "setInterval(refresh, 5000)" in STATS_HTML
+
+    @pytest.mark.parametrize(
+        ("value_expression", "expected"),
+        [
+            ("{tps: 12.34, window_s: 60, estimate: true}", "12.3"),
+            ("{tps: 0.05}", "0.1"),
+            ("{tps: 0}", "–"),
+            ("{tps: -1}", "–"),
+            ("{tps: null}", "–"),
+            ('{tps: "5"}', "–"),
+            ("{tps: NaN}", "–"),
+            ("{tps: Infinity}", "–"),
+            ("{}", "–"),
+            ("null", "–"),
+            ("undefined", "–"),
+            ("[]", "–"),
+            ("7", "–"),
+        ],
+    )
+    def test_live_formatter_contract(self, value_expression, expected):
+        output = _execute(
+            "console.log(JSON.stringify(fmtLive(" + value_expression + ")));\n"
+        )
+        assert output == expected
+
+    def test_live_values_render_per_model_and_in_all_models_row(self):
+        live = lambda tps: {"tps": tps, "window_s": 60, "estimate": True}
+        page = _render({
+            "current_model": "a",
+            "requests": {"total": 3, "rates": {"generation_tps": {"live": live(7.5)}}},
+            "models": {
+                "a": {"requests": {"total": 2, "rates": {
+                    "generation_tps": {"live": live(5.0)}}}},
+                "b": {"requests": {"total": 1, "rates": {
+                    "generation_tps": {"live": live(2.5)}}}},
+                "c": {"requests": {"total": 0, "rates": {
+                    "generation_tps": {"live": live(0.0)}}}},
+            },
+        })
+        assert _text(page, "kpi-live") == "7.5"
+        rows = _rows(page)
+        assert [(_cells(r)[0], _cells(r)[4]) for r in rows] == [
+            ("a", "5.0"), ("b", "2.5"), ("c", "–"),
+        ]
+        assert rows[2]["children"][4]["className"] == "muted"
+        assert _cells(_rows(page, "totals")[0])[4] == "7.5"
 
 
 class TestStatsPageLiveIndicator:

@@ -639,6 +639,10 @@ class Swapper(_SwapperLifecycleMixin):
                     model_name, decode_identity, first_token_at,
                 )
             ),
+            # Only the streaming proxy reports chunks (live rate estimate).
+            gen_chunk_observer=lambda units: (
+                self.stats.record_gen_chunks(model_name, units)
+            ),
         )
         resp: web.Response | None = None
         # Paired with record_prefill_end in the finally block below.

@@ -252,3 +252,26 @@ This proposal made pending-load supersession unconditional. It was superseded be
 
 ### Status
 - Implemented under P-20260925-04 (rev 2) with collector unit tests, a real-stack JSON test, and Node page tests.
+
+## P-20260926-01 — Live (Estimated) Generation Rate
+
+### Approved Exception to "Exact Token Counts Only"
+- **User-approved estimate** — the user chose to count streamed chunks and show an estimate marked "≈" (2026-09-26). This is a deliberate, limited exception to the exact-counts rule in P-20260913-02 above; every other token metric stays exact, and chunk counts never feed `tokens`, `last_60s`/`last_300s`, `avg`, or the aggregates.
+- **Why** — exact `usage` arrives only when a stream ends, so exact windows jump at request end and show nothing while a long stream runs. Counting chunks is the only cheap in-flight signal.
+
+### Definition
+- **Unit** — one per choice in an OpenAI-style SSE `data:` event whose delta has non-empty `content`, `reasoning_content`, `reasoning`, or `tool_calls`, or (completions) non-empty `text`. Role-only, empty, usage-only, unparseable, and named non-OpenAI events count 0.
+- **Rate** — `rates.generation_tps.live = {"tps": units in the last 60 s / 60, "window_s": 60, "estimate": true}` per model; global = sum of the per-model values. `tps` is `0` with no data, following the existing `last_60s` convention.
+- **Wiring** — `proxy.py` reports units through an optional `Outcome.gen_chunk_observer`, like `first_token_observer`, and never touches the collector. The swapper wires it to `StatsCollector.record_gen_chunks`, which keeps a per-model deque pruned to 60 s. An observer failure is caught in the proxy so it cannot break a stream.
+
+### Limits
+- **OpenAI `data:` streams only** — FreeToken/Anthropic `/v1/messages` and `/v1/responses` named-event streams are not counted, and non-streaming requests never are.
+- **One chunk is not always one token** — batched or speculative decoding can send several tokens per delta (undercount); backends that split output into tiny deltas can overcount.
+- **Lag** — the 60 s window rises and fades gradually; the page still polls every 5 s.
+
+### Page
+- **"Live gen t/s ≈" tile and "Live t/s ≈" column** (after Gen t/s, per model and in the All models row), both with the tooltip "Estimated from streamed chunks over the last 60 s". Values use one decimal; `–` when the value is missing, non-numeric, or zero.
+- **Seven tiles without orphans** — the Loaded model tile spans two columns, so the tile grid is 2/4/8 columns (breakpoints 40rem and 72rem) instead of the 6/3/2 grid from P-20260925-01.
+
+### Status
+- Implemented under P-20260926-01 with proxy chunk-count tests, collector window tests (fake clock), a mid-stream swapper integration test, and Node page tests.

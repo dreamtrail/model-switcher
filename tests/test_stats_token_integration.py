@@ -611,7 +611,7 @@ class TestTokenMetricsIntegration:
         assert set(req["rates"]) == {"prompt_tps", "generation_tps"}
         assert set(req["rates"]["prompt_tps"]) == {"avg", "avg_aggregate"}
         assert set(req["rates"]["generation_tps"]) == {
-            "avg", "last_60s", "last_300s", "avg_aggregate",
+            "avg", "last_60s", "last_300s", "avg_aggregate", "live",
         }
         assert set(req["ttft_ms"]) == {"count", "avg", "p50", "p95", "max"}
         assert set(req["tpot_ms"]) == {"count", "avg", "p50", "p95", "max"}
@@ -634,6 +634,7 @@ class TestTokenMetricsIntegration:
         }
         assert set(row["rates"]["generation_tps"]) == {
             "avg", "last_60s", "last_300s", "max_aggregate", "avg_aggregate",
+            "live",
         }
         maximum = row["rates"]["generation_tps"]["max_aggregate"]
         assert set(maximum) == {"tps", "concurrency"}

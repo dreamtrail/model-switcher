@@ -205,13 +205,43 @@ def _apply_usage_dict(data: Any, outcome: Outcome) -> None:
         outcome.cached_tokens = _int_or_none(details.get("cached_tokens"))
 
 
+# Delta fields whose non-empty value marks one streamed output unit.
+_GEN_DELTA_FIELDS = ("content", "reasoning_content", "reasoning", "tool_calls")
+
+
+def _count_gen_chunks(event: dict) -> int:
+    """Count choices in one event that carry non-empty generated output.
+
+    One unit per choice whose chat delta has content, reasoning, or tool
+    calls, or whose completions ``text`` is non-empty. Role-only, empty,
+    and usage-only events count 0. This is a chunk count, not a token count.
+    """
+    choices = event.get("choices")
+    if not isinstance(choices, list):
+        return 0
+    units = 0
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta")
+        if isinstance(delta, dict) and any(
+            delta.get(key) for key in _GEN_DELTA_FIELDS
+        ):
+            units += 1
+        elif choice.get("text"):
+            units += 1
+    return units
+
+
 def _process_sse_line(line: bytes, outcome: Outcome) -> None:
     """Parse one complete SSE data line and update the Outcome.
 
     The first event with a non-empty choices list marks the first content
     event; any event carrying a usage dict populates the token fields
-    (later events overwrite — the final usage chunk wins). Parse failures
-    are silently ignored ([DONE] sentinels, comments, partial events).
+    (later events overwrite — the final usage chunk wins). Events with
+    generated output are reported to the optional chunk observer. Parse
+    failures are silently ignored ([DONE] sentinels, comments, partial
+    events).
     """
     text = line.strip()
     if not text.startswith(b"data:"):
@@ -230,6 +260,14 @@ def _process_sse_line(line: bytes, outcome: Outcome) -> None:
         outcome.first_token_at = first_token_at
         if outcome.first_token_observer is not None:
             outcome.first_token_observer(first_token_at)
+    if outcome.gen_chunk_observer is not None:
+        units = _count_gen_chunks(event)
+        if units:
+            try:
+                outcome.gen_chunk_observer(units)
+            except Exception:
+                # The live estimate must never break the proxied stream.
+                logger.debug("gen_chunk_observer failed", exc_info=True)
     _apply_usage_dict(event, outcome)
 
 

@@ -16,6 +16,7 @@
 
 ## Done
 
+- [P-20260926-01] Add live (estimated) generation rate to stats dashboard — DONE 2026-09-26 09:04 UTC
 - [P-20260925-04] Add combined (busy-time) generation and prompt speed with average concurrency; token totals columns; drop Best gen t/s from page; header link to /control — DONE 2026-09-25 14:39 UTC
 - [P-20260925-01] Simplify the stats dashboard page (compact table, stat tiles, light/dark card design) — DONE 2026-09-24 23:13 UTC — REVERTED 2026-09-25, RESTORED 2026-09-25 for user trial
 - [P-20260923-02] Split `tests/test_control_lifecycle.py` (1224 LOC) into focused test modules — DONE 2026-09-24 13:08 UTC

@@ -57,6 +57,7 @@ class TestStatsEndpoints:
                     "generation_tps": {
                         "avg": None, "last_60s": 0.0, "last_300s": 0.0,
                         "avg_aggregate": None,
+                        "live": {"tps": 0.0, "window_s": 60, "estimate": True},
                     },
                 }
                 assert data["requests"]["ttft_ms"] is None
