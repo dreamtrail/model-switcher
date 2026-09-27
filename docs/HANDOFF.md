@@ -1,20 +1,19 @@
 ## Handoff Card
 
-- Goal: Run TabbyAPI as a backend behind the model switcher, following the NInfer/SGLang/FreeToken compat pattern.
-- As-Of: 2026-09-27 14:30 UTC (2026-09-27 23:30 +0900)
-- Branch/HEAD: master @ 5678382 (before this handoff commit)
-- Mode: IN-PROGRESS
-- Working On: P-20260927-01
-- Stop Point: Implementation done and uncommitted in the working tree; independent review was dispatched but its result was not received before save. Record: `artifacts/P-20260927-01/plan.md` § Independent review.
-- Next Step: Rerun an independent read-only review of the uncommitted diff against the plan's acceptance criteria; fix findings if any; then commit `feat(tabbyapi): add backend compatibility` (approved with commit).
+- Goal: TabbyAPI now runs as a backend behind the model switcher; next, resume the refactor queue.
+- As-Of: 2026-09-27 14:34 UTC (2026-09-27 23:34 +0900)
+- Branch/HEAD: master @ 10834f5 (before this handoff commit)
+- Mode: FINISHED
+- Working On: P-20260925-05
+- Stop Point: `docs/TODO.md:5`; the `src/stats.py` split is unstarted.
+- Next Step: Inspect P-20260925-05 and propose a move-only plan for approval; ask the user whether they can smoke-test TabbyAPI on real hardware (P-20260927-02).
 - Key Decisions:
-  - Auth off in the example recipe (`--disable-auth true`): user rule "keep auth off if TabbyAPI has no pre-configured key like llama.cpp/vLLM"; TabbyAPI only reads keys from `api_tokens.yml` (no flag/env). README documents the file option and the admin-caller risk.
-  - Two small generic src changes: `_TABBY_LEVEL_RE` (optional `HH:MM:SS.mmm`, uppercase loguru levels + `:`), and SSE events with `prompt_progress` and no output do not mark first token.
-  - Behaviour pinned to TabbyAPI master `816c321` (source was cloned at `/tmp/tabby/tabbyAPI`, may be gone).
-- Key Files: `src/process_manager.py`, `src/proxy.py` (`_process_sse_line`), `config.example.yaml`, `README.md` § TabbyAPI, `docs/DECISIONS.md` § P-20260927-01, `tests/test_tabbyapi_compat.py`, `tests/test_process_manager.py`, `tests/test_proxy.py`.
+  - P-20260927-01: example recipe disables TabbyAPI auth (`--disable-auth true`) because TabbyAPI has no key flag/env var (keys only in `api_tokens.yml`); README documents the file option and the admin risk.
+  - Two small generic changes: `_TABBY_LEVEL_RE` in `src/process_manager.py`; SSE events with `prompt_progress` and no output do not mark first token (`src/proxy.py`). See `docs/DECISIONS.md` § P-20260927-01.
+- Key Files: `README.md` § TabbyAPI; `tests/test_tabbyapi_compat.py`; record `artifacts/P-20260927-01/plan.md`.
 - Env Hints: `.venv` available, not active; Python 3.13.5; Node v24 (page tests).
-- Critical Context: Uncommitted task files are intentionally left out of the handoff commit (commit only after review). Executor reported 835 passed (baseline 788), compileall and diff-check clean — not yet independently verified. Master is 1 commit ahead of upstream plus this handoff; push only when asked.
-- Constraints & Preferences: Commit only after independent review; no pushing unless asked.
+- Critical Context: Behaviour pinned to TabbyAPI master `816c321`. Oversized: `src/stats.py` (P-20260925-05), `tests/test_proxy.py` now 1312 lines (P-20260913-04). Local master is ahead of upstream; push only when asked.
+- Completed Since Last: P-20260927-01
 - Commands: `timeout 300 .venv/bin/python -m pytest -q tests`; `timeout 60 .venv/bin/python -m compileall -q src tests`; `git diff --check`.
-- Verification: executor-only (see Critical Context).
-- Risks/Blockers: Not run against a real TabbyAPI; `tests/test_proxy.py` grew to 1312 lines (P-20260913-04); `src/stats.py` still oversized (P-20260925-05).
+- Verification: 835 passed after the README fixes; independent review found no blocking issues (all 7 acceptance criteria pass).
+- Risks/Blockers: TabbyAPI not run against a real server (P-20260927-02); P-20260926-01/-02 still lack independent review; real DGX shutdown unverified (P-20260923-06).
