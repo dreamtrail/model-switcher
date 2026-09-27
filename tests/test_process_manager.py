@@ -557,6 +557,41 @@ class TestUpstreamLogLevel:
         level = _upstream_log_level("(EngineCore pid=1) WARN 06-21 20:55:27 [model.py] msg")
         assert level == logging.WARNING
 
+    # --- TabbyAPI format (P-20260927-01) ---
+
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            ("12:34:56.789 WARNING:  Port 5000 in use", logging.WARNING),
+            ("12:34:56.789 ERROR:    Chat completion aborted", logging.ERROR),
+            ("12:34:56.789 CRITICAL: out of memory", logging.ERROR),
+            ("12:34:56.789 SUCCESS:  Model loaded", logging.INFO),
+            ("12:34:56.789 DEBUG:    request body", logging.INFO),
+            ("12:34:56.789 TRACE:    sampler state", logging.INFO),
+            ("12:34:56.789 INFO:     Loading model", logging.INFO),
+            ("WARNING:  Disabling authentication", logging.WARNING),
+            ("CRITICAL: fatal", logging.ERROR),
+            ("SUCCESS:  ready", logging.INFO),
+            ("ERROR:", logging.ERROR),
+        ],
+    )
+    def test_tabby_level_prefix(self, line, expected):
+        assert _upstream_log_level(line) == expected
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            # Level inside the message body of an INFO record.
+            "12:34:56.789 INFO:     client sent WARNING: nothing",
+            # Case-sensitive: lowercase loguru names are not TabbyAPI markers.
+            "12:34:56.789 warning: lower case",
+            # Level must be directly followed by a colon.
+            "12:34:56.789 WARNING  missing colon",
+        ],
+    )
+    def test_tabby_prefix_does_not_promote_other_lines(self, line):
+        assert _upstream_log_level(line) == logging.INFO
+
 
 async def _wait_for_pid_file(path, timeout: float = 3) -> int:
     """Wait for a test process to write a child PID file."""

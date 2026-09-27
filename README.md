@@ -270,6 +270,57 @@ The API request's `model` must match the config key exactly, including case. The
 
 NInfer's `/health` becomes available after model loading and warm-up. Model-switcher then proxies its OpenAI-compatible JSON and SSE output unchanged: Chat Completions streams end with `data: [DONE]`, while Responses API streams use named `event:` records and a terminal response event without `[DONE]`. Upstream statuses, error bodies, and headers such as `x-request-id` are forwarded normally. On a swap or shutdown, model-switcher sends SIGTERM before its existing forced-stop fallback.
 
+## TabbyAPI
+
+[TabbyAPI](https://github.com/theroyallab/tabbyAPI) (ExLlamaV3) works through the same foreground-process interface. This integration targets TabbyAPI master at commit `816c321`. Install TabbyAPI in its own folder by following its upstream guide (the default install creates `venv/` in that folder) and pick an ExLlamaV3 model that fits your GPU memory; TabbyAPI is not a model-switcher dependency.
+
+Start `main.py` from the TabbyAPI folder, bind it to loopback, and make the config key equal to the model folder name passed to `--model-name`:
+
+```yaml
+qwen3-8b-exl3: 'bash -c "cd /path/to/tabbyAPI && TABBY_LOG_CONSOLE_WIDTH=1000 exec venv/bin/python main.py --host 127.0.0.1 --port ${PORT} --model-dir /path/to/models --model-name qwen3-8b-exl3 --disable-auth true"'
+```
+
+Why the recipe looks like this:
+
+- **`bash -c` and `cd`** — model-switcher executes commands directly rather than through a shell, and TabbyAPI reads `config.yml`, `api_tokens.yml`, and writes `logs/` relative to the current folder. The `bash -c "cd ... && exec ..."` wrapper sets that folder; `exec` makes TabbyAPI replace the shell so it receives SIGTERM directly.
+- **`main.py`, not `start.sh`** — `start.sh` / `start.py` may create a venv, run `pip install`, or ask questions on first run. The switcher needs a non-interactive foreground server, so run `main.py` with the already installed venv.
+- **No `--config`** — with `--config <file>` TabbyAPI drops the other command-line flags, so the assigned `--port` would be lost. Without it, TabbyAPI still reads `config.yml` in its folder, and command-line flags override values from `config.yml`.
+- **Bool flags need a value** — TabbyAPI builds its flags from the config schema, so write `--disable-auth true`, not a bare `--disable-auth`.
+- **`TABBY_LOG_CONSOLE_WIDTH`** — when output is piped, TabbyAPI wraps log lines at 80 columns. A wide console keeps each message on one line so model-switcher can read its level; multi-line messages (for example tracebacks) still add indented continuation lines, which are logged as info. Lines like `12:34:56.789 WARNING: ...` are logged as warnings, `ERROR:` and `CRITICAL:` as errors, and `INFO:`, `SUCCESS:`, `DEBUG:`, `TRACE:` as info. `--log-timestamps false` (no time prefix) also works.
+
+**Model name.** TabbyAPI loads the one model given by `--model-name` and names it after that folder. With inline model loading off (the default), it ignores the request `model`; callers with admin rights get a TabbyAPI warning on every request whose `model` differs from the folder name. Keep the config key, the folder name, and the request `model` identical, and keep `inline_model_loading` off so a request cannot load a different model behind the switcher's back.
+
+**Authentication.** TabbyAPI has no command-line flag or environment variable for a pre-set API key; keys live only in `api_tokens.yml`. The example therefore uses `--disable-auth true`. With auth disabled, every caller is a TabbyAPI admin: anyone who can reach the switcher can use TabbyAPI admin routes (for example load or unload models, or list the whole model folder) if those paths reach it. Only expose the switcher to trusted clients in that case. To keep auth on, drop `--disable-auth true` and write your own keys into `api_tokens.yml` in the TabbyAPI folder:
+
+```yaml
+api_key: your-api-key
+admin_key: your-admin-key
+```
+
+Clients then send `x-api-key: <key>` or `Authorization: Bearer <key>`; model-switcher forwards both headers unchanged. Readiness still works because TabbyAPI's `/health` needs no key.
+
+**Readiness and output.** TabbyAPI opens its port only after the startup model has loaded, then `GET /health` returns 200 with `{"status":"healthy"}`. Chat and text completion streams use `\r\n` line endings, `: ping` keep-alive comments, and end with `data: [DONE]`; model-switcher passes them through unchanged. TabbyAPI honours the switcher's automatic `stream_options: {"include_usage": true}` and sends usage (including `prompt_tokens_details.cached_tokens`) in a final chunk, so token statistics are recorded. If a client asks for `return_progress`, the prefill progress chunks do not count as the first token; time to first token starts at the first generated text.
+
+**Ports.** If the assigned port is busy, TabbyAPI binds port + 1 instead and logs `WARNING: Port X is currently in use. Switching to X+1`, which model-switcher shows as a warning. Model-switcher already picks a port whose next port is also free, but another program can still take the port in between. Readiness then times out on the assigned port, unless that program answers `GET /health` with 200; in that case model-switcher treats it as ready and sends requests to the wrong server.
+
+**Stopping.** On a swap or shutdown, model-switcher sends SIGTERM to the process group, waits for the existing grace period, and uses its forced-stop fallback if needed. Tensor-parallel workers run in the same process group. After a forced stop (SIGKILL), tensor-parallel runs may leave shared-memory segments in `/dev/shm`; check for and remove stale ones if memory runs short.
+
+For a manual smoke check on real hardware, start model-switcher with the recipe above, then:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3-8b-exl3","messages":[{"role":"user","content":"Hello"}]}'
+curl -N http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3-8b-exl3","messages":[{"role":"user","content":"Hello"}],"stream":true}'
+curl -N http://127.0.0.1:8080/v1/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3-8b-exl3","prompt":"Hello","stream":true}'
+```
+
+The first request waits while TabbyAPI loads the model. Confirm both streams end with `data: [DONE]` and that `/stats` shows prompt and completion tokens for the model. Automated tests use local fake servers and do not run TabbyAPI, download models, or need a GPU.
+
 ## Statistics
 
 Model-switcher tracks runtime statistics in memory (reset on restart) and serves them at two switcher-local endpoints:

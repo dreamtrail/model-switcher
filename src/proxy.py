@@ -237,11 +237,12 @@ def _process_sse_line(line: bytes, outcome: Outcome) -> None:
     """Parse one complete SSE data line and update the Outcome.
 
     The first event with a non-empty choices list marks the first content
-    event; any event carrying a usage dict populates the token fields
-    (later events overwrite — the final usage chunk wins). Events with
-    generated output are reported to the optional chunk observer. Parse
-    failures are silently ignored ([DONE] sentinels, comments, partial
-    events).
+    event, except a prefill-progress event (top-level ``prompt_progress``
+    and no generated output); any event carrying a usage dict populates
+    the token fields (later events overwrite — the final usage chunk
+    wins). Events with generated output are reported to the optional chunk
+    observer. Parse failures are silently ignored ([DONE] sentinels,
+    comments, partial events).
     """
     text = line.strip()
     if not text.startswith(b"data:"):
@@ -255,12 +256,19 @@ def _process_sse_line(line: bytes, outcome: Outcome) -> None:
         return
     if not isinstance(event, dict):
         return
-    if event.get("choices") and outcome.first_token_at is None:
+    units = _count_gen_chunks(event)
+    # Prefill progress (llama.cpp / TabbyAPI ``return_progress``) rides on
+    # an otherwise empty chunk; it is not the first generated token.
+    prefill_progress_only = "prompt_progress" in event and not units
+    if (
+        event.get("choices")
+        and outcome.first_token_at is None
+        and not prefill_progress_only
+    ):
         first_token_at = time.monotonic()
         outcome.first_token_at = first_token_at
         if outcome.first_token_observer is not None:
             outcome.first_token_observer(first_token_at)
-    units = _count_gen_chunks(event)
     if units:
         # Total per stream calibrates tokens per chunk after the request.
         outcome.gen_chunks += units

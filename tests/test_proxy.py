@@ -1106,6 +1106,75 @@ class TestProcessSseLine:
 
         assert outcome.first_token_at is not None
 
+    # P-20260927-01: prefill progress (return_progress) is not a first token.
+
+    def test_prompt_progress_chat_chunk_does_not_mark_first_token(self):
+        outcome = Outcome()
+        observed = []
+        outcome.first_token_observer = observed.append
+
+        _process_sse_line(
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":null}],'
+            b'"prompt_progress":{"total":10,"cache":0,"processed":5,'
+            b'"time_ms":3}}',
+            outcome,
+        )
+
+        assert outcome.first_token_at is None
+        assert observed == []
+        assert outcome.gen_chunks == 0
+
+    def test_prompt_progress_completion_chunk_does_not_mark_first_token(self):
+        outcome = Outcome()
+
+        _process_sse_line(
+            b'data: {"choices":[{"index":0,"text":"","finish_reason":null}],'
+            b'"prompt_progress":{"total":10,"cache":0,"processed":10,'
+            b'"time_ms":4}}',
+            outcome,
+        )
+
+        assert outcome.first_token_at is None
+
+    def test_content_after_prompt_progress_marks_first_token(self):
+        outcome = Outcome()
+        _process_sse_line(
+            b'data: {"choices":[{"delta":{}}],"prompt_progress":{"total":1}}',
+            outcome,
+        )
+
+        _process_sse_line(
+            b'data: {"choices":[{"delta":{"content":"Hi"}}]}', outcome
+        )
+
+        assert outcome.first_token_at is not None
+        assert outcome.gen_chunks == 1
+
+    def test_prompt_progress_with_content_marks_first_token(self):
+        outcome = Outcome()
+
+        _process_sse_line(
+            b'data: {"choices":[{"delta":{"content":"Hi"}}],'
+            b'"prompt_progress":{"total":1}}',
+            outcome,
+        )
+
+        assert outcome.first_token_at is not None
+        assert outcome.gen_chunks == 1
+
+    def test_prompt_progress_chunk_still_applies_usage(self):
+        outcome = Outcome()
+
+        _process_sse_line(
+            b'data: {"choices":[{"delta":{}}],"prompt_progress":{"total":1},'
+            b'"usage":{"prompt_tokens":7,"completion_tokens":0}}',
+            outcome,
+        )
+
+        assert outcome.first_token_at is None
+        assert outcome.prompt_tokens == 7
+        assert outcome.completion_tokens == 0
+
 
 class TestStreamProxySseParsing:
     """Line-buffer handling of chunks that split SSE lines (AC3)."""

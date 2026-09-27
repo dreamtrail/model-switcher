@@ -25,6 +25,13 @@ _NINFER_LEVEL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# TabbyAPI (loguru via rich): optional "HH:MM:SS.mmm " time of day, then an
+# uppercase loguru level name directly followed by a colon.
+_TABBY_LEVEL_RE = re.compile(
+    r"^\s*(?:\d{2}:\d{2}:\d{2}\.\d{3}\s+)?"
+    r"(?P<level>TRACE|DEBUG|INFO|SUCCESS|WARNING|ERROR|CRITICAL):(?:\s|$)"
+)
+
 _UPSTREAM_LEVEL_RE = re.compile(
     r"^\s*(?:"
     r"(?:\d+\.)+\d+\s+"  # llama.cpp: dotted timestamp (13.31.779.183)
@@ -82,7 +89,11 @@ def _log_upstream_line(text: str) -> None:
 
 def _upstream_log_level(text: str) -> int:
     """Infer an upstream log level from common severity markers."""
-    match = _NINFER_LEVEL_RE.search(text) or _UPSTREAM_LEVEL_RE.search(text)
+    match = (
+        _NINFER_LEVEL_RE.search(text)
+        or _TABBY_LEVEL_RE.search(text)
+        or _UPSTREAM_LEVEL_RE.search(text)
+    )
     if not match:
         return logging.INFO
 

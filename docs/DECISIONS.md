@@ -316,3 +316,21 @@ chunk detection, and page layout from that section still apply.
 
 ### Status
 - Implemented under P-20260926-04 with fake-clock collector tests (busy time, union, clipping including an ended interval straddling the window start, union across a model swap, floor, calibration cap, `last_60s` still 60 s), proxy chunk-total tests, and swapper integration tests for calibration and failed/usage-less/non-streaming requests.
+
+## P-20260927-01 — TabbyAPI Compatibility
+
+### Backend Integration
+- **Reuse the generic foreground-command contract** — TabbyAPI (theroyallab/tabbyAPI, ExLlamaV3) at master commit `816c321` accepts `--host`, `--port`, `--model-dir`, `--model-name`, and `--disable-auth` on the command line (overriding `config.yml`), opens its port only after the startup model has loaded, reports readiness on a public `GET /health`, serves OpenAI-compatible HTTP/SSE, and stops on SIGTERM. No backend adapter, dependency, registry, config field, alias, or request-body rewrite is needed.
+- **Launch `main.py` from the TabbyAPI folder** — `config.yml`, `api_tokens.yml`, and `logs/` are relative to the working directory and commands run without a shell, so the recipe uses `bash -c "cd <tabbyAPI> && exec venv/bin/python main.py ..."`. `start.sh` / `start.py` may install packages or prompt, and `--config` drops the other command-line flags (including the assigned port), so neither is used. `TABBY_LOG_CONSOLE_WIDTH` stops 80-column wrapping when output is piped; multi-line messages such as tracebacks still emit indented continuation lines, logged as info.
+- **Config key equals the model folder name** — TabbyAPI names the loaded model after the `--model-name` folder and ignores the request `model` while inline model loading is off (the default, which stays off). Model IDs are forwarded unchanged.
+
+### Two Small Generic Changes
+- **Recognize TabbyAPI log levels** — loguru/rich lines look like `HH:MM:SS.mmm LEVEL:    message` (time prefix optional with `--log-timestamps false`). A case-sensitive pattern for `TRACE|DEBUG|INFO|SUCCESS|WARNING|ERROR|CRITICAL` followed by `:` runs after the NInfer pattern and before the generic one: WARNING maps to warning, ERROR/CRITICAL to error, the rest to info. The generic pattern did not accept the time prefix or know `SUCCESS`/`DEBUG`/`TRACE`; existing llama.cpp, vLLM, and NInfer classifications are unchanged.
+- **Prefill progress is not the first token** — with `return_progress` (llama.cpp extension, also in TabbyAPI), prefill emits chunks with an empty delta or text and a top-level `prompt_progress`. Such an event, when it carries no generated output, no longer marks the first token, so time to first token and live busy time start at the first generated text. Usage on any event is still applied, and every other event keeps its existing first-token rule.
+
+### Authentication
+- **Keep auth off in the example** — user decision 2026-09-27: TabbyAPI has no flag or environment variable for a pre-set key (keys come only from `api_tokens.yml`), so the recipe uses `--disable-auth true`. Every caller that reaches the switcher then acts as a TabbyAPI admin; README states this risk.
+- **Document the key-file option** — users who want auth drop the flag and write their own `api_key` / `admin_key` into `api_tokens.yml`. Clients send `x-api-key` or `Authorization: Bearer`, which the switcher already forwards unchanged; `/health` needs no key, so readiness is unaffected.
+
+### Verification Trade-off
+- **Use deterministic loopback fakes pinned to `816c321`** — tests shape readiness, `\r\n` SSE framing, `: ping` comments, the non-empty-choices usage chunk with timings, prefill progress chunks, log lines, and auth headers from the pinned sources and run the real config, health, switcher, process, and proxy paths without installing TabbyAPI, downloading models, or using a GPU. README documents a manual smoke check on real hardware.
