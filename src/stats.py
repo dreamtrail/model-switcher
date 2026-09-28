@@ -8,6 +8,12 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from src.decode import (
+    DecodeDecision,
+    ServerDecode,
+    decode_interval,
+    select_decode,
+)
 from src.prefill import (
     PrefillDecision,
     ServerPrefill,
@@ -53,6 +59,8 @@ class Outcome:
     gen_chunks: int = 0
     # Server-reported prefill timing (timings / usage.prompt_time / metrics).
     server_prefill: ServerPrefill = field(default_factory=ServerPrefill)
+    # Server-reported decode timing (timings / completion_time / metrics).
+    server_decode: ServerDecode = field(default_factory=ServerDecode)
 
 
 @dataclass(frozen=True)
@@ -125,8 +133,10 @@ class _ModelStats:
     cached_tokens: int = 0
     ttfts: list[float] = field(default_factory=list)  # seconds
     tpots: list[float] = field(default_factory=list)  # seconds
-    decode_tokens: int = 0  # Σ completion_tokens over streaming requests
+    decode_tokens: int = 0  # Σ decode-sample tokens (src/decode.py)
     decode_time: float = 0.0  # Σ decode seconds
+    decode_server_tokens: int = 0  # part of decode_tokens timed by server
+    decode_skipped_buffered: int = 0  # excluded: buffered stream, no timing
     prefill_tokens: int = 0  # Σ uncached prompt (prompt − cached) work
     prefill_time: float = 0.0  # Σ prefill seconds (server time, else TTFT)
     prefill_server_tokens: int = 0  # part of prefill_tokens timed by server
@@ -327,6 +337,8 @@ def _requests_report(
     tpots: list[float] | None = None,
     decode_tokens: int = 0,
     decode_time: float = 0.0,
+    decode_server_tokens: int = 0,
+    decode_skipped_buffered: int = 0,
     prefill_tokens: int = 0,
     prefill_time: float = 0.0,
     prefill_server_tokens: int = 0,
@@ -347,6 +359,11 @@ def _requests_report(
         "avg_aggregate": (
             decode_aggregate.report() if decode_aggregate is not None else None
         ),
+        # Share of decode tokens timed by the server itself.
+        "server_timed_share": (
+            decode_server_tokens / decode_tokens
+        ) if decode_tokens > 0 else None,
+        "skipped_buffered": decode_skipped_buffered,
         # Estimate: calibrated streamed chunks per busy second.
         "live": {
             "tps": 0.0, "window_s": LIVE_WINDOW_S, "estimate": True,
@@ -425,6 +442,8 @@ class StatsCollector:
         self.tpots: list[float] = []  # seconds
         self.decode_tokens = 0
         self.decode_time = 0.0
+        self.decode_server_tokens = 0
+        self.decode_skipped_buffered = 0
         self.prefill_tokens = 0
         self.prefill_time = 0.0
         self.prefill_server_tokens = 0
@@ -456,6 +475,8 @@ class StatsCollector:
         ttft_s: float | None = None,
         decode_s: float | None = None,
         server_prefill: ServerPrefill | None = None,
+        server_decode: ServerDecode | None = None,
+        gen_chunks: int | None = None,
     ) -> None:
         """Record a completed proxied request.
 
@@ -463,7 +484,9 @@ class StatsCollector:
         regardless of response status; timing stats (ttft_s/decode_s)
         are only passed for successful streaming requests. The prompt-speed
         sample of a successful request comes from the server's own prefill
-        timing when present, else from ttft_s (see src/prefill.py).
+        timing when present, else from ttft_s (see src/prefill.py); the
+        generation-speed sample likewise from server decode timing, else
+        from decode_s when the stream had enough chunks (src/decode.py).
         """
         self._total += 1
         if ok:
@@ -481,9 +504,13 @@ class StatsCollector:
             model, prompt_tokens, cached_tokens, server_prefill, ttft_s,
             ok=ok,
         )
+        decode = (
+            select_decode(completion_tokens, server_decode, decode_s, gen_chunks)
+            if ok else DecodeDecision()
+        )
         self._apply_usage(
             self, now_monotonic, prompt_tokens, completion_tokens,
-            cached_tokens, ttft_s, decode_s, decision,
+            cached_tokens, ttft_s, decode, decision,
         )
         if model is not None:
             ms = self._model(model)
@@ -498,7 +525,7 @@ class StatsCollector:
             ms.bytes_out += bytes_out
             self._apply_usage(
                 ms, now_monotonic, prompt_tokens, completion_tokens,
-                cached_tokens, ttft_s, decode_s, decision,
+                cached_tokens, ttft_s, decode, decision,
             )
         self._prune_request_times()
 
@@ -510,7 +537,7 @@ class StatsCollector:
         completion_tokens: int | None,
         cached_tokens: int | None,
         ttft_s: float | None,
-        decode_s: float | None,
+        decode: DecodeDecision,
         decision: PrefillDecision,
     ) -> None:
         """Apply usage/timing contributions to a stats holder.
@@ -528,13 +555,17 @@ class StatsCollector:
             stats.cached_tokens += cached_tokens
         if ttft_s is not None:
             stats.ttfts.append(ttft_s)
-        if (decode_s is not None and completion_tokens is not None
-                and completion_tokens >= 2):
-            stats.tpots.append(decode_s / (completion_tokens - 1))
-        if (decode_s is not None and completion_tokens is not None
-                and completion_tokens >= 1):
-            stats.decode_tokens += completion_tokens
-            stats.decode_time += decode_s
+        gen = decode.sample
+        if gen is not None:
+            # Generated tokens over decode time (src/decode.py).
+            if gen.tokens >= 2:
+                stats.tpots.append(gen.seconds / (gen.tokens - 1))
+            stats.decode_tokens += gen.tokens
+            stats.decode_time += gen.seconds
+            if gen.server_timed:
+                stats.decode_server_tokens += gen.tokens
+        elif decode.skipped_buffered:
+            stats.decode_skipped_buffered += 1
         sample = decision.sample
         if sample is not None:
             # Uncached prompt work over its prefill time (src/prefill.py).
@@ -696,6 +727,8 @@ class StatsCollector:
                 prefill_tokens=decision.sample.tokens,
             ))
         self._finalize_prefill_frontier(stats)
+        # The request no longer blocks decode groups either.
+        self._finalize_decode_frontier(stats)
 
     @staticmethod
     def _finalize_prefill_frontier(stats: _ModelStats) -> None:
@@ -736,17 +769,28 @@ class StatsCollector:
         ended_at: float,
         ok: bool,
         completion_tokens: int | None,
+        server_decode: ServerDecode | None = None,
+        gen_chunks: int | None = None,
     ) -> None:
-        """Close a started decode and finalize newly closed cohorts."""
+        """Close a request's decode and finalize newly closed cohorts.
+
+        Handles streams (first token recorded) and in-flight requests from
+        record_request_start (non-streaming too). The aggregate interval
+        comes from the same decode sample as rates.generation_tps.avg
+        (src/decode.py): proxy-timed [first token, end], server-timed
+        [max(start, end - server seconds), end].
+        """
         stats = self._models.get(model)
         if stats is None:
             return
         started_at = stats.active_decodes.pop(request_id, None)
-        if started_at is None:
+        request = stats.active_requests.get(request_id)
+        if started_at is None and request is None:
             return
-        # Live-rate busy time counts every ended decode, any outcome.
+        # Live-rate busy time counts every ended stream decode, any outcome.
         if (
-            isinstance(ended_at, (int, float))
+            started_at is not None
+            and isinstance(ended_at, (int, float))
             and math.isfinite(started_at)
             and math.isfinite(ended_at)
             and ended_at > started_at
@@ -755,28 +799,54 @@ class StatsCollector:
             _prune_live_decode_intervals(
                 stats.live_decode_intervals, time.monotonic(),
             )
-        eligible = (
-            ok
-            and isinstance(completion_tokens, int)
-            and not isinstance(completion_tokens, bool)
-            and completion_tokens >= 1
-            and math.isfinite(started_at)
-            and math.isfinite(ended_at)
-            and ended_at > started_at
+        sample = None
+        if ok:
+            proxy_decode_s = None
+            if (
+                started_at is not None
+                and isinstance(ended_at, (int, float))
+            ):
+                proxy_decode_s = ended_at - started_at
+            sample = select_decode(
+                completion_tokens, server_decode, proxy_decode_s, gen_chunks,
+            ).sample
+        span = (
+            decode_interval(
+                sample,
+                request.started_at if request is not None else None,
+                started_at,
+                ended_at,
+            )
+            if sample is not None else None
         )
-        if eligible:
+        if span is not None:
             stats.decode_frontier.append(_DecodeInterval(
-                started_at=started_at,
-                ended_at=ended_at,
-                completion_tokens=completion_tokens,
+                started_at=span[0],
+                ended_at=span[1],
+                completion_tokens=sample.tokens,
             ))
-        self._finalize_decode_frontier(stats)
+        self._finalize_decode_frontier(stats, ending=request_id)
 
     @staticmethod
-    def _finalize_decode_frontier(stats: _ModelStats) -> None:
-        """Publish ended components no active decode can still bridge."""
+    def _finalize_decode_frontier(
+        stats: _ModelStats, ending: object = None,
+    ) -> None:
+        """Publish ended components no in-flight request can still bridge.
+
+        A server-timed interval may start anywhere after its request's
+        start, so every in-flight request (except the one ending now) that
+        started before a component's end blocks it, as does any active
+        stream decode.
+        """
         retained: list[_DecodeInterval] = []
-        active_starts = tuple(stats.active_decodes.values())
+        active_starts = (
+            *stats.active_decodes.values(),
+            *(
+                request.started_at
+                for request_id, request in stats.active_requests.items()
+                if request_id is not ending
+            ),
+        )
         for component in _interval_components(stats.decode_frontier):
             component_end = max(interval.ended_at for interval in component)
             if any(started_at < component_end for started_at in active_starts):
@@ -911,6 +981,8 @@ class StatsCollector:
                     tpots=ms.tpots,
                     decode_tokens=ms.decode_tokens,
                     decode_time=ms.decode_time,
+                    decode_server_tokens=ms.decode_server_tokens,
+                    decode_skipped_buffered=ms.decode_skipped_buffered,
                     prefill_tokens=ms.prefill_tokens,
                     prefill_time=ms.prefill_time,
                     prefill_server_tokens=ms.prefill_server_tokens,
@@ -961,6 +1033,8 @@ class StatsCollector:
                 tpots=self.tpots,
                 decode_tokens=self.decode_tokens,
                 decode_time=self.decode_time,
+                decode_server_tokens=self.decode_server_tokens,
+                decode_skipped_buffered=self.decode_skipped_buffered,
                 prefill_tokens=self.prefill_tokens,
                 prefill_time=self.prefill_time,
                 prefill_server_tokens=self.prefill_server_tokens,
@@ -1223,7 +1297,7 @@ STATS_HTML = """<!DOCTYPE html>
   <div class="table-wrap">
   <table>
     <thead><tr>
-      <th>Model</th><th>Reqs</th><th>Errors</th><th>Gen t/s</th>
+      <th>Model</th><th>Reqs</th><th>Errors</th><th title="Generation speed; uses the server's own decode time when available, else first to last streamed chunk">Gen t/s</th>
       <th title="Estimated combined speed while generating, last 15 s (streamed chunks × tokens per chunk)">Live t/s ≈</th>
       <th title="Combined speed while busy @ average concurrent requests">Gen total</th>
       <th title="Prompt processing speed; uses the server's own prefill time when available, else time to first token">Prompt t/s</th>

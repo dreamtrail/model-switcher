@@ -665,8 +665,10 @@ class Swapper(_SwapperLifecycleMixin):
                 ok, kind = False, str(resp.status)
             else:
                 ok, kind = True, None
-            # Streaming-only timing: from chokepoint start to the first
+            # Streaming-only proxy timing: from chokepoint start to the first
             # content event (TTFT) and from there to stream end (decode).
+            # Server decode timing, when reported, takes precedence for
+            # generation speed (src/decode.py), streaming or not.
             ttft_s = decode_s = None
             if ok and outcome.first_token_at is not None:
                 ttft_s = outcome.first_token_at - started
@@ -679,6 +681,8 @@ class Swapper(_SwapperLifecycleMixin):
                 completion_tokens=(
                     outcome.completion_tokens if ok else None
                 ),
+                server_decode=outcome.server_decode,
+                gen_chunks=outcome.gen_chunks,
             )
             self.stats.record_prefill_end(
                 model_name,
@@ -690,8 +694,9 @@ class Swapper(_SwapperLifecycleMixin):
                 server_prefill=outcome.server_prefill,
                 ended_at=ended,
             )
-            if decode_s is not None:
-                # Successful stream: calibrate live-rate tokens per chunk.
+            if decode_s is not None and outcome.gen_chunks >= 2:
+                # Successful stream with real chunking (not one buffered
+                # burst): calibrate live-rate tokens per chunk.
                 self.stats.record_gen_calibration(
                     model_name, outcome.completion_tokens, outcome.gen_chunks,
                 )
@@ -708,6 +713,8 @@ class Swapper(_SwapperLifecycleMixin):
                 ttft_s=ttft_s,
                 decode_s=decode_s,
                 server_prefill=outcome.server_prefill,
+                server_decode=outcome.server_decode,
+                gen_chunks=outcome.gen_chunks,
             )
 
     async def _proxy_for_model(

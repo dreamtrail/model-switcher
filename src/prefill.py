@@ -49,18 +49,24 @@ class PrefillDecision:
     skipped_unknown_cache: bool = False
 
 
-def _count(value: Any) -> int | None:
+def parse_count(value: Any) -> int | None:
     """Return a non-negative plain int, else None."""
     if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
         return value
     return None
 
 
-def _duration(value: Any) -> float | None:
-    """Return a finite non-negative number as float, else None."""
+def parse_duration(value: Any) -> float | None:
+    """Return a finite non-negative number as float, else None.
+
+    Integers too large for a float are invalid (None), not an error.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
     if not math.isfinite(number) or number < 0:
         return None
     return number
@@ -72,23 +78,23 @@ def apply_server_prefill(data: Any, server: ServerPrefill) -> None:
         return
     timings = data.get("timings")
     if isinstance(timings, dict):
-        prompt_n = _count(timings.get("prompt_n"))
-        if prompt_n is not None:
+        # A valid pair from one event only; never mix events.
+        prompt_n = parse_count(timings.get("prompt_n"))
+        prompt_ms = parse_duration(timings.get("prompt_ms"))
+        if prompt_n is not None and prompt_ms is not None:
             server.prompt_n = prompt_n
-        prompt_ms = _duration(timings.get("prompt_ms"))
-        if prompt_ms is not None:
             server.prompt_ms = prompt_ms
-        cache_n = _count(timings.get("cache_n"))
+        cache_n = parse_count(timings.get("cache_n"))
         if cache_n is not None:
             server.cache_n = cache_n
     usage = data.get("usage")
     if isinstance(usage, dict):
-        prompt_time = _duration(usage.get("prompt_time"))
+        prompt_time = parse_duration(usage.get("prompt_time"))
         if prompt_time is not None:
             server.prompt_time_s = prompt_time
     metrics = data.get("metrics")
     if isinstance(metrics, dict):
-        ttft_ms = _duration(metrics.get("time_to_first_token_ms"))
+        ttft_ms = parse_duration(metrics.get("time_to_first_token_ms"))
         if ttft_ms is not None:
             server.ttft_ms = ttft_ms
 
@@ -97,7 +103,7 @@ def effective_cached(
     cached_tokens: Any, server: ServerPrefill | None,
 ) -> int | None:
     """Cached prompt tokens: usage details first, else ``timings.cache_n``."""
-    cached = _count(cached_tokens)
+    cached = parse_count(cached_tokens)
     if cached is not None:
         return cached
     if server is not None:
@@ -142,7 +148,7 @@ def select_prefill(
         seconds = proxy_ttft_s
     if seconds is None:
         return PrefillDecision()
-    prompt = _count(prompt_tokens)
+    prompt = parse_count(prompt_tokens)
     if prompt is None or prompt < 1:
         return PrefillDecision()
     if cached_tokens is None:

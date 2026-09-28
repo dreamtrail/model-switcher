@@ -67,13 +67,18 @@ class TestParsing:
         apply_server_prefill(data, server)
         assert server == ServerPrefill()
 
-    def test_last_valid_value_wins(self):
+    def test_last_valid_pair_wins(self):
+        # P-20260929-03: prompt_n / prompt_ms update only as a valid pair
+        # from one event, so an event with one bad half changes neither.
         server = ServerPrefill()
         apply_server_prefill({"timings": {"prompt_n": 3, "prompt_ms": 5}},
                              server)
         apply_server_prefill({"timings": {"prompt_n": 9, "prompt_ms": "x"}},
                              server)
-        assert (server.prompt_n, server.prompt_ms) == (9, 5.0)
+        assert (server.prompt_n, server.prompt_ms) == (3, 5.0)
+        apply_server_prefill({"timings": {"prompt_n": 9, "prompt_ms": 7}},
+                             server)
+        assert (server.prompt_n, server.prompt_ms) == (9, 7.0)
 
     def test_sse_and_non_stream_bodies_populate_outcome(self):
         outcome = Outcome()

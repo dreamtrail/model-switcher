@@ -300,9 +300,13 @@ class TestAverageAggregateJsonContract:
                 status=200, headers={"Content-Type": "text/event-stream"},
             )
             await resp.prepare(request)
-            await resp.write(
-                b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
-            )
+            # Two output chunks: single-chunk streams are buffered and
+            # carry no generation-speed sample (P-20260929-03).
+            for text in (b"Hi", b" there"):
+                await resp.write(
+                    b'data: {"choices":[{"delta":{"content":"'
+                    + text + b'"}}]}\n\n'
+                )
             await resp.write(
                 b'data: {"choices":[],"usage":{"prompt_tokens":12,'
                 b'"completion_tokens":9,'

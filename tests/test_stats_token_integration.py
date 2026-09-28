@@ -71,6 +71,7 @@ class TestTokenMetricsIntegration:
 
             def capture_end(
                 model, request_id, *, ended_at, ok, completion_tokens,
+                **extra,
             ):
                 decode_ends.append(
                     (model, request_id, ended_at, ok, completion_tokens)
@@ -81,6 +82,7 @@ class TestTokenMetricsIntegration:
                     ended_at=ended_at,
                     ok=ok,
                     completion_tokens=completion_tokens,
+                    **extra,
                 )
 
             monkeypatch.setattr(
@@ -170,6 +172,7 @@ class TestTokenMetricsIntegration:
 
             def capture_end(
                 model, request_id, *, ended_at, ok, completion_tokens,
+                **extra,
             ):
                 ends.append((model, request_id, ok, completion_tokens))
                 original_end(
@@ -178,6 +181,7 @@ class TestTokenMetricsIntegration:
                     ended_at=ended_at,
                     ok=ok,
                     completion_tokens=completion_tokens,
+                    **extra,
                 )
 
             monkeypatch.setattr(stats, "record_decode_start", capture_start)
@@ -195,6 +199,9 @@ class TestTokenMetricsIntegration:
                     first_token_seen.set()
                     await asyncio.Future()
                 outcome.completion_tokens = 6
+                # A real multi-chunk stream (single-chunk streams are
+                # buffered and unsampled since P-20260929-03).
+                outcome.gen_chunks = 2
                 await asyncio.sleep(0)
                 return web.Response(status=200, body=b"ok")
 
@@ -249,8 +256,9 @@ class TestTokenMetricsIntegration:
         # Margin math (completion_tokens=2, the TPOT minimum, maximizes the
         # swapped-wiring TPOT and thus the discriminating gap):
         # - correct wiring: ttft ~= 250 ms; decode = first token -> stream
-        #   end, i.e. just the time to flush 3 tiny chunks + eof on a local
-        #   TestServer (a few ms) -> tpot_ms avg << 100, gen tps >> 20.
+        #   end, i.e. just the time to flush the second content chunk, the
+        #   usage chunk, [DONE], and eof on a local TestServer (a few ms)
+        #   -> tpot_ms avg << 100, gen tps >> 20.
         # - ttft/decode swapped: ttft ~= 0 (fails >= 150) and decode ~=
         #   250 ms -> tpot_ms ~= 250 (fails < 100), gen tps ~= 8 (fails > 20).
         # - decode = ended - started: ttft passes but decode ~= 250 ms ->
@@ -421,6 +429,11 @@ class TestTokenMetricsIntegration:
                 # Crash the writer without write_eof — mid-stream failure.
                 await resp.writer.close()
                 return resp
+            # Second output chunk: single-chunk streams are buffered and
+            # unsampled since P-20260929-03.
+            await resp.write(
+                b'data: {"choices":[{"delta":{"content":"!"}}]}\n\n'
+            )
             await resp.write(
                 b'data: {"choices":[],"usage":{"prompt_tokens":5,'
                 b'"completion_tokens":6}}\n\n'
@@ -444,6 +457,7 @@ class TestTokenMetricsIntegration:
 
             def capture_end(
                 model, request_id, *, ended_at, ok, completion_tokens,
+                **extra,
             ):
                 ends.append(
                     (model, request_id, ended_at, ok, completion_tokens)
@@ -454,6 +468,7 @@ class TestTokenMetricsIntegration:
                     ended_at=ended_at,
                     ok=ok,
                     completion_tokens=completion_tokens,
+                    **extra,
                 )
 
             monkeypatch.setattr(stats, "record_decode_start", capture_start)
@@ -533,9 +548,13 @@ class TestTokenMetricsIntegration:
                 headers={"Content-Type": "text/event-stream"},
             )
             await resp.prepare(request)
-            await resp.write(
-                b'data: {"choices":[{"delta":{"content":"abc"}}]}\n\n'
-            )
+            # Two output chunks: a single-chunk stream is buffered and
+            # has no generation-speed sample (P-20260929-03).
+            for text in (b"abc", b"def"):
+                await resp.write(
+                    b'data: {"choices":[{"delta":{"content":"'
+                    + text + b'"}}]}\n\n'
+                )
             await resp.write(
                 b'data: {"choices":[],"usage":{"prompt_tokens":10,'
                 b'"completion_tokens":6}}\n\n'
@@ -574,9 +593,12 @@ class TestTokenMetricsIntegration:
                 headers={"Content-Type": "text/event-stream"},
             )
             await resp.prepare(request)
-            await resp.write(
-                b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
-            )
+            # Two output chunks so TPOT/avg have a (non-buffered) sample.
+            for text in (b"Hi", b" there"):
+                await resp.write(
+                    b'data: {"choices":[{"delta":{"content":"'
+                    + text + b'"}}]}\n\n'
+                )
             await resp.write(
                 b'data: {"choices":[],"usage":{"prompt_tokens":12,'
                 b'"completion_tokens":9,'
@@ -615,6 +637,7 @@ class TestTokenMetricsIntegration:
         }
         assert set(req["rates"]["generation_tps"]) == {
             "avg", "last_60s", "last_300s", "avg_aggregate", "live",
+            "server_timed_share", "skipped_buffered",
         }
         assert set(req["ttft_ms"]) == {"count", "avg", "p50", "p95", "max"}
         assert set(req["tpot_ms"]) == {"count", "avg", "p50", "p95", "max"}
@@ -637,7 +660,7 @@ class TestTokenMetricsIntegration:
         }
         assert set(row["rates"]["generation_tps"]) == {
             "avg", "last_60s", "last_300s", "max_aggregate", "avg_aggregate",
-            "live",
+            "live", "server_timed_share", "skipped_buffered",
         }
         maximum = row["rates"]["generation_tps"]["max_aggregate"]
         assert set(maximum) == {"tps", "concurrency"}
@@ -658,7 +681,7 @@ class TestTokenMetricsIntegration:
         req_live = req["rates"]["generation_tps"]["live"]
         assert set(row_live) == set(req_live)
         assert req_live["tokens_per_chunk"] is None
-        assert row_live["tokens_per_chunk"] == pytest.approx(9.0)
+        assert row_live["tokens_per_chunk"] == pytest.approx(9 / 2)
         assert row_live["tps"] == req_live["tps"] == 0.0
         assert row_live["busy_s"] == pytest.approx(req_live["busy_s"])
         assert row["rates"]["prompt_tps"] == req["rates"]["prompt_tps"]
@@ -681,7 +704,7 @@ class TestTokenMetricsIntegration:
         assert 'id="models"' in body
         assert "renderTable" in body
         for header in (
-            "<th>Gen t/s</th>", ">Gen total</th>",
+            ">Gen t/s</th>", ">Gen total</th>",
             ">Prompt t/s</th>", ">Prompt total</th>",
             "<th>TTFT p50 / p95</th>", "<th>Cache</th>",
             "<th>Gen tok</th>", "<th>Prefill tok</th>",

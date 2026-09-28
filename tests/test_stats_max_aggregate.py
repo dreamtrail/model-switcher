@@ -254,6 +254,8 @@ class TestMaxAggregateGenerationThroughput:
             "last_60s": 0.0,
             "last_300s": 0.0,
             "avg_aggregate": None,
+            "server_timed_share": None,
+            "skipped_buffered": 0,
             "live": {
                 "tps": 0.0, "window_s": 15, "estimate": True,
                 "busy_s": 0.0, "tokens_per_chunk": None,
@@ -265,6 +267,8 @@ class TestMaxAggregateGenerationThroughput:
             "last_300s": 0.0,
             "max_aggregate": None,
             "avg_aggregate": None,
+            "server_timed_share": None,
+            "skipped_buffered": 0,
             "live": {
                 "tps": 0.0, "window_s": 15, "estimate": True,
                 "busy_s": 0.0, "tokens_per_chunk": 1.0,

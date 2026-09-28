@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from aiohttp import web
 
+from src.decode import apply_server_decode
 from src.prefill import apply_server_prefill
 
 if TYPE_CHECKING:
@@ -191,15 +192,19 @@ def _extract_usage(body: bytes | None, outcome: Outcome) -> None:
     except (json.JSONDecodeError, TypeError):
         return
     _apply_usage_dict(data, outcome)
-    _apply_server_prefill(data, outcome)
+    _apply_server_timing(data, outcome)
 
 
-def _apply_server_prefill(data: Any, outcome: Outcome) -> None:
-    """Copy server prefill timing fields; never breaks proxying."""
+def _apply_server_timing(data: Any, outcome: Outcome) -> None:
+    """Copy server prefill and decode timing fields; never breaks proxying."""
     try:
         apply_server_prefill(data, outcome.server_prefill)
     except Exception:
         logger.debug("server prefill parsing failed", exc_info=True)
+    try:
+        apply_server_decode(data, outcome.server_decode)
+    except Exception:
+        logger.debug("server decode parsing failed", exc_info=True)
 
 
 def _apply_usage_dict(data: Any, outcome: Outcome) -> None:
@@ -253,8 +258,10 @@ def _process_sse_line(line: bytes, outcome: Outcome) -> None:
     Any event carrying a usage dict populates the token fields (later
     events overwrite — the final usage chunk wins); server prefill timing
     (``timings``, ``usage.prompt_time``, ``metrics``) is collected the same
-    way. Events with generated output are reported to the optional chunk
-    observer. Parse failures are silently ignored ([DONE] sentinels,
+    way, as is server decode timing (``timings.predicted_*``,
+    ``usage.completion_time``, ``metrics.generation_time_ms``). Events with
+    generated output are reported to the optional chunk observer. Parse
+    failures are silently ignored ([DONE] sentinels,
     comments, partial events).
     """
     text = line.strip()
@@ -288,7 +295,7 @@ def _process_sse_line(line: bytes, outcome: Outcome) -> None:
                 # The live estimate must never break the proxied stream.
                 logger.debug("gen_chunk_observer failed", exc_info=True)
     _apply_usage_dict(event, outcome)
-    _apply_server_prefill(event, outcome)
+    _apply_server_timing(event, outcome)
 
 
 async def proxy_request(

@@ -367,3 +367,39 @@ chunk detection, and page layout from that section still apply.
 
 ### Status
 - Implemented under P-20260929-01 with unit tests (`tests/test_prefill_timing.py`) and loopback-fake integration tests through the real proxy and switcher per backend (`tests/test_prefill_backends.py`). README lists the backend flags.
+
+## P-20260929-03 — Server-timed generation speed
+
+### Problem
+- **Missing, not undercounted, per request** — user question 2026-09-29 ("exllamav3's tool call is non-streaming ... our token/s may undercount the non-streaming generations"). Decode time was measured only for streams (first output chunk → end), so non-streaming requests had tokens in the counters and `last_60s`/`last_300s` windows but no gen t/s, TPOT, or aggregate sample. A model used only without streaming showed no gen t/s.
+- **Combined figures undercounted** — Gen total (`avg_aggregate`), `max_aggregate`, and the live rate dropped non-streaming tokens even though they shared the GPU with overlapping streams.
+- **Buffered streams inflated** — a stream whose whole output arrives in one chunk (for example a TabbyAPI tool call) had a decode time of a few milliseconds, inflating gen t/s, Gen total, and `max_aggregate`, giving TPOT ≈ 0, and skewing the live-rate tokens-per-chunk calibration.
+
+### Sources (pinned)
+- **llama.cpp `1c47294`** — top-level `timings.predicted_n` / `predicted_ms` (first → last token) on the non-stream body and the last stream chunk. No flags. Its own `predicted_per_second` divides by the same N.
+- **tabbyAPI `816c321` / exllamav3 v1.5.2** — `usage.completion_time` (seconds, 10 ms rounding) and llama.cpp-style `timings.predicted_n` / `predicted_ms`. With tools and `stream: true` it is one generation pass: text before the tool tag streams, the tool-call text is held back and emitted in the final (finish) chunk; `usage`/`timings` include the tool-call tokens and time. A reply that opens with a tool call sends nothing until the end.
+- **vLLM `6a6c295`** — top-level `metrics.generation_time_ms` (first → last token) on the final usage chunk and the non-stream body, only with `--enable-per-request-metrics` (n = 1).
+- **SGLang `26d7539`** — no decode duration in the OpenAI response for streaming; `meta_info` only on non-streaming requests with `return_meta_info`, which the switcher does not set.
+- **Tool parsers** — vLLM, SGLang, and llama.cpp tool parsers can also hold back text (a gap, then a burst); the effect is parser-dependent.
+
+### Definition
+- **Parsing** — the proxy reads `timings.predicted_n` + `predicted_ms` (accepted only as a valid pair from one event), `usage.completion_time`, and `metrics.generation_time_ms` from the non-stream body and every SSE event; last valid value wins. `timings.prompt_n` + `prompt_ms` are now also taken only as a pair (review note on P-20260929-01), and integers too large for a float are ignored without skipping the event's other fields. Logic lives in `src/decode.py`; parsing errors never break proxying.
+- **Sample priority** — per successful request with `completion_tokens ≥ 1`: (a) `predicted_n ≥ 1` and `predicted_ms > 0` → `predicted_n` tokens over `predicted_ms`; (b) `usage.completion_time > 0`; (c) `metrics.generation_time_ms > 0`; (d) the proxy decode time (streaming only), used only when the stream had ≥ 2 generated-output chunks. (b)–(d) use `completion_tokens`. A stream that fails the (d) chunk rule is left out and counted once in `skipped_buffered` (per model and global); a non-streaming request without server time is simply not timed.
+- **Convention** — speed is tokens ÷ time (N, not N − 1), matching TabbyAPI and the existing proxy measure; llama.cpp's and vLLM's times span first → last token (N − 1 decode steps), so N ÷ time reads slightly higher than the per-step rate (N − 1) ÷ time; llama.cpp's own `predicted_per_second` also uses N, so it matches ours. TPOT stays `seconds / (tokens − 1)`.
+- **Uses** — the sample feeds `rates.generation_tps.avg`, `tpot_ms`, `avg_aggregate`, and `max_aggregate`, streaming or not.
+- **Aggregate interval** — server-timed `[max(request start, end − seconds), end]`; proxy-timed `[first chunk, end]` (unchanged). Because a server-timed interval can start anywhere after its request started, a decode group is now published only when no in-flight request of that model (streaming or not, other than the one ending) started before the group ended; before, only active stream decodes held a group. Failed or cancelled requests add no interval, so they still only delay publication and never bridge groups.
+- **Live rate** — streams with fewer than 2 output chunks give no tokens-per-chunk calibration sample. Busy time and chunk counting are unchanged; non-streaming requests still do not count.
+- **JSON** — additive `rates.generation_tps.server_timed_share` (server-timed ÷ all decode tokens, `null` before any) and `rates.generation_tps.skipped_buffered` (count), per model and global. `last_60s`/`last_300s` are unchanged.
+
+### Limits
+- **SGLang** — streaming keeps the proxy timing (with the ≥ 2 chunks rule); non-streaming generation is not timed.
+- **vLLM without `--enable-per-request-metrics`** and llama.cpp/TabbyAPI replies whose times round to 0 fall through to the next source, as for prompt speed.
+- **Two-chunk bursts** — a held-back tool call streamed in two or more chunks at the end still counts with the proxy time when the server gives no decode time.
+- **Proxy TTFT and prompt t/s** are unchanged; a buffered stream's TTFT-based prompt fallback still includes decode time.
+- **Held publication** — a long queued, prefilling, or non-streaming request that started before a decode group ended holds that group's "Gen total" (`avg_aggregate`) and `max_aggregate` publication until the request ends (at most the proxy timeout); the published numbers are unchanged.
+
+### Page
+- **Tooltip** — the "Gen t/s" column reads "Generation speed; uses the server's own decode time when available, else first to last streamed chunk". No layout change.
+
+### Status
+- Implemented under P-20260929-03 with unit tests (`tests/test_decode_timing.py`) and loopback-fake integration tests through the real proxy and switcher per backend (`tests/test_decode_backends.py`). README lists the backend flags. Earlier sections that say non-stream timing is unobservable are kept as history.

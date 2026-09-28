@@ -61,6 +61,8 @@ class TestStatsEndpoints:
                     "generation_tps": {
                         "avg": None, "last_60s": 0.0, "last_300s": 0.0,
                         "avg_aggregate": None,
+                        "server_timed_share": None,
+                        "skipped_buffered": 0,
                         "live": {
                             "tps": 0.0, "window_s": 15, "estimate": True,
                             "busy_s": 0.0, "tokens_per_chunk": None,
@@ -165,11 +167,17 @@ class TestArchitectureBoundaries:
     def test_stats_module_imports_stdlib_only(self):
         """AC10: stats.py imports stdlib only — no new dependencies.
 
-        P-20260929-01: it may also import src.prefill, itself stdlib-only.
+        P-20260929-01/-03: it may also import src.prefill and src.decode,
+        themselves stdlib-only (decode only adds src.prefill).
         """
         stdlib = {"__future__", "math", "time", "collections", "dataclasses"}
-        assert self._import_roots("stats.py") <= stdlib | {"src.prefill"}
+        assert self._import_roots("stats.py") <= stdlib | {
+            "src.prefill", "src.decode",
+        }
         assert self._import_roots("prefill.py") <= stdlib | {"typing"}
+        assert self._import_roots("decode.py") <= stdlib | {
+            "typing", "src.prefill",
+        }
 
     def test_proxy_does_not_touch_stats_collector(self):
         """AC11: proxy.py communicates only via the Outcome object."""
