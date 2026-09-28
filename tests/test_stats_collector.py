@@ -194,7 +194,10 @@ class TestStatsCollector:
             "prefill": 0, "cache_hit_rate": None,
         }
         assert snap["requests"]["rates"] == {
-            "prompt_tps": {"avg": None, "avg_aggregate": None},
+            "prompt_tps": {
+                "avg": None, "avg_aggregate": None,
+                "server_timed_share": None, "skipped_unknown_cache": 0,
+            },
             "generation_tps": {
                 "avg": None, "last_60s": 0.0, "last_300s": 0.0,
                 "avg_aggregate": None,
@@ -382,9 +385,10 @@ class TestTokenMetricCollector:
         assert snap["models"]["m"]["requests"]["tokens"]["prefill"] == 0
         assert snap["requests"]["rates"]["prompt_tps"]["avg"] is None
 
-    def test_prefill_falls_back_to_full_prompt_without_cached_report(self):
-        # P-20260924-01: no cached_tokens reported -> the full prompt is
-        # the prefill work (prior behavior preserved).
+    def test_prefill_skips_unknown_cache_on_never_reporting_model(self):
+        # P-20260929-01 (replaces the P-20260924-01 full-prompt fallback):
+        # a model that has never reported a cached count is excluded from
+        # prompt speed, since the full prompt could be mostly cached.
         collector = StatsCollector()
         collector.record_request(
             "m", ok=True, prompt_tokens=200, ttft_s=1.0,
@@ -392,10 +396,11 @@ class TestTokenMetricCollector:
 
         snap = collector.snapshot()
 
-        assert snap["requests"]["tokens"]["prefill"] == 200
-        assert snap["models"]["m"]["requests"]["tokens"]["prefill"] == 200
-        assert snap["requests"]["rates"]["prompt_tps"]["avg"] \
-            == pytest.approx(200 / 1.0)
+        assert snap["requests"]["tokens"]["prefill"] == 0
+        assert snap["models"]["m"]["requests"]["tokens"]["prefill"] == 0
+        assert snap["requests"]["rates"]["prompt_tps"]["avg"] is None
+        for block in (snap["requests"], snap["models"]["m"]["requests"]):
+            assert block["rates"]["prompt_tps"]["skipped_unknown_cache"] == 1
 
     def test_prefill_mirrors_per_model_and_needs_ttft(self):
         # P-20260924-01: tokens.prefill aggregates globally and per model,

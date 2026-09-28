@@ -180,10 +180,15 @@ class TestAverageAggregatePrompt:
         assert rates["avg_aggregate"] == {"tps": 400.0, "concurrency": 1.0}
         assert rates["avg_aggregate"]["tps"] == rates["avg"]
 
-    def test_unknown_cached_uses_full_prompt(self):
+    def test_unknown_cached_is_skipped_until_model_reports_cache(self):
+        # P-20260929-01: never-reported cache -> excluded; once the model
+        # reports a cached count, a missing count means 0 cached.
         collector = StatsCollector()
         _request(collector, "m", "a", 0.0, 2.0, 1000, None)
-        assert _prompt(collector, "m") == {"tps": 500.0, "concurrency": 1.0}
+        assert _prompt(collector, "m") is None
+        _request(collector, "m", "b", 10.0, 11.0, 300, 100)
+        _request(collector, "m", "c", 20.0, 22.0, 1000, None)
+        assert _prompt(collector, "m") == {"tps": 400.0, "concurrency": 1.0}
 
     def test_overlap_is_held_while_in_flight_then_published(self):
         # A [0, 2) 800 tok; B starts at 1 and has no first token yet.
@@ -212,7 +217,7 @@ class TestAverageAggregatePrompt:
         _prefill_start(collector, "m", "a", 0.0)
         _prefill_start(collector, "m", "d", 2.0)
         _first_token(collector, "m", "a", 2.0)
-        _prefill_end(collector, "m", "a", 2.0, 100, None)
+        _prefill_end(collector, "m", "a", 2.0, 100, 0)
         assert _prompt(collector, "m") == {"tps": 50.0, "concurrency": 1.0}
         # C closes later: its own group [-5, -4) 30 tok adds 1 s busy.
         _prefill_end(collector, "m", "c", -4.0, 30, 0)
@@ -261,7 +266,7 @@ class TestAverageAggregatePrompt:
 
     def test_global_sums_per_model_accumulators(self):
         collector = StatsCollector()
-        _request(collector, "a", "x", 0.0, 1.0, 100, None)
+        _request(collector, "a", "x", 0.0, 1.0, 100, 0)
         _request(collector, "b", "y", 0.0, 3.0, 500, 200)
         assert _prompt(collector) == {"tps": 100.0, "concurrency": 1.0}
 

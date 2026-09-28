@@ -8,6 +8,14 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from src.prefill import (
+    PrefillDecision,
+    ServerPrefill,
+    effective_cached,
+    prefill_interval,
+    select_prefill,
+)
+
 # Trailing windows for throughput reporting.
 WINDOW_SHORT_S = 60
 WINDOW_LONG_S = 300
@@ -43,6 +51,8 @@ class Outcome:
     )
     # Streaming only: total output chunks seen (live-rate calibration).
     gen_chunks: int = 0
+    # Server-reported prefill timing (timings / usage.prompt_time / metrics).
+    server_prefill: ServerPrefill = field(default_factory=ServerPrefill)
 
 
 @dataclass(frozen=True)
@@ -118,7 +128,11 @@ class _ModelStats:
     decode_tokens: int = 0  # Σ completion_tokens over streaming requests
     decode_time: float = 0.0  # Σ decode seconds
     prefill_tokens: int = 0  # Σ uncached prompt (prompt − cached) work
-    prefill_time: float = 0.0  # Σ TTFT seconds
+    prefill_time: float = 0.0  # Σ prefill seconds (server time, else TTFT)
+    prefill_server_tokens: int = 0  # part of prefill_tokens timed by server
+    prompt_skipped_unknown_cache: int = 0  # excluded: cached count unknown
+    # Learned: this model has reported a cached-token count at least once.
+    cache_reported: bool = False
     token_events: deque = field(default_factory=deque)  # (monotonic, tokens)
     gen_chunk_events: deque = field(default_factory=deque)  # (monotonic, units)
     active_decodes: dict[object, float] = field(default_factory=dict)
@@ -185,17 +199,6 @@ def _component_totals(
     return _AggregateTotals(
         tokens=tokens, busy_time=span, stream_time=stream_time,
     )
-
-
-def _uncached_prefill(
-    prompt_tokens: int | None, cached_tokens: int | None,
-) -> int | None:
-    """Uncached prompt work (prompt − cached, or prompt when cached unknown)."""
-    if prompt_tokens is None or prompt_tokens < 1:
-        return None
-    if cached_tokens is not None:
-        return max(prompt_tokens - cached_tokens, 0)
-    return prompt_tokens
 
 
 def _is_count(value: object) -> bool:
@@ -326,6 +329,8 @@ def _requests_report(
     decode_time: float = 0.0,
     prefill_tokens: int = 0,
     prefill_time: float = 0.0,
+    prefill_server_tokens: int = 0,
+    prompt_skipped_unknown_cache: int = 0,
     token_events: deque = (),
     now_monotonic: float = 0.0,
     max_aggregate: tuple[float, int] | None = None,
@@ -383,6 +388,11 @@ def _requests_report(
                     prefill_aggregate.report()
                     if prefill_aggregate is not None else None
                 ),
+                # Share of prefill tokens timed by the server itself.
+                "server_timed_share": (
+                    prefill_server_tokens / prefill_tokens
+                ) if prefill_tokens > 0 else None,
+                "skipped_unknown_cache": prompt_skipped_unknown_cache,
             },
             "generation_tps": generation_tps,
         },
@@ -417,6 +427,8 @@ class StatsCollector:
         self.decode_time = 0.0
         self.prefill_tokens = 0
         self.prefill_time = 0.0
+        self.prefill_server_tokens = 0
+        self.prompt_skipped_unknown_cache = 0
         self.token_events: deque[tuple[float, int]] = deque()
         self._swap_durations: list[float] = []  # seconds
         self._peak_inflight = 0
@@ -443,12 +455,15 @@ class StatsCollector:
         cached_tokens: int | None = None,
         ttft_s: float | None = None,
         decode_s: float | None = None,
+        server_prefill: ServerPrefill | None = None,
     ) -> None:
         """Record a completed proxied request.
 
         Token counters are recorded whenever usage was extractable,
         regardless of response status; timing stats (ttft_s/decode_s)
-        are only passed for successful streaming requests.
+        are only passed for successful streaming requests. The prompt-speed
+        sample of a successful request comes from the server's own prefill
+        timing when present, else from ttft_s (see src/prefill.py).
         """
         self._total += 1
         if ok:
@@ -461,9 +476,14 @@ class StatsCollector:
         self._bytes_out += bytes_out
         now_monotonic = time.monotonic()
         self._request_times.append(now_monotonic)
+        cached_tokens = effective_cached(cached_tokens, server_prefill)
+        decision = self._decide_prefill(
+            model, prompt_tokens, cached_tokens, server_prefill, ttft_s,
+            ok=ok,
+        )
         self._apply_usage(
             self, now_monotonic, prompt_tokens, completion_tokens,
-            cached_tokens, ttft_s, decode_s,
+            cached_tokens, ttft_s, decode_s, decision,
         )
         if model is not None:
             ms = self._model(model)
@@ -478,7 +498,7 @@ class StatsCollector:
             ms.bytes_out += bytes_out
             self._apply_usage(
                 ms, now_monotonic, prompt_tokens, completion_tokens,
-                cached_tokens, ttft_s, decode_s,
+                cached_tokens, ttft_s, decode_s, decision,
             )
         self._prune_request_times()
 
@@ -491,6 +511,7 @@ class StatsCollector:
         cached_tokens: int | None,
         ttft_s: float | None,
         decode_s: float | None,
+        decision: PrefillDecision,
     ) -> None:
         """Apply usage/timing contributions to a stats holder.
 
@@ -514,15 +535,43 @@ class StatsCollector:
                 and completion_tokens >= 1):
             stats.decode_tokens += completion_tokens
             stats.decode_time += decode_s
-        if ttft_s is not None:
-            # Prompt processing excludes cached reads when the backend reports
-            # them; the reported work is the uncached remainder.
-            prefill = _uncached_prefill(prompt_tokens, cached_tokens)
-            if prefill is not None and prefill >= 1:
-                stats.prefill_tokens += prefill
-                stats.prefill_time += ttft_s
+        sample = decision.sample
+        if sample is not None:
+            # Uncached prompt work over its prefill time (src/prefill.py).
+            stats.prefill_tokens += sample.tokens
+            stats.prefill_time += sample.seconds
+            if sample.server_timed:
+                stats.prefill_server_tokens += sample.tokens
+        elif decision.skipped_unknown_cache:
+            stats.prompt_skipped_unknown_cache += 1
         events = stats.token_events
         _prune_token_events(events, now_monotonic)
+
+    def _decide_prefill(
+        self,
+        model: str | None,
+        prompt_tokens: int | None,
+        cached_tokens: int | None,
+        server_prefill: ServerPrefill | None,
+        proxy_ttft_s: float | None,
+        *,
+        ok: bool,
+    ) -> PrefillDecision:
+        """Select one request's prefill sample and learn cache reporting.
+
+        cached_tokens must already be resolved with effective_cached. A
+        model that reports a cached count once is remembered, so later
+        missing counts mean 0 cached instead of an unknown.
+        """
+        stats = self._model(model) if model is not None else None
+        if stats is not None and cached_tokens is not None:
+            stats.cache_reported = True
+        if not ok:
+            return PrefillDecision()
+        return select_prefill(
+            prompt_tokens, cached_tokens, server_prefill, proxy_ttft_s,
+            cache_learned=stats is not None and stats.cache_reported,
+        )
 
     def record_gen_chunks(self, model: str, n: int) -> None:
         """Record n streamed output chunks for the live rate estimate."""
@@ -608,11 +657,16 @@ class StatsCollector:
         ok: bool,
         prompt_tokens: int | None,
         cached_tokens: int | None,
+        server_prefill: ServerPrefill | None = None,
+        ended_at: float | None = None,
     ) -> None:
         """Close an in-flight request and publish closed prefill groups.
 
         Eligibility matches rates.prompt_tps: a successful request with a
-        first token and at least one uncached prompt token.
+        prefill sample (server timing, or a first token) and at least one
+        uncached prompt token. Server-timed intervals end at the first
+        token (streaming) or start at the request start (non-streaming,
+        capped at ended_at).
         """
         stats = self._models.get(model)
         if stats is None:
@@ -620,27 +674,26 @@ class StatsCollector:
         request = stats.active_requests.pop(request_id, None)
         if request is None:
             return
-        started_at = request.started_at
-        prefill = (
-            _uncached_prefill(prompt_tokens, cached_tokens)
-            if _is_count(prompt_tokens)
-            and (cached_tokens is None or _is_count(cached_tokens))
-            else None
+        proxy_ttft = (
+            first_token_at - request.started_at
+            if first_token_at is not None else None
         )
-        eligible = (
-            ok
-            and prefill is not None
-            and prefill >= 1
-            and first_token_at is not None
-            and math.isfinite(started_at)
-            and math.isfinite(first_token_at)
-            and first_token_at > started_at
+        decision = self._decide_prefill(
+            model, prompt_tokens,
+            effective_cached(cached_tokens, server_prefill),
+            server_prefill, proxy_ttft, ok=ok,
         )
-        if eligible:
+        span = (
+            prefill_interval(
+                decision.sample, request.started_at, first_token_at, ended_at,
+            )
+            if decision.sample is not None else None
+        )
+        if span is not None:
             stats.prefill_frontier.append(_PrefillInterval(
-                started_at=started_at,
-                ended_at=first_token_at,
-                prefill_tokens=prefill,
+                started_at=span[0],
+                ended_at=span[1],
+                prefill_tokens=decision.sample.tokens,
             ))
         self._finalize_prefill_frontier(stats)
 
@@ -860,6 +913,10 @@ class StatsCollector:
                     decode_time=ms.decode_time,
                     prefill_tokens=ms.prefill_tokens,
                     prefill_time=ms.prefill_time,
+                    prefill_server_tokens=ms.prefill_server_tokens,
+                    prompt_skipped_unknown_cache=(
+                        ms.prompt_skipped_unknown_cache
+                    ),
                     token_events=ms.token_events,
                     now_monotonic=now_monotonic,
                     max_aggregate=(
@@ -906,6 +963,10 @@ class StatsCollector:
                 decode_time=self.decode_time,
                 prefill_tokens=self.prefill_tokens,
                 prefill_time=self.prefill_time,
+                prefill_server_tokens=self.prefill_server_tokens,
+                prompt_skipped_unknown_cache=(
+                    self.prompt_skipped_unknown_cache
+                ),
                 token_events=self.token_events,
                 now_monotonic=now_monotonic,
                 decode_aggregate=global_decode,
@@ -1165,7 +1226,7 @@ STATS_HTML = """<!DOCTYPE html>
       <th>Model</th><th>Reqs</th><th>Errors</th><th>Gen t/s</th>
       <th title="Estimated combined speed while generating, last 15 s (streamed chunks × tokens per chunk)">Live t/s ≈</th>
       <th title="Combined speed while busy @ average concurrent requests">Gen total</th>
-      <th>Prompt t/s</th>
+      <th title="Prompt processing speed; uses the server's own prefill time when available, else time to first token">Prompt t/s</th>
       <th title="Combined speed while busy @ average concurrent requests">Prompt total</th>
       <th>TTFT p50 / p95</th><th>Cache</th><th>Gen tok</th><th>Prefill tok</th>
     </tr></thead>

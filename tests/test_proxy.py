@@ -1102,7 +1102,10 @@ class TestProcessSseLine:
     def test_missing_space_after_prefix_tolerated(self):
         outcome = Outcome()
 
-        _process_sse_line(b'data:{"choices":[{"delta":{}}]}', outcome)
+        # P-20260929-01: only generated output marks the first token.
+        _process_sse_line(
+            b'data:{"choices":[{"delta":{"content":"x"}}]}', outcome,
+        )
 
         assert outcome.first_token_at is not None
 

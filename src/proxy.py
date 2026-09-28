@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from aiohttp import web
 
+from src.prefill import apply_server_prefill
+
 if TYPE_CHECKING:
     from src.stats import Outcome
 
@@ -189,6 +191,15 @@ def _extract_usage(body: bytes | None, outcome: Outcome) -> None:
     except (json.JSONDecodeError, TypeError):
         return
     _apply_usage_dict(data, outcome)
+    _apply_server_prefill(data, outcome)
+
+
+def _apply_server_prefill(data: Any, outcome: Outcome) -> None:
+    """Copy server prefill timing fields; never breaks proxying."""
+    try:
+        apply_server_prefill(data, outcome.server_prefill)
+    except Exception:
+        logger.debug("server prefill parsing failed", exc_info=True)
 
 
 def _apply_usage_dict(data: Any, outcome: Outcome) -> None:
@@ -236,11 +247,13 @@ def _count_gen_chunks(event: dict) -> int:
 def _process_sse_line(line: bytes, outcome: Outcome) -> None:
     """Parse one complete SSE data line and update the Outcome.
 
-    The first event with a non-empty choices list marks the first content
-    event, except a prefill-progress event (top-level ``prompt_progress``
-    and no generated output); any event carrying a usage dict populates
-    the token fields (later events overwrite — the final usage chunk
-    wins). Events with generated output are reported to the optional chunk
+    The first event carrying generated output (content, reasoning, tool
+    calls, or completions text) marks the first token; role-only, empty,
+    usage-only, and prefill-progress (``prompt_progress``) events do not.
+    Any event carrying a usage dict populates the token fields (later
+    events overwrite — the final usage chunk wins); server prefill timing
+    (``timings``, ``usage.prompt_time``, ``metrics``) is collected the same
+    way. Events with generated output are reported to the optional chunk
     observer. Parse failures are silently ignored ([DONE] sentinels,
     comments, partial events).
     """
@@ -257,14 +270,10 @@ def _process_sse_line(line: bytes, outcome: Outcome) -> None:
     if not isinstance(event, dict):
         return
     units = _count_gen_chunks(event)
-    # Prefill progress (llama.cpp / TabbyAPI ``return_progress``) rides on
-    # an otherwise empty chunk; it is not the first generated token.
-    prefill_progress_only = "prompt_progress" in event and not units
-    if (
-        event.get("choices")
-        and outcome.first_token_at is None
-        and not prefill_progress_only
-    ):
+    # Only generated output marks the first token: a role-only opening
+    # chunk or a prefill-progress chunk (llama.cpp / TabbyAPI
+    # ``return_progress``) can arrive before prefill has finished.
+    if units and outcome.first_token_at is None:
         first_token_at = time.monotonic()
         outcome.first_token_at = first_token_at
         if outcome.first_token_observer is not None:
@@ -279,6 +288,7 @@ def _process_sse_line(line: bytes, outcome: Outcome) -> None:
                 # The live estimate must never break the proxied stream.
                 logger.debug("gen_chunk_observer failed", exc_info=True)
     _apply_usage_dict(event, outcome)
+    _apply_server_prefill(event, outcome)
 
 
 async def proxy_request(

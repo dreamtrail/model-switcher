@@ -609,7 +609,10 @@ class TestTokenMetricsIntegration:
             "prompt", "completion", "cached", "prefill", "cache_hit_rate",
         }
         assert set(req["rates"]) == {"prompt_tps", "generation_tps"}
-        assert set(req["rates"]["prompt_tps"]) == {"avg", "avg_aggregate"}
+        assert set(req["rates"]["prompt_tps"]) == {
+            "avg", "avg_aggregate", "server_timed_share",
+            "skipped_unknown_cache",
+        }
         assert set(req["rates"]["generation_tps"]) == {
             "avg", "last_60s", "last_300s", "avg_aggregate", "live",
         }
@@ -679,7 +682,7 @@ class TestTokenMetricsIntegration:
         assert "renderTable" in body
         for header in (
             "<th>Gen t/s</th>", ">Gen total</th>",
-            "<th>Prompt t/s</th>", ">Prompt total</th>",
+            ">Prompt t/s</th>", ">Prompt total</th>",
             "<th>TTFT p50 / p95</th>", "<th>Cache</th>",
             "<th>Gen tok</th>", "<th>Prefill tok</th>",
         ):

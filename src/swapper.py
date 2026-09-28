@@ -687,6 +687,8 @@ class Swapper(_SwapperLifecycleMixin):
                 ok=ok,
                 prompt_tokens=outcome.prompt_tokens,
                 cached_tokens=outcome.cached_tokens,
+                server_prefill=outcome.server_prefill,
+                ended_at=ended,
             )
             if decode_s is not None:
                 # Successful stream: calibrate live-rate tokens per chunk.
@@ -705,6 +707,7 @@ class Swapper(_SwapperLifecycleMixin):
                 cached_tokens=outcome.cached_tokens,
                 ttft_s=ttft_s,
                 decode_s=decode_s,
+                server_prefill=outcome.server_prefill,
             )
 
     async def _proxy_for_model(

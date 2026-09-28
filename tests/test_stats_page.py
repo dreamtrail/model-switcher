@@ -298,8 +298,9 @@ class TestStatsPageStatic:
         ]
         tip = ' title="Combined speed while busy @ average concurrent requests"'
         live = ' title="Estimated combined speed while generating, last 15 s (streamed chunks × tokens per chunk)"'
+        prompt = ' title="Prompt processing speed; uses the server\'s own prefill time when available, else time to first token"'
         assert [attrs for attrs, _ in cells] == [
-            "", "", "", "", live, tip, "", tip, "", "", "", "",
+            "", "", "", "", live, tip, prompt, tip, "", "", "", "",
         ]
         assert "Best gen t/s" not in STATS_HTML
         assert '<tbody id="models"></tbody>' in STATS_HTML

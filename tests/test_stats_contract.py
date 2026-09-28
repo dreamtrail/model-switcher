@@ -53,7 +53,11 @@ class TestStatsEndpoints:
                     "prefill": 0, "cache_hit_rate": None,
                 }
                 assert data["requests"]["rates"] == {
-                    "prompt_tps": {"avg": None, "avg_aggregate": None},
+                    "prompt_tps": {
+                        "avg": None, "avg_aggregate": None,
+                        "server_timed_share": None,
+                        "skipped_unknown_cache": 0,
+                    },
                     "generation_tps": {
                         "avg": None, "last_60s": 0.0, "last_300s": 0.0,
                         "avg_aggregate": None,
@@ -139,22 +143,33 @@ class TestStatsEndpoints:
 
 class TestArchitectureBoundaries:
 
-    def test_stats_module_imports_stdlib_only(self):
-        """AC10: stats.py imports stdlib only — no new dependencies."""
+    @staticmethod
+    def _import_roots(name):
         source = (
-            Path(__file__).resolve().parents[1] / "src" / "stats.py"
+            Path(__file__).resolve().parents[1] / "src" / name
         ).read_text()
         tree = ast.parse(source)
         roots = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 roots.update(
-                    alias.name.split(".")[0] for alias in node.names
+                    alias.name for alias in node.names
                 )
             elif isinstance(node, ast.ImportFrom) and node.module:
-                roots.add(node.module.split(".")[0])
-        assert roots <= {"__future__", "math", "time", "collections",
-                         "dataclasses"}
+                roots.add(node.module)
+        return {
+            root if root.startswith("src.") else root.split(".")[0]
+            for root in roots
+        }
+
+    def test_stats_module_imports_stdlib_only(self):
+        """AC10: stats.py imports stdlib only — no new dependencies.
+
+        P-20260929-01: it may also import src.prefill, itself stdlib-only.
+        """
+        stdlib = {"__future__", "math", "time", "collections", "dataclasses"}
+        assert self._import_roots("stats.py") <= stdlib | {"src.prefill"}
+        assert self._import_roots("prefill.py") <= stdlib | {"typing"}
 
     def test_proxy_does_not_touch_stats_collector(self):
         """AC11: proxy.py communicates only via the Outcome object."""

@@ -334,3 +334,36 @@ chunk detection, and page layout from that section still apply.
 
 ### Verification Trade-off
 - **Use deterministic loopback fakes pinned to `816c321`** — tests shape readiness, `\r\n` SSE framing, `: ping` comments, the non-empty-choices usage chunk with timings, prefill progress chunks, log lines, and auth headers from the pinned sources and run the real config, health, switcher, process, and proxy paths without installing TabbyAPI, downloading models, or using a GPU. README documents a manual smoke check on real hardware.
+
+## P-20260929-01 — Server-timed prompt speed
+
+### Problem
+- **Too low on ExLlamaV3** — user report 2026-09-29: TabbyAPI's own prompt speed was about twice ours. Prompt t/s divided `prompt − cached` by the proxy TTFT, which also holds tokenization and templating, queueing, the first decode step, and the SSE flush; TabbyAPI divides new tokens by GPU prefill time only.
+- **Sky-high** — when the cached count was unknown (SGLang without `--enable-cache-report` or when nothing was cached, vLLM without `--enable-prompt-tokens-details`, llama.cpp cache only in `timings.cache_n`), the full prompt was counted as new work over a short TTFT.
+- **Early first token** — any event with a non-empty `choices` list marked the first token, so a role-only opening chunk sent before prefill ended could shrink TTFT.
+
+### Sources (pinned)
+- **llama.cpp `1c47294`** — `usage.prompt_tokens_details.cached_tokens` always; top-level `timings` (`cache_n`, `prompt_n` = new tokens ≥ 1, `prompt_ms` = prefill only) on the non-stream body and the last stream chunk. No flags.
+- **tabbyAPI `816c321` / exllamav3 v1.5.2** — `cached_tokens` always; `usage.prompt_time` (seconds, 10 ms rounding) and `prompt_tokens_per_sec`; llama.cpp-style `timings` with `prompt_n = prompt − cached` and `prompt_ms = prompt_time × 1000`.
+- **vLLM `6a6c295`** — `cached_tokens` only with `--enable-prompt-tokens-details`; top-level `metrics.time_to_first_token_ms` (scheduled → first token) on the final usage chunk only with `--enable-per-request-metrics`.
+- **SGLang `26d7539`** — `cached_tokens` only with `--enable-cache-report`, and omitted when 0; no prefill duration in the OpenAI response.
+
+### Definition
+- **Parsing** — the proxy reads `timings.{prompt_n, prompt_ms, cache_n}`, `usage.prompt_time`, and `metrics.time_to_first_token_ms` from the non-stream body and from every SSE event (last valid value wins, like usage). Only finite non-negative numbers are kept (integers for counts); bools and strings such as `"Indeterminate"` are ignored, and a parsing error never breaks proxying. Logic lives in `src/prefill.py`.
+- **Cached count** — `usage.prompt_tokens_details.cached_tokens`, else `timings.cache_n`; this also feeds `tokens.cached`.
+- **Sample priority** — per request: (a) `prompt_n ≥ 1` and `prompt_ms > 0` → `prompt_n` tokens over `prompt_ms`; (b) `usage.prompt_time > 0`; (c) `metrics.time_to_first_token_ms > 0`; (d) proxy TTFT (streaming only). (b)–(d) use `prompt − cached` tokens. Fewer than 1 token adds nothing. Only successful requests contribute.
+- **Learn per model** — user decision 2026-09-29 (Q1): each model remembers whether it has ever reported a cached count (either source). For (b)–(d), a missing count means 0 once the model has reported; before that the request is left out of Prompt t/s, Prompt total, and Prefill tok and counted in `skipped_unknown_cache`. (a) already excludes the cache. The state lives in the per-model stats and is never reset while running.
+- **Non-streaming** — user decision 2026-09-29 (Q2): included when (a)–(c) gives a server time. Aggregate interval: streaming `[max(start, first token − seconds), first token]`; non-streaming `[start, min(start + seconds, end)]`. The aggregate math is otherwise unchanged.
+- **First token** — only an event with generated output (non-empty `delta.content` / `reasoning_content` / `reasoning` / `tool_calls`, or completions `text`) marks it; role-only, empty-delta, usage-only, and prefill-progress events do not. This is the same test that counts live-rate chunks.
+- **JSON** — additive `rates.prompt_tps.server_timed_share` (server-timed ÷ all prefill tokens, `null` before any) and `rates.prompt_tps.skipped_unknown_cache` (count), per model and global. Other keys keep their meaning.
+
+### Limits
+- **Proxy TTFT is still the fallback** — SGLang reports no prefill time, and neither do vLLM without the metrics flag or llama.cpp/TabbyAPI when `prompt_ms` rounds to 0; those requests keep the TTFT-based number, which reads lower than the server's own.
+- **Server clocks differ** — vLLM's TTFT starts at scheduling (excludes queueing), TabbyAPI rounds `prompt_time` to 10 ms, so very short prompts can fall through to the next source.
+- **Proxy TTFT, TPOT, gen t/s, and the live rate** are unchanged except for the stricter first-token rule.
+
+### Page
+- **Tooltip** — the "Prompt t/s" column reads "Prompt processing speed; uses the server's own prefill time when available, else time to first token". No layout change.
+
+### Status
+- Implemented under P-20260929-01 with unit tests (`tests/test_prefill_timing.py`) and loopback-fake integration tests through the real proxy and switcher per backend (`tests/test_prefill_backends.py`). README lists the backend flags.
