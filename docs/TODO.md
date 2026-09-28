@@ -2,8 +2,9 @@
 
 ## Next
 
-- [P-20260925-05] Split `src/stats.py` (1532 LOC, 53 KB): move the embedded `STATS_HTML` page into its own module; also share the page CSS that `/control` copies from `/stats` (P-20260926-02)
-- [P-20260913-04] Split `tests/test_proxy.py` (1243 LOC) into focused test modules
+- [P-20260929-05] Split `docs/DECISIONS.md` (405 lines, 55 KB): move older sections (before P-20260925) to `docs/DECISIONS_ARCHIVE.md` and link it
+- [P-20260925-05] Split `src/stats.py` (1667 LOC, 59 KB): move the embedded `STATS_HTML` page into its own module; also share the page CSS that `/control` copies from `/stats` (P-20260926-02)
+- [P-20260913-04] Split `tests/test_proxy.py` (1315 LOC) into focused test modules
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to README
 - [P-20260826-03] Remove stray blank line before `handle.stopped` in `stop_process` (deferred P2 from P-20260826-01 audit)
@@ -11,7 +12,7 @@
 ## Discovered
 
 - [P-20260929-04] Generation speed (P-20260929-03) review minors: server time longer than wall time clamps the aggregate interval; a later 0/0 `timings.predicted_*` pair overwrites an earlier one; completion_time/generation_time may pair with usage from another event; n>1 buffered streams pass the 2-chunk guard; not checked on real servers (see `artifacts/P-20260929-03/plan.md`)
-- [P-20260929-02] Prompt speed (P-20260929-01) not checked against real llama.cpp/vLLM/SGLang/TabbyAPI servers; review minors: timings prompt_n/prompt_ms not strictly paired, function_call/refusal-only streams lose TTFT, pre-existing `_extract_usage` misses UnicodeDecodeError (see `artifacts/P-20260929-01/plan.md`)
+- [P-20260929-02] Prompt speed (P-20260929-01) not checked against real llama.cpp/vLLM/SGLang/TabbyAPI servers; review minors: function_call/refusal-only streams lose TTFT, pre-existing `_extract_usage` misses UnicodeDecodeError (see `artifacts/P-20260929-01/plan.md`)
 - [P-20260927-02] TabbyAPI support not yet smoke-tested on a real TabbyAPI server/GPU (README § TabbyAPI manual check); review minors: zero-output `prompt_progress`+finish chunk skips one TTFT sample, FORCE_COLOR defeats level parsing (see `artifacts/P-20260927-01/plan.md`)
 - [P-20260926-05] Live gen t/s tile drops to `–` during prompt processing and between an agent's requests (decode counts as active only after the first token), so it can flicker with 5 s polling; user kept this behaviour for now (see `artifacts/P-20260926-04/plan.md`, review finding 2)
 - [P-20260926-03] Stats table overflows at 80rem when a long model name and a 7-digit request count coincide (12 columns since P-20260926-01); it scrolls sideways and clips Prefill tok (see `artifacts/P-20260926-01/outputs/light-bignum.png`)
@@ -21,8 +22,8 @@
 
 ## Done
 
-- [P-20260929-03] Use server-measured generation time (llama.cpp/TabbyAPI timings, TabbyAPI completion_time, vLLM generation_time_ms); count non-streaming requests; skip single-chunk buffered streams without server timing — DONE 2026-09-29
-- [P-20260929-01] Use server-measured prompt time and cached counts for prompt t/s (llama.cpp, vLLM, SGLang, TabbyAPI); learn-per-model unknown-cache rule; first token needs real output — DONE 2026-09-29
+- [P-20260929-03] Use server-measured generation time (llama.cpp/TabbyAPI timings, TabbyAPI completion_time, vLLM generation_time_ms); count non-streaming requests; skip single-chunk buffered streams without server timing — DONE 2026-09-28 23:51 UTC
+- [P-20260929-01] Use server-measured prompt time and cached counts for prompt t/s (llama.cpp, vLLM, SGLang, TabbyAPI); learn-per-model unknown-cache rule; first token needs real output — DONE 2026-09-28 23:30 UTC
 - [P-20260927-01] Add TabbyAPI backend compatibility — DONE 2026-09-27 14:34 UTC
 - [P-20260926-04] Fix live generation rate undercount (busy-time denominator, tokens-per-chunk calibration, 15 s live window) — DONE 2026-09-26 11:10 UTC
 - [P-20260926-02] Make the /control page match the /stats dashboard and link to /stats — DONE 2026-09-26 09:14 UTC
