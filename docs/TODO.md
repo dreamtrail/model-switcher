@@ -2,8 +2,8 @@
 
 ## Next
 
-- [P-20260929-05] Split `docs/DECISIONS.md` (405 lines, 55 KB): move older sections (before P-20260925) to `docs/DECISIONS_ARCHIVE.md` and link it
-- [P-20260925-05] Split `src/stats.py` (1667 LOC, 59 KB): move the embedded `STATS_HTML` page into its own module; also share the page CSS that `/control` copies from `/stats` (P-20260926-02)
+- [P-20260929-05] Split `docs/DECISIONS.md` (416 lines, 57 KB): move older sections (before P-20260925) to `docs/DECISIONS_ARCHIVE.md` and link it
+- [P-20260925-05] Split `src/stats.py` (1668 LOC, 59 KB): move the embedded `STATS_HTML` page into its own module; also share the page CSS that `/control` copies from `/stats` (P-20260926-02)
 - [P-20260913-04] Split `tests/test_proxy.py` (1315 LOC) into focused test modules
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to README
