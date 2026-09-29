@@ -43,6 +43,7 @@ class Outcome:
     """
 
     stream_error: bool = False
+    client_disconnect: bool = False  # client went away mid-stream
     bytes_out: int = 0
     prompt_tokens: int | None = None
     completion_tokens: int | None = None

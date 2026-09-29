@@ -659,6 +659,8 @@ class Swapper(_SwapperLifecycleMixin):
             if resp is None:
                 # Exception escaped the proxy call — no response produced.
                 ok, kind = False, "error"
+            elif outcome.client_disconnect:
+                ok, kind = False, "client_disconnect"
             elif outcome.stream_error:
                 ok, kind = False, "stream_error"
             elif resp.status >= 400:

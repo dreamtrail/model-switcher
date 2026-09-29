@@ -377,7 +377,7 @@ Model-switcher tracks runtime statistics in memory (reset on restart) and serves
 Metric semantics:
 
 - Counted requests are proxied requests plus rejected ones; `GET /v1/models`, `GET /models`, and the stats endpoints themselves are excluded.
-- Success means the final response status is below 400 with no mid-stream error. Failures are keyed by kind: rejection kinds (`"400"`, `"404"`, `"503"`, `"504"`), upstream statuses (`"500"`, `"502"`, ...), mid-stream SSE errors (`"stream_error"`), and exceptions (`"error"`). Null fields (`success_rate`, `latency_ms`, swap durations) mean "no data yet".
+- Success means the final response status is below 400 with no mid-stream error. Failures are keyed by kind: rejection kinds (`"400"`, `"404"`, `"503"`, `"504"`), upstream statuses (`"500"`, `"502"`, ...), mid-stream SSE errors (`"stream_error"`), client disconnects (`"client_disconnect"`: the client went away mid-stream; the upstream request is closed), and exceptions (`"error"`). Null fields (`success_rate`, `latency_ms`, swap durations) mean "no data yet".
 - Latency is the upstream round-trip only: it excludes swap-queue wait and model-load time, so a request that triggers a cold start or swap reports its post-load latency.
 - Swaps count every stop-then-start in the model manager, including same-model restarts and crash recovery; swap durations are recorded only when the swap completes with a healthy model.
 

@@ -387,6 +387,7 @@ async def stream_proxy(
     else:
         stream_timeout = client.timeout
 
+    prepared = False
     try:
         async with client.request(
             method=request.method,
@@ -415,11 +416,24 @@ async def stream_proxy(
                 headers=resp_headers,
             )
             await response.prepare(request)
+            prepared = True
 
+            # Client-write failures (client went away) and upstream-read
+            # failures are handled separately: after a failed client write
+            # the response is never touched again.
+            client_gone = False
+            bytes_sent = 0
             try:
                 buffer = b""
                 async for chunk in upstream_resp.content.iter_any():
-                    await response.write(chunk)
+                    try:
+                        await response.write(chunk)
+                    except OSError:
+                        # aiohttp ClientConnectionResetError / "Connection
+                        # lost" — both OSError subclasses.
+                        client_gone = True
+                        break
+                    bytes_sent += len(chunk)
                     if outcome is not None:
                         outcome.bytes_out += len(chunk)
                         # Line-buffered SSE parsing: chunks can split lines,
@@ -437,20 +451,43 @@ async def stream_proxy(
                     # Final line without trailing newline (defensive).
                     _process_sse_line(buffer, outcome)
             except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+                # Upstream read failure — tell the client in-band.
                 logger.error("Stream proxy error: %s", exc)
                 if outcome is not None:
                     outcome.stream_error = True
                 error_payload = json.dumps(
                     _openai_error(f"Upstream error: {exc}")
                 )
-                await response.write(
-                    f"data: {error_payload}\n\n".encode()
+                try:
+                    await response.write(
+                        f"data: {error_payload}\n\n".encode()
+                    )
+                except OSError:
+                    client_gone = True
+
+            if client_gone:
+                # Leaving the ``async with`` closes the upstream response,
+                # so the engine sees the disconnect.
+                if outcome is not None:
+                    outcome.client_disconnect = True
+                logger.warning(
+                    "Client disconnected during stream (%d bytes sent)",
+                    bytes_sent,
                 )
-            finally:
-                await response.write_eof()
+            else:
+                try:
+                    await response.write_eof()
+                except OSError as exc:
+                    # Client left right at the end; nothing left to send.
+                    logger.debug("write_eof failed: %s", exc)
 
             return response
     except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+        if prepared:
+            # Headers already committed; a replacement response is
+            # impossible. Return the prepared stream as-is.
+            logger.error("Stream proxy error: %s", exc)
+            return response
         # Error before response.prepare() — safe to return json_response
         logger.error("Stream proxy error (pre-prepare): %s", exc)
         return web.json_response(

@@ -89,7 +89,7 @@
 - **Prefill excludes cached reads (P-20260924-01)** — pp work is uncached prompt only: `max(prompt − cached, 0)` when the backend reports `cached_tokens`, the full `prompt` otherwise. Fully-cached requests and clamped cumulative counts (`cached > prompt`) contribute zero work and no time, so cache-heavy workloads never dilute the average. `cache_hit_rate` keeps its no-clamping trust model; negative cached counts stay unclamped and can inflate prefill (exact counts as reported).
 - **Timing metrics are streaming-only** — TTFT (proxy start → first content event, percentiles) and TPOT (`decode_time/(completion_tokens−1)`, requires ≥2 completion tokens). Non-streaming requests contribute token counters only; no timing split is observable.
 - **Latency excludes queue wait and swap/model-load time** — measured around the proxy chokepoint only; documented as upstream-round-trip latency.
-- **Outcome classification**: success = final status < 400 with no mid-stream error; errors keyed by kind (`400`/`404`/`502`/`503`/`504`/`stream_error`/`error`); swap = any stop-then-start in `_ensure_model` incl. same-model restarts and crash recovery, duration only on successful health-readiness.
+- **Outcome classification**: success = final status < 400 with no mid-stream error; errors keyed by kind (`400`/`404`/`502`/`503`/`504`/`stream_error`/`client_disconnect`/`error`); swap = any stop-then-start in `_ensure_model` incl. same-model restarts and crash recovery, duration only on successful health-readiness.
 
 ## P-20260913-05 / P-20260914-01 — SSE Buffer Cap & Cache Hit Rate
 
@@ -403,3 +403,14 @@ chunk detection, and page layout from that section still apply.
 
 ### Status
 - Implemented under P-20260929-03 with unit tests (`tests/test_decode_timing.py`) and loopback-fake integration tests through the real proxy and switcher per backend (`tests/test_decode_backends.py`). README lists the backend flags. Earlier sections that say non-stream timing is unobservable are kept as history.
+
+## P-20260929-06 — Client disconnect handling
+
+### Why
+- The client path runs through three userspace relays; each one ACKs and buffers on its own, so a frozen client stays invisible to the switcher until every buffer fills (or never). A write deadline or `TCP_USER_TIMEOUT` cannot detect it, and a duration cap was declined because long operations would be cut. No new flag, deadline, ping, or cap.
+
+### What
+- **Clean stop** — a client write that fails (`OSError`, incl. aiohttp "Cannot write to closing transport" / "Connection lost") ends the stream loop at once; the response is never written again (no SSE error frame, no `write_eof`). Leaving the upstream `async with` closes the upstream request, so the engine sees the disconnect. One warning line: `Client disconnected during stream (N bytes sent)`.
+- **No replacement 502 after `prepare()`** — the prepared stream is always returned; the `(pre-prepare)` log label and 502 JSON happen only before `prepare()`.
+- **Upstream failures unchanged** — upstream read errors still log `Stream proxy error`, set `stream_error`, and send the SSE error frame; if that frame cannot be written, it counts as a client disconnect and is suppressed. Other `write_eof` connection errors are suppressed.
+- **Own error kind** — `client_disconnect` (checked before `stream_error`), per model and global.
