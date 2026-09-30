@@ -2,8 +2,9 @@
 
 ## Next
 
-- [P-20260929-05] Split `docs/DECISIONS.md` (416 lines, 57 KB): move older sections (before P-20260925) to `docs/DECISIONS_ARCHIVE.md` and link it
-- [P-20260925-05] Split `src/stats.py` (1668 LOC, 59 KB): move the embedded `STATS_HTML` page into its own module; also share the page CSS that `/control` copies from `/stats` (P-20260926-02)
+- [P-20260930-04] Split `tests/test_stats_page.py` (1056 LOC, 44 KB) into focused test modules
+- [P-20260929-05] Split `docs/DECISIONS.md` (496 lines, 68 KB): move older sections (before P-20260925) to `docs/DECISIONS_ARCHIVE.md` and link it
+- [P-20260925-05] Split `src/stats.py` (1874 LOC, 67 KB): move the embedded `STATS_HTML` page into its own module; also share the page CSS that `/control` copies from `/stats` (P-20260926-02)
 - [P-20260913-04] Split `tests/test_proxy.py` (1315 LOC) into focused test modules
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to README
@@ -11,6 +12,7 @@
 
 ## Discovered
 
+- [P-20260930-05] Stats tiles review minors (P-20260930-02/-03): hovering the Loads number shows the count title, not the tile explanation; no automated re-render test for the Loads tile; "100% of uptime" truncates at 1152–1199px; Loads/busy/time split not checked against real model servers (see `artifacts/P-20260930-02/plan.md`, `artifacts/P-20260930-03/plan.md`)
 - [P-20260929-07] Client disconnect before `prepare()` (while waiting for upstream headers) is still recorded as `502` with the "(pre-prepare)" label, not `client_disconnect`; also no switcher-side stall detection for relayed clients (see `artifacts/P-20260929-06/plan.md`)
 - [P-20260929-04] Generation speed (P-20260929-03) review minors: server time longer than wall time clamps the aggregate interval; a later 0/0 `timings.predicted_*` pair overwrites an earlier one; completion_time/generation_time may pair with usage from another event; n>1 buffered streams pass the 2-chunk guard; not checked on real servers (see `artifacts/P-20260929-03/plan.md`)
 - [P-20260929-02] Prompt speed (P-20260929-01) not checked against real llama.cpp/vLLM/SGLang/TabbyAPI servers; review minors: function_call/refusal-only streams lose TTFT, pre-existing `_extract_usage` misses UnicodeDecodeError (see `artifacts/P-20260929-01/plan.md`)
