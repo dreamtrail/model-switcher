@@ -456,6 +456,11 @@ class StatsCollector:
 
     def __init__(self) -> None:
         self._started_at = time.time()
+        # Monotonic start for the utilized-time share (immune to clock jumps).
+        self._started_monotonic = time.monotonic()
+        # Utilized time: union of periods with >= 1 request in flight.
+        self._busy_total = 0.0
+        self._busy_since: float | None = None
         self._total = 0
         self._success = 0
         self._errors: dict[str, int] = {}
@@ -692,6 +697,27 @@ class StatsCollector:
         """Update peak concurrency with the current in-flight count."""
         if n > self._peak_inflight:
             self._peak_inflight = n
+
+    def observe_busy(self, n: int) -> None:
+        """Track utilized time from the current in-flight request count.
+
+        A busy period starts on the 0 -> 1 edge and is accumulated on the
+        1 -> 0 edge, so overlapping requests count once.
+        """
+        if n > 0:
+            if self._busy_since is None:
+                self._busy_since = time.monotonic()
+        elif self._busy_since is not None:
+            self._busy_total += max(time.monotonic() - self._busy_since, 0.0)
+            self._busy_since = None
+
+    def _utilization_report(self, now_monotonic: float) -> dict:
+        busy = self._busy_total
+        if self._busy_since is not None:
+            busy += max(now_monotonic - self._busy_since, 0.0)
+        uptime = max(now_monotonic - self._started_monotonic, 0.0)
+        share = min(max(busy / uptime, 0.0), 1.0) if uptime > 0 else None
+        return {"busy_seconds": busy, "busy_share": share}
 
     def record_request_start(
         self, model: str, request_id: object, started_at: float,
@@ -1105,6 +1131,7 @@ class StatsCollector:
             },
             "swaps": swaps,
             "models": models,
+            "utilization": self._utilization_report(now_monotonic),
         }
 
 
@@ -1321,10 +1348,10 @@ STATS_HTML = """<!DOCTYPE html>
     <div id="kpi-swaps" class="value">–</div>
     <div id="kpi-swaps-sub" class="sub">–</div>
   </div>
-  <div class="card tile">
+  <div class="card tile" title="Time with at least one request in progress (including waiting for a model to load); overlapping requests count once">
     <div class="label">Uptime</div>
     <div id="kpi-uptime" class="value">–</div>
-    <div class="sub">since start</div>
+    <div id="kpi-uptime-sub" class="sub">since start</div>
   </div>
 </section>
 <section class="card section">
@@ -1416,6 +1443,18 @@ function fmtUptime(s) {
   return sec + "s";
 }
 
+function busyLines(u) {
+  u = obj(u);
+  const busy = u.busy_seconds;
+  const share = u.busy_share;
+  if (!isNum(busy) || busy < 0) return null;
+  const lines = ["busy " + fmtUptime(busy)];
+  if (isNum(share) && share >= 0 && share <= 1) {
+    lines.push(fmtPct(share) + " of uptime");
+  }
+  return lines;
+}
+
 function fmtSeconds(ms) {
   return isNum(ms) ? (ms / 1000).toFixed(1) + " s" : DASH;
 }
@@ -1491,6 +1530,14 @@ function renderTiles(data) {
   setText("kpi-swaps-sub", "avg " + fmtSeconds(swaps.avg_ms));
 
   setText("kpi-uptime", fmtUptime(data.uptime_seconds));
+  const uptimeSub = byId("kpi-uptime-sub");
+  if (uptimeSub) {
+    const lines = busyLines(data.utilization);
+    uptimeSub.textContent = lines ? "" : "since start";
+    for (const line of lines || []) {
+      uptimeSub.appendChild(el("span", "line", line));
+    }
+  }
 }
 
 function rowCells(name, req) {

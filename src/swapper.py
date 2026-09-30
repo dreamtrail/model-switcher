@@ -94,6 +94,9 @@ class Swapper(_SwapperLifecycleMixin):
         self._idle_timer_expired = False
         self._idle_generation = 0
         self._active_requests = 0
+        # Requests in flight from validation to finish, including queue and
+        # model-load wait (utilized time); "Active now" stays separate.
+        self._busy_requests = 0
         self._temp_dir: Path | None = None
 
         # Create temp dir for rewritten script copies
@@ -443,12 +446,16 @@ class Swapper(_SwapperLifecycleMixin):
                     handle = None
 
             if handle is not None:
-                return await self._proxy_with_recorded_activity(
-                    request,
-                    active_model,
-                    body,
-                    handle,
-                )
+                self._begin_busy()
+                try:
+                    return await self._proxy_with_recorded_activity(
+                        request,
+                        active_model,
+                        body,
+                        handle,
+                    )
+                finally:
+                    self._end_busy()
             self.stats.record_rejection("400")
             return web.json_response(
                 _openai_error(
@@ -465,15 +472,20 @@ class Swapper(_SwapperLifecycleMixin):
                 status=404,
             )
 
-        outcome = await self._acquire_model(model_name, automatic=True)
-        if outcome.kind != "success" or outcome.handle is None:
-            if outcome.kind == "success":
-                outcome = _LoadOutcome("model_start_failed")
-            return self._response_for_outcome(outcome, model_name)
-        self._begin_activity()
-        return await self._proxy_with_recorded_activity(
-            request, model_name, body, outcome.handle
-        )
+        # Busy from here: queue and model-load wait count as utilized time.
+        self._begin_busy()
+        try:
+            outcome = await self._acquire_model(model_name, automatic=True)
+            if outcome.kind != "success" or outcome.handle is None:
+                if outcome.kind == "success":
+                    outcome = _LoadOutcome("model_start_failed")
+                return self._response_for_outcome(outcome, model_name)
+            self._begin_activity()
+            return await self._proxy_with_recorded_activity(
+                request, model_name, body, outcome.handle
+            )
+        finally:
+            self._end_busy()
 
     async def _acquire_model(
         self, model_name: str, *, automatic: bool
@@ -617,6 +629,16 @@ class Swapper(_SwapperLifecycleMixin):
         self._idle_generation += 1
         self._cancel_idle_timer()
         self.stats.observe_inflight(self._active_requests)
+
+    def _begin_busy(self) -> None:
+        """Count a validated request as in flight for utilized time."""
+        self._busy_requests += 1
+        self.stats.observe_busy(self._busy_requests)
+
+    def _end_busy(self) -> None:
+        """Release a request counted by _begin_busy (exactly once)."""
+        self._busy_requests -= 1
+        self.stats.observe_busy(self._busy_requests)
 
     def _end_activity(self) -> None:
         """Mark a model request complete and arm idle unload if needed."""

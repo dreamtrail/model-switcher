@@ -44,6 +44,7 @@ FULL = {
     },
     "throughput": {"last_60s": 7, "last_300s": 20, "avg_rpm": 1.2},
     "swaps": {"count": 12, "avg_ms": 38210.0, "p95_ms": 50000.0, "max_ms": 51000.0},
+    "utilization": {"busy_seconds": 3845.2, "busy_share": 0.3338},
     "models": {
         "llama-3.1-8b": {
             "starts": 3,
@@ -116,6 +117,7 @@ FRESH = {
     },
     "throughput": {"last_60s": 0, "last_300s": 0, "avg_rpm": 0.0},
     "swaps": {"count": 0, "avg_ms": None, "p95_ms": None, "max_ms": None},
+    "utilization": {"busy_seconds": 0.0, "busy_share": 0.0},
     "models": {},
 }
 
@@ -380,6 +382,7 @@ class TestStatsPageRendering:
         assert _text(page, "kpi-swaps") == "12"
         assert _text(page, "kpi-swaps-sub") == "avg 38.2 s"
         assert _text(page, "kpi-uptime") == "3h 12m"
+        assert _lines(page, "kpi-uptime-sub") == ["busy 1h 4m", "33% of uptime"]
 
     def test_full_data_renders_models_table_with_pill_and_totals(self):
         page = _render(FULL)
@@ -478,6 +481,7 @@ class TestStatsPageRendering:
         assert _text(page, "kpi-swaps") == "0"
         assert _text(page, "kpi-swaps-sub") == "avg –"
         assert _text(page, "kpi-uptime") == "5s"
+        assert _lines(page, "kpi-uptime-sub") == ["busy 0s", "0% of uptime"]
 
         assert _rows(page) == []
         totals = _rows(page, "totals")

@@ -81,6 +81,8 @@ class TestStatsEndpoints:
                     "count": 0, "avg_ms": None, "p95_ms": None, "max_ms": None
                 }
                 assert data["models"] == {}
+                assert data["utilization"]["busy_seconds"] == 0.0
+                assert 0.0 <= data["utilization"]["busy_share"] <= 1.0
 
     async def test_stats_endpoints_shadow_upstream(self, monkeypatch):
         """AC1: upstream serving /stats never gets hit — intercept is local."""

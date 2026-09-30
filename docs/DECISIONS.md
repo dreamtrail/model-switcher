@@ -439,3 +439,29 @@ chunk detection, and page layout from that section still apply.
 
 ### Status
 - Implemented under P-20260930-01 with collector tests (`tests/test_stats_time_split.py`), JSON shape tests, and page tests (`tests/test_stats_page.py`). README describes the column and `time_split`.
+
+## P-20260930-02 — Utilized (busy) time
+
+### Why
+- **Uptime alone hides load** — user request 2026-09-30: next to Uptime, show how long the server was actually working.
+- **Existing busy times do not fit** — the prefill/decode busy times behind **Gen total** / **Prompt total** are per model, skip ineligible requests, and publish late, so they are not one union of "working" time.
+
+### Definition
+- **Any request active** (user choice 2026-09-30) — wall-clock time with at least one request in flight, from arrival to finish, including waiting in the queue and waiting for a model to load. Overlapping requests count once.
+- **Counter** — `Swapper._busy_requests`, separate from `_active_requests` ("Active now" is unchanged and still starts after model acquisition). `handle_request` increments it after the 400/404 checks (including a no-model request routed to the running model) and before `_acquire_model`, and releases it in a `try/finally` around acquisition and proxying, so success, upstream errors, rejections (queue full, switch in progress, start failure, timeout), exceptions, cancellation, and client disconnect all release it exactly once.
+- **Timer** — `StatsCollector.observe_busy(n)` on `time.monotonic()`: the 0 → 1 edge remembers the start, the 1 → 0 edge adds the period to the total; a snapshot adds the running period.
+- **JSON** — additive top-level `utilization = {"busy_seconds": float, "busy_share": float|null}`. `busy_share = busy_seconds ÷ uptime`, where uptime for this ratio uses a monotonic start, clamped to 0–1, `null` when that uptime is 0. Other keys and values are unchanged.
+
+### Limits
+- **Includes waiting** — queue wait and model-load wait count as busy, so a slow load with a waiting request shows as busy time.
+- **Loads without a request** — a model load with no waiting request (for example a manual load from the control panel) does not count.
+- **Rejections before validation** — malformed requests (`400`) and unknown models (`404`) do not count.
+- **No-model requests behind a control action** — a request without a model name that waits on the swapper lock behind a control-panel load or unload is not counted during that wait; counting starts only after the 400 check finds a running model.
+- **Not GPU time** — it is request time; a busy server may still have idle GPU time (for example while waiting for the client).
+- **In memory** — like the other stats, it resets on restart.
+
+### Page
+- **Uptime tile sub-line** — the static "since start" sub-line now shows two stacked lines like the Requests tile: "busy <time>" (same duration format as the uptime) and "<N>% of uptime" (whole-number percent; this line is left out when the share is `null` or invalid). Two lines avoid a wrap mid-value at 1280px (review 2026-09-30). It falls back to "since start" when `utilization` is missing or malformed. The tile tooltip explains the definition. No new tile; the tile count and grid are unchanged.
+
+### Status
+- Implemented under P-20260930-02 with collector, swapper, and page tests (`tests/test_stats_utilization.py`) and updated key-set/fixture tests. README describes the sub-line and `utilization`.

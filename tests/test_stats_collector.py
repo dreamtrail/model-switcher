@@ -171,7 +171,7 @@ class TestStatsCollector:
 
         assert set(snap) == {
             "uptime_seconds", "current_model", "concurrency", "requests",
-            "throughput", "swaps", "models",
+            "throughput", "swaps", "models", "utilization",
         }
         assert snap["current_model"] == "llama"
         assert snap["uptime_seconds"] >= 0.0
