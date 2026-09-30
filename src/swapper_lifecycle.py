@@ -8,6 +8,7 @@ import time
 from contextlib import suppress
 from dataclasses import dataclass
 
+from src.config import ModelConfig
 from src.port_rewrite import cleanup_temp_dir, rewrite_command
 from src.process_manager import ProcessHandle, ProcessStopError, is_running
 from src.shutdown_hook import run_shutdown_hook
@@ -247,6 +248,7 @@ class _SwapperLifecycleMixin:
             raise ValueError(f"Unknown model: {model_name}")
 
         swap_started: float | None = None
+        stop_s: float | None = None
         if self._current:
             self._idle_generation += 1
             self._cancel_idle_timer()
@@ -260,8 +262,69 @@ class _SwapperLifecycleMixin:
                 )
             except ProcessStopError as exc:
                 raise _CleanupFailed from exc
+            stop_s = time.monotonic() - swap_started
             self._raise_for_intent(generation, managed=managed)
 
+        # One load = one start attempt (process start -> healthy).  Every
+        # exit from here records exactly one outcome for this attempt; the
+        # record is local to this frame, so nothing can leak or repeat.
+        load_started = time.monotonic()
+        try:
+            handle = await self._start_until_healthy(
+                model_name, mc, generation, managed
+            )
+        except BaseException as exc:
+            bucket, kind = self._load_failure_kind(exc)
+            self.stats.record_load_outcome(model_name, bucket, kind)
+            raise
+
+        self._healthy = True
+        self.stats.record_load(
+            model_name,
+            time.monotonic() - load_started,
+            stop_s=stop_s,
+            swap=swap_started is not None,
+        )
+        if swap_started is not None:
+            self.stats.record_swap(time.monotonic() - swap_started)
+        return handle
+
+    def _load_failure_kind(self, exc: BaseException) -> tuple[str, str]:
+        """Map the exception ending a started load to (bucket, kind).
+
+        Kinds mirror the owner outcome mapping in Swapper._acquire_model
+        and _finish_cancelled_owner (bucket "failed" or "abandoned").
+        """
+        if isinstance(exc, _SwapSuperseded):
+            return "abandoned", "swap_superseded"
+        if isinstance(exc, _ShuttingDown):
+            return "abandoned", "shutting_down"
+        if isinstance(exc, _CleanupFailed):
+            return "failed", "process_cleanup_failed"
+        if isinstance(exc, TimeoutError):
+            return "failed", "swap_timeout"
+        if isinstance(exc, asyncio.CancelledError):
+            # Read (not consume) the outcome the cancel path published.
+            outcome = self._cancelled_owner_outcome
+            if outcome is not None:
+                kind = outcome.kind
+            elif self._current is not None and not self._healthy:
+                kind = "process_cleanup_failed"
+            else:
+                kind = "cancelled"
+            if kind in ("model_start_failed", "process_cleanup_failed"):
+                return "failed", kind
+            return "abandoned", kind
+        return "failed", "model_start_failed"
+
+    async def _start_until_healthy(
+        self,
+        model_name: str,
+        mc: ModelConfig,
+        generation: int,
+        managed: bool,
+    ) -> ProcessHandle:
+        """Start the model process and wait until its health check passes."""
         logger.info("Starting model %s", model_name)
         handle = await self._start_tracked(
             model_name,
@@ -355,9 +418,6 @@ class _SwapperLifecycleMixin:
             )
             raise
 
-        self._healthy = True
-        if swap_started is not None:
-            self.stats.record_swap(time.monotonic() - swap_started)
         return handle
 
     def _schedule_idle_timer(self) -> None:

@@ -117,12 +117,60 @@ class _AggregateTotals:
         }
 
 
+def _duration_report(samples: list[float]) -> dict:
+    """count/avg/p95/max in milliseconds; null stats when there are none."""
+    if not samples:
+        return {"count": 0, "avg_ms": None, "p95_ms": None, "max_ms": None}
+    ordered = sorted(samples)
+    count = len(ordered)
+    return {
+        "count": count,
+        "avg_ms": sum(ordered) / count * 1000.0,
+        "p95_ms": _percentile(ordered, 0.95) * 1000.0,
+        "max_ms": ordered[-1] * 1000.0,
+    }
+
+
+@dataclass
+class _LoadStats:
+    """Model loads: one process start attempt each (start -> healthy)."""
+
+    durations: list[float] = field(default_factory=list)  # successful, s
+    stop_durations: list[float] = field(default_factory=list)  # old model, s
+    swaps: int = 0  # successful loads that stopped a previous model first
+    failed: dict[str, int] = field(default_factory=dict)
+    abandoned: dict[str, int] = field(default_factory=dict)
+
+    def record(
+        self, load_s: float, stop_s: float | None, swap: bool,
+    ) -> None:
+        self.durations.append(load_s)
+        if stop_s is not None:
+            self.stop_durations.append(stop_s)
+        if swap:
+            self.swaps += 1
+
+    def record_outcome(self, bucket: str, kind: str) -> None:
+        counts = self.failed if bucket == "failed" else self.abandoned
+        counts[kind] = counts.get(kind, 0) + 1
+
+    def report(self) -> dict:
+        return {
+            **_duration_report(self.durations),
+            "swaps": self.swaps,
+            "stop": _duration_report(self.stop_durations),
+            "failed": dict(self.failed),
+            "abandoned": dict(self.abandoned),
+        }
+
+
 @dataclass
 class _ModelStats:
     """Per-model counters and samples."""
 
     starts: int = 0
     stops: int = 0
+    loads: _LoadStats = field(default_factory=_LoadStats)
     total: int = 0
     success: int = 0
     errors: dict[str, int] = field(default_factory=dict)
@@ -488,6 +536,7 @@ class StatsCollector:
         self.paired_requests = 0
         self.token_events: deque[tuple[float, int]] = deque()
         self._swap_durations: list[float] = []  # seconds
+        self._loads = _LoadStats()
         self._peak_inflight = 0
         self._models: dict[str, _ModelStats] = {}
 
@@ -684,6 +733,30 @@ class StatsCollector:
     def record_swap(self, duration_s: float) -> None:
         """Record a completed swap (stop-then-start through healthy)."""
         self._swap_durations.append(duration_s)
+
+    def record_load(
+        self,
+        model: str,
+        load_s: float,
+        *,
+        stop_s: float | None = None,
+        swap: bool = False,
+    ) -> None:
+        """Record a successful load: process start until healthy.
+
+        stop_s is the time spent stopping the previous model for this load
+        (hook + kill), kept apart from load_s; swap marks such loads.
+        """
+        self._loads.record(load_s, stop_s, swap)
+        self._model(model).loads.record(load_s, stop_s, swap)
+
+    def record_load_outcome(self, model: str, bucket: str, kind: str) -> None:
+        """Count a started load that did not become healthy.
+
+        bucket is "failed" or "abandoned"; kind is the outcome name.
+        """
+        self._loads.record_outcome(bucket, kind)
+        self._model(model).loads.record_outcome(bucket, kind)
 
     def record_model_start(self, model: str) -> None:
         """Record that a model process was started."""
@@ -1031,6 +1104,7 @@ class StatsCollector:
             name: {
                 "starts": ms.starts,
                 "stops": ms.stops,
+                "loads": ms.loads.report(),
                 "requests": _requests_report(
                     ms.total,
                     ms.success,
@@ -1130,6 +1204,7 @@ class StatsCollector:
                 "avg_rpm": (self._total / (uptime / 60.0)) if uptime > 0 else 0.0,
             },
             "swaps": swaps,
+            "loads": self._loads.report(),
             "models": models,
             "utilization": self._utilization_report(now_monotonic),
         }
@@ -1343,10 +1418,10 @@ STATS_HTML = """<!DOCTYPE html>
     <div id="kpi-active" class="value">–</div>
     <div id="kpi-active-sub" class="sub">–</div>
   </div>
-  <div class="card tile">
-    <div class="label">Swaps</div>
-    <div id="kpi-swaps" class="value">–</div>
-    <div id="kpi-swaps-sub" class="sub">–</div>
+  <div id="kpi-loads-tile" class="card tile" title="Model loads: process start until the health check passes.">
+    <div class="label">Loads</div>
+    <div id="kpi-loads" class="value">–</div>
+    <div id="kpi-loads-sub" class="sub">–</div>
   </div>
   <div class="card tile" title="Time with at least one request in progress (including waiting for a model to load); overlapping requests count once">
     <div class="label">Uptime</div>
@@ -1459,6 +1534,44 @@ function fmtSeconds(ms) {
   return isNum(ms) ? (ms / 1000).toFixed(1) + " s" : DASH;
 }
 
+function countSum(counts) {
+  counts = obj(counts);
+  let total = 0;
+  for (const v of Object.values(counts)) {
+    if (isNum(v) && v > 0) total += v;
+  }
+  return total;
+}
+
+function loadLines(loads) {
+  loads = obj(loads);
+  const lines = ["avg " + fmtSeconds(loads.avg_ms)];
+  const failed = countSum(loads.failed);
+  // Failures win the second line; the tooltip carries both numbers.
+  if (failed > 0) {
+    lines.push(fmtInt(failed) + " failed");
+  } else if (isNum(loads.swaps) && loads.swaps > 0) {
+    lines.push(fmtInt(loads.swaps) + (loads.swaps === 1 ? " swap" : " swaps"));
+  }
+  return lines;
+}
+
+function loadTooltip(loads) {
+  loads = obj(loads);
+  const parts = ["Model loads: process start until the health check passes."];
+  if (isNum(loads.swaps) && loads.swaps > 0) {
+    parts.push("Swaps: " + fmtInt(loads.swaps) + ".");
+  }
+  const failed = countSum(loads.failed);
+  if (failed > 0) parts.push("Failed: " + fmtInt(failed) + ".");
+  const stop = obj(loads.stop);
+  if (isNum(stop.count) && stop.count > 0 && isNum(stop.avg_ms)) {
+    parts.push("Avg stop of the previous model: " + fmtSeconds(stop.avg_ms) +
+      " (not included in the average).");
+  }
+  return parts.join(" ");
+}
+
 function byId(id) {
   return document.getElementById(id);
 }
@@ -1492,7 +1605,7 @@ function renderTiles(data) {
   const current = currentName(data);
   const req = obj(data.requests);
   const conc = obj(data.concurrency);
-  const swaps = obj(data.swaps);
+  const loads = obj(data.loads);
   const thr = obj(data.throughput);
 
   const model = setText("kpi-model", current == null ? "None" : current);
@@ -1526,8 +1639,16 @@ function renderTiles(data) {
   setCount("kpi-active", conc.active);
   setText("kpi-active-sub", "peak " + fmtInt(conc.peak));
 
-  setCount("kpi-swaps", swaps.count);
-  setText("kpi-swaps-sub", "avg " + fmtSeconds(swaps.avg_ms));
+  setCount("kpi-loads", loads.count);
+  const loadsSub = byId("kpi-loads-sub");
+  if (loadsSub) {
+    loadsSub.textContent = "";
+    for (const line of loadLines(loads)) {
+      loadsSub.appendChild(el("span", "line", line));
+    }
+  }
+  const loadsTile = byId("kpi-loads-tile");
+  if (loadsTile) loadsTile.title = loadTooltip(loads);
 
   setText("kpi-uptime", fmtUptime(data.uptime_seconds));
   const uptimeSub = byId("kpi-uptime-sub");

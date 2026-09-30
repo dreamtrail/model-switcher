@@ -23,6 +23,7 @@
 
 ## Done
 
+- [P-20260930-03] Count and time every model load (Loads tile, `loads` JSON); `swaps` kept — DONE 2026-09-30 01:44 UTC
 - [P-20260930-02] Add utilized (busy) time to the Uptime tile and `utilization` JSON — DONE 2026-09-30 01:07 UTC
 - [P-20260930-01] Add prompt vs generation time split (Prompt share column, `time_split` JSON); remove cache hit meter — DONE 2026-09-30 00:38 UTC
 - [P-20260929-06] Handle client disconnect during streams: no error frame or replacement 502 after prepare, correct log label, `client_disconnect` error kind — DONE 2026-09-29 14:15 UTC

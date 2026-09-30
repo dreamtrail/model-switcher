@@ -171,7 +171,7 @@ class TestStatsCollector:
 
         assert set(snap) == {
             "uptime_seconds", "current_model", "concurrency", "requests",
-            "throughput", "swaps", "models", "utilization",
+            "throughput", "swaps", "loads", "models", "utilization",
         }
         assert snap["current_model"] == "llama"
         assert snap["uptime_seconds"] >= 0.0
@@ -218,6 +218,12 @@ class TestStatsCollector:
             "last_60s": 0, "last_300s": 0, "avg_rpm": 0.0,
         }
         assert snap["swaps"]["count"] == 0
+        assert snap["loads"] == {
+            "count": 0, "avg_ms": None, "p95_ms": None, "max_ms": None,
+            "swaps": 0,
+            "stop": {"count": 0, "avg_ms": None, "p95_ms": None, "max_ms": None},
+            "failed": {}, "abandoned": {},
+        }
         assert snap["models"] == {}
 
     def test_latency_report_known_samples(self):

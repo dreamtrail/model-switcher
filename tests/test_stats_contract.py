@@ -80,6 +80,15 @@ class TestStatsEndpoints:
                 assert data["swaps"] == {
                     "count": 0, "avg_ms": None, "p95_ms": None, "max_ms": None
                 }
+                assert data["loads"] == {
+                    "count": 0, "avg_ms": None, "p95_ms": None,
+                    "max_ms": None, "swaps": 0,
+                    "stop": {
+                        "count": 0, "avg_ms": None, "p95_ms": None,
+                        "max_ms": None,
+                    },
+                    "failed": {}, "abandoned": {},
+                }
                 assert data["models"] == {}
                 assert data["utilization"]["busy_seconds"] == 0.0
                 assert 0.0 <= data["utilization"]["busy_share"] <= 1.0

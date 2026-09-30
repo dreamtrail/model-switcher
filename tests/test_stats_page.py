@@ -44,6 +44,13 @@ FULL = {
     },
     "throughput": {"last_60s": 7, "last_300s": 20, "avg_rpm": 1.2},
     "swaps": {"count": 12, "avg_ms": 38210.0, "p95_ms": 50000.0, "max_ms": 51000.0},
+    "loads": {
+        "count": 15, "avg_ms": 41234.0, "p95_ms": 52000.0, "max_ms": 53000.0,
+        "swaps": 12,
+        "stop": {"count": 12, "avg_ms": 2345.0, "p95_ms": 4000.0, "max_ms": 4100.0},
+        "failed": {"swap_timeout": 1, "model_start_failed": 2},
+        "abandoned": {"swap_superseded": 4},
+    },
     "utilization": {"busy_seconds": 3845.2, "busy_share": 0.3338},
     "models": {
         "llama-3.1-8b": {
@@ -117,6 +124,12 @@ FRESH = {
     },
     "throughput": {"last_60s": 0, "last_300s": 0, "avg_rpm": 0.0},
     "swaps": {"count": 0, "avg_ms": None, "p95_ms": None, "max_ms": None},
+    "loads": {
+        "count": 0, "avg_ms": None, "p95_ms": None, "max_ms": None,
+        "swaps": 0,
+        "stop": {"count": 0, "avg_ms": None, "p95_ms": None, "max_ms": None},
+        "failed": {}, "abandoned": {},
+    },
     "utilization": {"busy_seconds": 0.0, "busy_share": 0.0},
     "models": {},
 }
@@ -379,8 +392,13 @@ class TestStatsPageRendering:
         assert _lines(page, "kpi-reqs-sub") == ["2 errors", "7 in last min"]
         assert _text(page, "kpi-active") == "1"
         assert _text(page, "kpi-active-sub") == "peak 4"
-        assert _text(page, "kpi-swaps") == "12"
-        assert _text(page, "kpi-swaps-sub") == "avg 38.2 s"
+        assert _text(page, "kpi-loads") == "15"
+        assert _lines(page, "kpi-loads-sub") == ["avg 41.2 s", "3 failed"]
+        assert page["kpi-loads-tile"]["title"] == (
+            "Model loads: process start until the health check passes."
+            " Swaps: 12. Failed: 3."
+            " Avg stop of the previous model: 2.3 s (not included in the average)."
+        )
         assert _text(page, "kpi-uptime") == "3h 12m"
         assert _lines(page, "kpi-uptime-sub") == ["busy 1h 4m", "33% of uptime"]
 
@@ -478,8 +496,11 @@ class TestStatsPageRendering:
         assert _lines(page, "kpi-reqs-sub") == ["0 errors", "0 in last min"]
         assert _text(page, "kpi-active") == "0"
         assert _text(page, "kpi-active-sub") == "peak 0"
-        assert _text(page, "kpi-swaps") == "0"
-        assert _text(page, "kpi-swaps-sub") == "avg –"
+        assert _text(page, "kpi-loads") == "0"
+        assert _lines(page, "kpi-loads-sub") == ["avg –"]
+        assert page["kpi-loads-tile"]["title"] == (
+            "Model loads: process start until the health check passes."
+        )
         assert _text(page, "kpi-uptime") == "5s"
         assert _lines(page, "kpi-uptime-sub") == ["busy 0s", "0% of uptime"]
 
@@ -502,6 +523,63 @@ class TestStatsPageRendering:
         assert len(page["kpi-reqs-sub"]["children"]) == 2
 
     @pytest.mark.parametrize(
+        ("loads", "lines"),
+        [
+            ({"count": 1, "avg_ms": 41234.0, "swaps": 0, "failed": {}},
+             ["avg 41.2 s"]),
+            ({"count": 2, "avg_ms": 900.0, "swaps": 1, "failed": {}},
+             ["avg 0.9 s", "1 swap"]),
+            ({"count": 4, "avg_ms": 1000.0, "swaps": 3, "failed": {}},
+             ["avg 1.0 s", "3 swaps"]),
+            ({"count": 0, "avg_ms": None, "swaps": 0,
+              "failed": {"model_start_failed": 1}},
+             ["avg –", "1 failed"]),
+            ({"count": 5, "avg_ms": 2000.0, "swaps": 3,
+              "failed": {"swap_timeout": 1, "model_start_failed": 1},
+              "abandoned": {"swap_superseded": 7}},
+             ["avg 2.0 s", "2 failed"]),
+            ({"count": 1, "avg_ms": 2000.0, "swaps": 0, "failed": {},
+              "abandoned": {"cancelled": 2}},
+             ["avg 2.0 s"]),
+        ],
+    )
+    def test_loads_sub_lines(self, loads, lines):
+        page = _render({"loads": loads})
+        assert _lines(page, "kpi-loads-sub") == lines
+        assert "·" not in lines[0]
+
+    @pytest.mark.parametrize(
+        ("loads", "extra"),
+        [
+            ({"count": 1, "swaps": 0, "failed": {},
+              "stop": {"count": 0, "avg_ms": None}}, ""),
+            ({"count": 2, "swaps": 1, "failed": {},
+              "stop": {"count": 1, "avg_ms": 12345.0}},
+             " Swaps: 1. Avg stop of the previous model: 12.3 s"
+             " (not included in the average)."),
+            ({"count": 0, "swaps": 0, "failed": {"swap_timeout": 2},
+              "stop": {"count": 0, "avg_ms": None}},
+             " Failed: 2."),
+            ({"count": 1, "swaps": "3", "failed": [],
+              "stop": {"count": 1, "avg_ms": float("nan")}}, ""),
+        ],
+    )
+    def test_loads_tooltip_lists_only_nonzero_parts(self, loads, extra):
+        base = "Model loads: process start until the health check passes."
+        payload = json.dumps({"loads": loads}, allow_nan=True)
+        page = _execute("render(" + payload + ");\n"
+                        "console.log(JSON.stringify(snapshotPage()));\n")
+        assert page["kpi-loads-tile"]["title"] == base + extra
+
+    def test_loads_tile_replaces_swaps_tile(self):
+        assert '<div class="label">Loads</div>' in STATS_HTML
+        assert '<div class="label">Swaps</div>' not in STATS_HTML
+        assert "kpi-swaps" not in STATS_HTML
+        ids = [item["id"] for item in _page_ids()]
+        assert ids.count("kpi-loads") == ids.count("kpi-loads-sub") == 1
+        assert STATS_HTML.count('class="card tile') == 7
+
+    @pytest.mark.parametrize(
         ("value", "shown", "title"),
         [
             (0, "0", "0"),
@@ -522,9 +600,9 @@ class TestStatsPageRendering:
         page = _render({
             "requests": {"total": value},
             "concurrency": {"active": value},
-            "swaps": {"count": value},
+            "loads": {"count": value},
         })
-        for ident in ("kpi-reqs", "kpi-active", "kpi-swaps"):
+        for ident in ("kpi-reqs", "kpi-active", "kpi-loads"):
             assert _text(page, ident) == shown, ident
             assert page[ident]["title"] == title, ident
 
@@ -533,11 +611,11 @@ class TestStatsPageRendering:
         payload = json.dumps({
             "requests": {"total": value},
             "concurrency": {"active": value},
-            "swaps": {"count": value},
+            "loads": {"count": value},
         }, allow_nan=True)
         page = _execute("render(" + payload + ");\n"
                         "console.log(JSON.stringify(snapshotPage()));\n")
-        for ident in ("kpi-reqs", "kpi-active", "kpi-swaps"):
+        for ident in ("kpi-reqs", "kpi-active", "kpi-loads"):
             assert _text(page, ident) == "–", ident
             assert page[ident]["title"] == "", ident
 
@@ -662,7 +740,7 @@ class TestStatsPageRendering:
         "data",
         [
             {},
-            {"models": None, "requests": None, "swaps": None, "concurrency": None},
+            {"models": None, "requests": None, "loads": None, "concurrency": None},
             {"models": [], "requests": [], "throughput": "x", "uptime_seconds": "5"},
             {"models": {"m": None, "n": {"requests": None}, "o": {"requests": {"rates": None, "tokens": 3}}}},
             {
@@ -678,7 +756,12 @@ class TestStatsPageRendering:
                 }}},
                 "requests": {"errors": {"x": "many", "y": None, "z": -1}, "failure": float("nan")},
                 "uptime_seconds": -3,
-                "swaps": {"count": "3", "avg_ms": float("-inf")},
+                "loads": {
+                    "count": "3", "avg_ms": float("-inf"), "swaps": "2",
+                    "stop": {"count": 1, "avg_ms": float("nan")},
+                    "failed": {"x": "many", "y": None, "z": -1},
+                    "abandoned": [],
+                },
             },
         ],
     )

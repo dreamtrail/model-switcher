@@ -465,3 +465,32 @@ chunk detection, and page layout from that section still apply.
 
 ### Status
 - Implemented under P-20260930-02 with collector, swapper, and page tests (`tests/test_stats_utilization.py`) and updated key-set/fixture tests. README describes the sub-line and `utilization`.
+
+## P-20260930-03 — Loads replace Swaps on the page
+
+### Why
+- **Swaps missed most loads** — user request 2026-09-30: the Swaps tile skipped the first load. `swaps` timed only successful stop-then-start loads, so cold starts, loads after an idle or manual unload, the final load of a superseded chain, and failed loads were not counted, and there were no per-model load times.
+
+### Definition
+- **Load** — one process start attempt in `_ensure_model`, whatever triggered it (request, control panel, cold start, after idle unload, swap, crash recovery). The already-healthy early return is not a load, and neither is a failure while stopping the previous model (before any start).
+- **Timing** — `load_s` runs from just before the process start until the health check passes (user choice 2026-09-30: the tile average is load only). When a previous model was stopped for this load, that stop (shutdown hook + process stop) is timed separately as `stop_s`, and the load counts as a swap.
+- **Outcomes** — a started load that does not become healthy is counted by kind and never timed: `failed` (`model_start_failed`, `swap_timeout`, `process_cleanup_failed`) or `abandoned` (`swap_superseded`, `shutting_down`, `cancelled`). Kind names follow the owner outcome mapping in `Swapper._acquire_model` and `_finish_cancelled_owner`.
+- **Recording point** — inside `_ensure_model`: the start → healthy part moved into `_start_until_healthy`, and its single call is wrapped in `try/except BaseException`. Success calls `StatsCollector.record_load`; any exception calls `record_load_outcome` with the mapped kind and is re-raised unchanged. The record is local to that call, so each attempt is counted exactly once and nothing is left pending; a waiter that takes over ownership and runs `_ensure_model` again either starts a new process (a new load) or hits the early return (not a load). For cancellation, the kind is read (not consumed) from the outcome the cancel path already published, with the same fallback `_finish_cancelled_owner` uses. This avoids touching the owner and cancellation code in `src/swapper.py`.
+- **JSON** — additive top-level `loads = {"count", "avg_ms", "p95_ms", "max_ms", "swaps", "stop": {"count", "avg_ms", "p95_ms", "max_ms"}, "failed": {kind: n}, "abandoned": {kind: n}}` (duration stats `null` when the count is 0, like `swaps`), and the same shape per model under `models[name].loads`. `swaps` keeps its meaning and numbers; globally `loads.swaps == swaps.count`.
+
+### Limits
+- **Crash recovery counts as a swap** — a restart of the same model after its process died stops the old handle first, so it counts as a swap with a stop time, the same as `swaps` always did.
+- **Stop time only for successful loads** — like `swaps`, `stop` and the swap count include only loads that became healthy; a stop before a failed or abandoned load is not timed.
+- **Kind from the load's own view** — the kind is what ended this load; the response a request finally gets can differ (for example, shutdown during a later cleanup of a different handle).
+- **Per-model entry on failure** — a failed load (including a control-panel load that fails to start) creates the model's per-model entry, so the model appears in `models` and as a page row with 0 requests.
+- **Unexpected exceptions** — an exception during the start that the owner mapping does not know is counted as `failed` / `model_start_failed`, while the request path still propagates the exception itself (the recording re-raises it unchanged).
+- **Stop, then supersede or shutdown before the start** — when a newer request or shutdown is noticed right after the previous model stopped but before the new process starts (`_raise_for_intent`), nothing was started, so it is not a load and that stop is not timed.
+- **In memory** — like the other stats, it resets on restart.
+
+### Page
+- **Loads tile** — the Swaps tile becomes "Loads" (`kpi-loads`, `kpi-loads-sub`, tile `kpi-loads-tile`): the load count, then two stacked lines like the Requests and Uptime tiles: "avg <s>" and a second line where failures win (user decision 2026-09-30): "<N> failed" (the sum of `failed`) when any load failed, otherwise "<N> swaps" ("1 swap") when swaps > 0; the line is left out when both are 0. Abandoned loads are not shown on the page. Same tile count and grid.
+- **Tooltip** — carries the full picture: "Model loads: process start until the health check passes. Swaps: N. Failed: N. Avg stop of the previous model: X s (not included in the average)." Each part after the first appears only when above 0 (the stop part only when a stop was timed).
+- **Width** — one short value per line, so both lines fit at 1280px (checked in headless Chrome up to "99,999 swaps" and "99,999 failed").
+
+### Status
+- Implemented under P-20260930-03 with swapper-level tests (`tests/test_stats_loads.py`), key-set and contract updates, and page tests (`tests/test_stats_page.py`). README describes the tile and `loads`.
