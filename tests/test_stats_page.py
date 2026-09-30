@@ -36,6 +36,11 @@ FULL = {
             },
         },
         "ttft_ms": {"p50": 180.2, "p95": 849.6},
+        "time_split": {
+            "prefill_s": 1234.56, "decode_s": 756.04,
+            "prefill_share": 0.6202, "generation_share": 0.3798,
+            "requests": 1398,
+        },
     },
     "throughput": {"last_60s": 7, "last_300s": 20, "avg_rpm": 1.2},
     "swaps": {"count": 12, "avg_ms": 38210.0, "p95_ms": 50000.0, "max_ms": 51000.0},
@@ -55,6 +60,11 @@ FULL = {
                     },
                 },
                 "ttft_ms": {"p50": 95.0, "p95": 310.4},
+                "time_split": {
+                    "prefill_s": 0.0, "decode_s": 0.0,
+                    "prefill_share": None, "generation_share": None,
+                    "requests": 0,
+                },
             },
         },
         "qwen3-32b": {
@@ -77,6 +87,11 @@ FULL = {
                     },
                 },
                 "ttft_ms": {"p50": 210.4, "p95": 890.0},
+                "time_split": {
+                    "prefill_s": 0.4, "decode_s": 1.6,
+                    "prefill_share": 0.2, "generation_share": 0.8,
+                    "requests": 1,
+                },
             },
         },
         "big": {"requests": {"total": 1000}},
@@ -250,9 +265,12 @@ def _classes(node) -> list[str]:
     return [child["className"] for child in node["children"]]
 
 
-def _meter(td):
-    meters = [c for c in td["children"] if c["className"] == "meter"]
-    return meters[0] if meters else None
+def _has_meter(td) -> bool:
+    """True when any descendant is the removed cache-rate meter bar."""
+    return any(
+        c["className"] in ("meter", "fill") or _has_meter(c)
+        for c in td["children"]
+    )
 
 
 def _lines(page, ident) -> list[str]:
@@ -288,20 +306,21 @@ class TestStatsPageStatic:
         assert '<p class="subtitle">Statistics · <a href="/control">Control panel</a></p>' in header
         assert ".subtitle a" in STATS_HTML
 
-    def test_table_has_the_twelve_compact_columns(self):
+    def test_table_has_the_thirteen_compact_columns(self):
         head = STATS_HTML.split("<thead>", 1)[1].split("</thead>", 1)[0]
         cells = re.findall(r"<th([^>]*)>([^<]*)</th>", head)
         assert [label for _, label in cells] == [
             "Model", "Reqs", "Errors", "Gen t/s", "Live t/s ≈", "Gen total",
-            "Prompt t/s", "Prompt total", "TTFT p50 / p95", "Cache",
-            "Gen tok", "Prefill tok",
+            "Prompt t/s", "Prompt total", "Prompt share", "TTFT p50 / p95",
+            "Cache", "Gen tok", "Prefill tok",
         ]
         tip = ' title="Combined speed while busy @ average concurrent requests"'
         live = ' title="Estimated combined speed while generating, last 15 s (streamed chunks × tokens per chunk)"'
         prompt = ' title="Prompt processing speed; uses the server\'s own prefill time when available, else time to first token"'
         gen = ' title="Generation speed; uses the server\'s own decode time when available, else first to last streamed chunk"'
+        share = ' title="Share of request time spent on prompt processing (the rest is generation); counts only requests where both times are known"'
         assert [attrs for attrs, _ in cells] == [
-            "", "", "", gen, live, tip, prompt, tip, "", "", "", "",
+            "", "", "", gen, live, tip, prompt, tip, share, "", "", "", "",
         ]
         assert "Best gen t/s" not in STATS_HTML
         assert '<tbody id="models"></tbody>' in STATS_HTML
@@ -313,16 +332,20 @@ class TestStatsPageStatic:
         for prop in (
             "--plane: #f9f9f7", "--surface: #fcfcfb", "--ink: #0b0b0b",
             "--ink-2: #52514e", "--muted: #898781", "--hairline: #e1e0d9",
-            "--baseline: #c3c2b7", "--accent: #2a78d6", "--track: #b7d3f6",
+            "--baseline: #c3c2b7", "--accent: #2a78d6",
             "--good: #0ca30c", "--serious: #ec835a", "--critical: #d03b3b",
         ):
             assert prop in light
         for prop in (
             "--plane: #0d0d0d", "--surface: #1a1a19", "--ink: #ffffff",
             "--ink-2: #c3c2b7", "--hairline: #2c2c2a", "--baseline: #383835",
-            "--accent: #3987e5", "--track: #184f95",
+            "--accent: #3987e5",
         ):
             assert prop in dark
+        # The cache hit-rate meter and its track colour are gone.
+        assert "--track" not in style
+        assert ".meter" not in style
+        assert ".pct" not in style
         # Tabular figures only in the table; stat tiles use proportional ones.
         assert "font-variant-numeric: tabular-nums" in style
         assert "font-variant-numeric: proportional-nums" in style
@@ -374,35 +397,40 @@ class TestStatsPageRendering:
 
         assert _cells(rows[0]) == [
             "qwen3-32b", "312", "2", "42.1", "38.3", "85.3 @2.4", "1,830", "2,140 @1.0",
-            "210 / 890 ms", "64%", "45.2K", "9,876",
+            "20%", "210 / 890 ms", "64%", "45.2K", "9,876",
         ]
         assert _cells(rows[3]) == [
             "llama-3.1-8b", "88", "0", "96.4", "–", "–", "4,120", "–",
-            "95 / 310 ms", "31%", "0", "0",
+            "–", "95 / 310 ms", "31%", "0", "0",
         ]
         assert _cells(rows[1]) == [
-            "big", "1,000", "–", "–", "–", "–", "–", "–", "–", "–", "–", "–",
+            "big", "1,000", "–", "–", "–", "–", "–", "–", "–", "–", "–", "–", "–",
         ]
         # Token counts compact like the tiles, full value on hover.
-        assert rows[0]["children"][10]["title"] == "45,210"
-        assert rows[0]["children"][11]["title"] == "9,876"
-        assert rows[1]["children"][10]["title"] == ""
-        assert rows[1]["children"][10]["className"] == "muted"
+        assert rows[0]["children"][11]["title"] == "45,210"
+        assert rows[0]["children"][12]["title"] == "9,876"
+        assert rows[1]["children"][11]["title"] == ""
+        assert rows[1]["children"][11]["className"] == "muted"
+        # Prompt share: percentage, seconds on hover; muted dash when null.
+        assert rows[0]["children"][8]["title"] == (
+            "Prompt 0.4 s · Gen 1.6 s over 1 request"
+        )
+        assert rows[0]["children"][8]["className"] == ""
+        assert rows[3]["children"][8]["title"] == ""
+        assert rows[3]["children"][8]["className"] == "muted"
+        assert rows[1]["children"][8]["title"] == ""
 
         # Errors: critical dot only when > 0; zero is muted.
         assert _classes(rows[0]["children"][2]) == ["dot critical", ""]
         assert _classes(rows[3]["children"][2]) == ["muted"]
         # TTFT: numbers in primary ink, unit muted.
-        assert _classes(rows[0]["children"][8]) == ["", "muted"]
-        assert rows[0]["children"][8]["children"][1]["text"] == " ms"
-        # Cache: decorative meter + percentage; none when null.
-        meter = _meter(rows[0]["children"][9])
-        assert meter["attributes"] == {"aria-hidden": "true"}
-        assert meter["text"] == ""
-        assert meter["children"][0]["className"] == "fill"
-        assert meter["children"][0]["width"] == "64.0%"
-        assert _meter(rows[3]["children"][9])["children"][0]["width"] == "31.0%"
-        assert _meter(rows[1]["children"][9]) is None
+        assert _classes(rows[0]["children"][9]) == ["", "muted"]
+        assert rows[0]["children"][9]["children"][1]["text"] == " ms"
+        # Cache: plain percentage text, no meter bar; muted dash when null.
+        for row in rows:
+            assert not _has_meter(row["children"][10])
+        assert rows[0]["children"][10]["className"] == ""
+        assert rows[1]["children"][10]["className"] == "muted"
 
         totals = _rows(page, "totals")
         assert len(totals) == 1
@@ -411,10 +439,13 @@ class TestStatsPageRendering:
         # The All models row uses the global aggregates and token totals.
         assert _cells(totals[0]) == [
             "All models", "1,400", "2", "52.7", "38.3", "77.7 @2.1", "2,204", "3,140 @1.8",
-            "180 / 850 ms", "58%", "1.23M", "9,876",
+            "62%", "180 / 850 ms", "58%", "1.23M", "9,876",
         ]
-        assert totals[0]["children"][10]["title"] == "1,234,567"
-        assert _meter(totals[0]["children"][9])["children"][0]["width"] == "58.4%"
+        assert totals[0]["children"][11]["title"] == "1,234,567"
+        assert totals[0]["children"][8]["title"] == (
+            "Prompt 1,234.6 s · Gen 756.0 s over 1,398 requests"
+        )
+        assert not _has_meter(totals[0]["children"][10])
 
     def test_full_data_shows_errors_card_with_chips(self):
         page = _render(FULL)
@@ -451,9 +482,9 @@ class TestStatsPageRendering:
         assert _rows(page) == []
         totals = _rows(page, "totals")
         assert _cells(totals[0]) == [
-            "All models", "0", "0", "–", "–", "–", "–", "–", "–", "–", "–", "–",
+            "All models", "0", "0", "–", "–", "–", "–", "–", "–", "–", "–", "–", "–",
         ]
-        assert _meter(totals[0]["children"][9]) is None
+        assert not _has_meter(totals[0]["children"][10])
         assert page["errors-card"]["hidden"] is True
         assert page["errors"]["children"] == []
 
@@ -516,27 +547,69 @@ class TestStatsPageRendering:
         assert _cells(_rows(page, "totals")[0])[1] == "1,234,567"
 
     @pytest.mark.parametrize(
-        ("rate", "width", "text"),
-        [
-            (1.7, "100.0%", "170%"),
-            (1, "100.0%", "100%"),
-            (0, "0.0%", "0%"),
-            (-0.2, "0.0%", "-20%"),
-            (0.5049, "50.5%", "50%"),
-        ],
+        ("rate", "text"),
+        [(1.7, "170%"), (1, "100%"), (0, "0%"), (-0.2, "-20%"), (0.5049, "50%")],
     )
-    def test_cache_meter_width_is_clamped(self, rate, width, text):
+    def test_cache_shows_percentage_without_meter(self, rate, text):
         page = _render({"models": {"m": {"requests": {"tokens": {"cache_hit_rate": rate}}}}})
-        cell = _rows(page)[0]["children"][9]
+        cell = _rows(page)[0]["children"][10]
         assert cell["text"] == text
-        assert _meter(cell)["children"][0]["width"] == width
+        assert cell["className"] == ""
+        assert not _has_meter(cell)
 
     @pytest.mark.parametrize("rate", [None, "0.5", [], {}])
-    def test_cache_without_numeric_rate_has_no_meter(self, rate):
+    def test_cache_without_numeric_rate_shows_muted_dash(self, rate):
         page = _render({"models": {"m": {"requests": {"tokens": {"cache_hit_rate": rate}}}}})
-        cell = _rows(page)[0]["children"][9]
+        cell = _rows(page)[0]["children"][10]
         assert cell["text"] == "–"
-        assert _meter(cell) is None
+        assert cell["className"] == "muted"
+        assert not _has_meter(cell)
+
+    @pytest.mark.parametrize(
+        ("split", "text", "title"),
+        [
+            (
+                {"prefill_s": 123.44, "decode_s": 75.6, "prefill_share": 0.62,
+                 "generation_share": 0.38, "requests": 42},
+                "62%", "Prompt 123.4 s · Gen 75.6 s over 42 requests",
+            ),
+            (
+                {"prefill_s": 0.25, "decode_s": 4.75, "prefill_share": 0.05,
+                 "generation_share": 0.95, "requests": 1},
+                "5%", "Prompt 0.3 s · Gen 4.8 s over 1 request",
+            ),
+            (
+                {"prefill_s": 3.0, "decode_s": 0.0, "prefill_share": 1.0,
+                 "generation_share": 0.0, "requests": 2},
+                "100%", "Prompt 3.0 s · Gen 0.0 s over 2 requests",
+            ),
+            # Share known but seconds missing: percentage without tooltip.
+            ({"prefill_share": 0.5}, "50%", ""),
+        ],
+    )
+    def test_prompt_share_percentage_and_seconds_tooltip(self, split, text, title):
+        page = _render({"models": {"m": {"requests": {"time_split": split}}}})
+        cell = _rows(page)[0]["children"][8]
+        assert cell["text"] == text
+        assert cell["title"] == title
+        assert cell["className"] == ""
+
+    @pytest.mark.parametrize(
+        "split",
+        [
+            None, [], {}, "0.5",
+            {"prefill_s": 0.0, "decode_s": 0.0, "prefill_share": None,
+             "generation_share": None, "requests": 0},
+            {"prefill_s": 1.0, "decode_s": 1.0, "prefill_share": "0.5",
+             "requests": 1},
+        ],
+    )
+    def test_prompt_share_without_numeric_share_shows_muted_dash(self, split):
+        page = _render({"models": {"m": {"requests": {"time_split": split}}}})
+        cell = _rows(page)[0]["children"][8]
+        assert cell["text"] == "–"
+        assert cell["title"] == ""
+        assert cell["className"] == "muted"
 
     @pytest.mark.parametrize(
         ("value_expression", "rate", "expected"),
@@ -614,7 +687,7 @@ class TestStatsPageRendering:
         )
         totals = _rows(output, "totals")
         assert _cells(totals[0])[0] == "All models"
-        assert all(len(row["children"]) == 12 for row in _rows(output) + totals)
+        assert all(len(row["children"]) == 13 for row in _rows(output) + totals)
         assert output["errors-card"]["hidden"] is True
         for node in output.values():
             for text in _all_text(node):
@@ -639,7 +712,7 @@ class TestStatsPageRendering:
         })
         row = _rows(page)[0]
         assert _cells(row) == [
-            "m", "3", "–", "–", "–", "–", "–", "–", "– / 13 ms", "–", "–", "–",
+            "m", "3", "–", "–", "–", "–", "–", "–", "–", "– / 13 ms", "–", "–", "–",
         ]
         assert row["className"] == "loaded"
         assert _pill(row)["text"] == "Loaded"

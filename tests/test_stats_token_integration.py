@@ -625,7 +625,7 @@ class TestTokenMetricsIntegration:
         assert set(req) == {
             "total", "success", "failure", "success_rate", "errors",
             "latency_ms", "bytes_in", "bytes_out",
-            "tokens", "rates", "ttft_ms", "tpot_ms",
+            "tokens", "rates", "ttft_ms", "tpot_ms", "time_split",
         }
         assert set(req["tokens"]) == {
             "prompt", "completion", "cached", "prefill", "cache_hit_rate",
@@ -641,6 +641,10 @@ class TestTokenMetricsIntegration:
         }
         assert set(req["ttft_ms"]) == {"count", "avg", "p50", "p95", "max"}
         assert set(req["tpot_ms"]) == {"count", "avg", "p50", "p95", "max"}
+        assert set(req["time_split"]) == {
+            "prefill_s", "decode_s", "prefill_share", "generation_share",
+            "requests",
+        }
         # Pre-existing keys and rules unchanged.
         assert req["total"] == 1
         assert req["success"] == 1

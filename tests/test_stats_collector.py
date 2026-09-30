@@ -179,7 +179,7 @@ class TestStatsCollector:
         assert set(snap["requests"]) == {
             "total", "success", "failure", "success_rate", "errors",
             "latency_ms", "bytes_in", "bytes_out",
-            "tokens", "rates", "ttft_ms", "tpot_ms",
+            "tokens", "rates", "ttft_ms", "tpot_ms", "time_split",
         }
         assert snap["requests"]["total"] == 0
         assert snap["requests"]["success"] == 0
@@ -210,6 +210,10 @@ class TestStatsCollector:
         }
         assert snap["requests"]["ttft_ms"] is None  # no samples
         assert snap["requests"]["tpot_ms"] is None  # no samples
+        assert snap["requests"]["time_split"] == {
+            "prefill_s": 0.0, "decode_s": 0.0, "prefill_share": None,
+            "generation_share": None, "requests": 0,
+        }
         assert snap["throughput"] == {
             "last_60s": 0, "last_300s": 0, "avg_rpm": 0.0,
         }
@@ -682,10 +686,11 @@ class TestTokenMetricCollector:
 
     def test_dashboard_html_has_cache_hit_column(self):
         # Static gate: the compact dashboard table (P-20260925-01) keeps the
-        # cache hit rate column (percentage + meter); P-20260925-04 adds the
-        # generated and prefill token counts after it.
+        # cache hit rate column; P-20260925-04 adds the generated and prefill
+        # token counts after it. P-20260930-01 drops the meter: text only.
         assert "<th>Cache</th><th>Gen tok</th><th>Prefill tok</th>" in STATS_HTML
         assert "tokens.cache_hit_rate" in STATS_HTML
-        assert 'el("span", "pct", fmtPct(rate))' in STATS_HTML
+        assert "plainCell(fmtPct(cells[10]))" in STATS_HTML
+        assert '"meter"' not in STATS_HTML
 
 

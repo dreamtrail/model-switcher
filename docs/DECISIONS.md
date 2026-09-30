@@ -414,3 +414,28 @@ chunk detection, and page layout from that section still apply.
 - **No replacement 502 after `prepare()`** — the prepared stream is always returned; the `(pre-prepare)` log label and 502 JSON happen only before `prepare()`.
 - **Upstream failures unchanged** — upstream read errors still log `Stream proxy error`, set `stream_error`, and send the SSE error frame; if that frame cannot be written, it counts as a client disconnect and is suppressed. Other `write_eof` connection errors are suppressed.
 - **Own error kind** — `client_disconnect` (checked before `stream_error`), per model and global.
+
+## P-20260930-01 — Prompt vs generation time split
+
+### Problem
+- **Which side matters** — user request 2026-09-30: show the time used for prompt processing and for token generation, so the user can see which one matters more for a given workload.
+- **Raw totals are biased** — per-model `prefill_time` and `decode_time` already existed (for t/s) but cover different request sets: unknown-cache prompts drop out of prefill only (bias toward generation), buffered streams drop out of decode only while their TTFT fallback still holds the decode time (bias toward prompt).
+
+### Definition
+- **Paired requests only** — a request counts only when it has both a prefill sample (`select_prefill`, P-20260929-01) and a decode sample (`select_decode`, P-20260929-03); it then adds its own prefill and decode seconds. Only successful requests have samples, so failures never count.
+- **Per-request sums** — no overlap merging: two requests prefilling at once add both their times. This is request time, not GPU busy time.
+- **Global** — its own accumulator updated with the same request (like the other global token/timing totals), so it equals the sum of the per-model values.
+- **JSON** — additive `requests.time_split = {"prefill_s", "decode_s", "prefill_share", "generation_share", "requests"}` per model and global. Shares are raw fractions of `prefill_s + decode_s` (0–1, like `cache_hit_rate`), `null` before any paired request. Other keys and numbers are unchanged.
+
+### Limits
+- **Concurrency counts each request** — with overlapping requests the seconds add up to more than wall-clock time; the share is still a fair per-request split.
+- **SGLang prefill** — SGLang reports no prefill time, so its prefill side is the switcher's TTFT, which also includes queueing, tokenization, and the first decode step (same for any backend without server prefill time).
+- **Fully cached prompts** — a request with no new prompt tokens has no prefill sample and drops out, so heavy cache reuse is under-represented.
+- **Swap and load time** — not included; model swaps are tracked separately and only globally.
+
+### Page
+- **Column** — new "Prompt share" column right after "Prompt total", showing `prefill_share` as a whole percentage (e.g. `62%`), `–` before any paired request; the cell tooltip gives the seconds ("Prompt 123.4 s · Gen 75.6 s over 42 requests"). The header tooltip explains it is the share of request time spent on prompt processing vs generation, counting only requests where both times are known. The All models row shows the global value.
+- **Cache column** — the decorative meter bar is removed (user decision 2026-09-30) to make room; the percentage text stays.
+
+### Status
+- Implemented under P-20260930-01 with collector tests (`tests/test_stats_time_split.py`), JSON shape tests, and page tests (`tests/test_stats_page.py`). README describes the column and `time_split`.

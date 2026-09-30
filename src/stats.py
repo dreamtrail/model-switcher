@@ -142,6 +142,10 @@ class _ModelStats:
     prefill_time: float = 0.0  # Σ prefill seconds (server time, else TTFT)
     prefill_server_tokens: int = 0  # part of prefill_tokens timed by server
     prompt_skipped_unknown_cache: int = 0  # excluded: cached count unknown
+    # Time split: only requests with both a prefill and a decode sample.
+    paired_prefill_time: float = 0.0  # Σ prefill seconds of paired requests
+    paired_decode_time: float = 0.0  # Σ decode seconds of paired requests
+    paired_requests: int = 0  # requests with both samples
     # Learned: this model has reported a cached-token count at least once.
     cache_reported: bool = False
     token_events: deque = field(default_factory=deque)  # (monotonic, tokens)
@@ -323,6 +327,25 @@ def _window_tps(
     return tokens / window_s
 
 
+def _time_split_report(
+    prefill_s: float, decode_s: float, requests: int,
+) -> dict:
+    """Prompt vs generation time over requests with both samples.
+
+    Shares are fractions of prefill_s + decode_s; null before any paired
+    request (or when the paired time is zero).
+    """
+    total = prefill_s + decode_s
+    has_time = requests > 0 and total > 0
+    return {
+        "prefill_s": prefill_s,
+        "decode_s": decode_s,
+        "prefill_share": (prefill_s / total) if has_time else None,
+        "generation_share": (decode_s / total) if has_time else None,
+        "requests": requests,
+    }
+
+
 def _requests_report(
     total: int,
     success: int,
@@ -344,6 +367,9 @@ def _requests_report(
     prefill_time: float = 0.0,
     prefill_server_tokens: int = 0,
     prompt_skipped_unknown_cache: int = 0,
+    paired_prefill_time: float = 0.0,
+    paired_decode_time: float = 0.0,
+    paired_requests: int = 0,
     token_events: deque = (),
     now_monotonic: float = 0.0,
     max_aggregate: tuple[float, int] | None = None,
@@ -416,6 +442,9 @@ def _requests_report(
         },
         "ttft_ms": _latency_report(ttfts or []),
         "tpot_ms": _latency_report(tpots or []),
+        "time_split": _time_split_report(
+            paired_prefill_time, paired_decode_time, paired_requests,
+        ),
     }
 
 
@@ -449,6 +478,9 @@ class StatsCollector:
         self.prefill_time = 0.0
         self.prefill_server_tokens = 0
         self.prompt_skipped_unknown_cache = 0
+        self.paired_prefill_time = 0.0
+        self.paired_decode_time = 0.0
+        self.paired_requests = 0
         self.token_events: deque[tuple[float, int]] = deque()
         self._swap_durations: list[float] = []  # seconds
         self._peak_inflight = 0
@@ -576,6 +608,11 @@ class StatsCollector:
                 stats.prefill_server_tokens += sample.tokens
         elif decision.skipped_unknown_cache:
             stats.prompt_skipped_unknown_cache += 1
+        if gen is not None and sample is not None:
+            # Time split counts a request only when both sides are known.
+            stats.paired_prefill_time += sample.seconds
+            stats.paired_decode_time += gen.seconds
+            stats.paired_requests += 1
         events = stats.token_events
         _prune_token_events(events, now_monotonic)
 
@@ -990,6 +1027,9 @@ class StatsCollector:
                     prompt_skipped_unknown_cache=(
                         ms.prompt_skipped_unknown_cache
                     ),
+                    paired_prefill_time=ms.paired_prefill_time,
+                    paired_decode_time=ms.paired_decode_time,
+                    paired_requests=ms.paired_requests,
                     token_events=ms.token_events,
                     now_monotonic=now_monotonic,
                     max_aggregate=(
@@ -1042,6 +1082,9 @@ class StatsCollector:
                 prompt_skipped_unknown_cache=(
                     self.prompt_skipped_unknown_cache
                 ),
+                paired_prefill_time=self.paired_prefill_time,
+                paired_decode_time=self.paired_decode_time,
+                paired_requests=self.paired_requests,
                 token_events=self.token_events,
                 now_monotonic=now_monotonic,
                 decode_aggregate=global_decode,
@@ -1084,7 +1127,6 @@ STATS_HTML = """<!DOCTYPE html>
     --ring: rgba(11, 11, 11, 0.10);
     --wash: rgba(11, 11, 11, 0.03);
     --accent: #2a78d6;
-    --track: #b7d3f6;
     --good: #0ca30c;
     --serious: #ec835a;
     --critical: #d03b3b;
@@ -1105,7 +1147,6 @@ STATS_HTML = """<!DOCTYPE html>
       --ring: rgba(255, 255, 255, 0.10);
       --wash: rgba(255, 255, 255, 0.04);
       --accent: #3987e5;
-      --track: #184f95;
       --good-tint: rgba(12, 163, 12, 0.18);
       --critical-tint: rgba(208, 59, 59, 0.16);
       --shadow: none;
@@ -1220,13 +1261,6 @@ STATS_HTML = """<!DOCTYPE html>
   .pill .dot { width: 0.4rem; height: 0.4rem; }
   .muted { color: var(--muted); }
   td .dot.critical { margin-right: 0.4rem; vertical-align: 0.1em; }
-  .meter {
-    display: inline-block; width: 4rem; height: 6px; margin-right: 0.6rem;
-    border-radius: 3px; background: var(--track); overflow: hidden;
-    vertical-align: 0.15em;
-  }
-  .meter .fill { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
-  .pct { display: inline-block; min-width: 2.5em; }
   .chips { display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0 1.25rem 1.1rem; }
   .chip {
     display: inline-flex; align-items: center; gap: 0.45rem;
@@ -1303,6 +1337,7 @@ STATS_HTML = """<!DOCTYPE html>
       <th title="Combined speed while busy @ average concurrent requests">Gen total</th>
       <th title="Prompt processing speed; uses the server's own prefill time when available, else time to first token">Prompt t/s</th>
       <th title="Combined speed while busy @ average concurrent requests">Prompt total</th>
+      <th title="Share of request time spent on prompt processing (the rest is generation); counts only requests where both times are known">Prompt share</th>
       <th>TTFT p50 / p95</th><th>Cache</th><th>Gen tok</th><th>Prefill tok</th>
     </tr></thead>
     <tbody id="models"></tbody>
@@ -1473,6 +1508,7 @@ function rowCells(name, req) {
     fmtAggregate(gt.avg_aggregate, fmtTps),
     fmtInt(pt.avg),
     fmtAggregate(pt.avg_aggregate, fmtInt),
+    r.time_split,
     fmtTtft(r.ttft_ms),
     tokens.cache_hit_rate,
     tokens.completion,
@@ -1516,24 +1552,25 @@ function ttftCell(text) {
   return td;
 }
 
-function cacheCell(rate) {
-  const td = el("td");
-  if (!isNum(rate)) {
-    td.appendChild(el("span", "muted", DASH));
-    return td;
-  }
-  const meter = el("span", "meter");
-  meter.setAttribute("aria-hidden", "true");
-  const fill = el("span", "fill");
-  fill.style.width = Math.min(100, Math.max(0, rate * 100)).toFixed(1) + "%";
-  meter.appendChild(fill);
-  td.appendChild(meter);
-  td.appendChild(el("span", "pct", fmtPct(rate)));
-  return td;
-}
-
 function plainCell(text) {
   return el("td", text === DASH ? "muted" : "", text);
+}
+
+function fmtSecs(v) {
+  return v.toLocaleString("en-US",
+    {minimumFractionDigits: 1, maximumFractionDigits: 1}) + " s";
+}
+
+function shareCell(split) {
+  const s = obj(split);
+  const td = plainCell(fmtPct(s.prefill_share));
+  if (td.textContent !== DASH && isNum(s.prefill_s) && isNum(s.decode_s) &&
+      isNum(s.requests)) {
+    td.title = "Prompt " + fmtSecs(s.prefill_s) + " · Gen " +
+      fmtSecs(s.decode_s) + " over " + fmtInt(s.requests) +
+      (s.requests === 1 ? " request" : " requests");
+  }
+  return td;
 }
 
 function countCell(v) {
@@ -1548,10 +1585,11 @@ function buildRow(cells, loaded, className) {
   tr.appendChild(plainCell(cells[1]));
   tr.appendChild(errorsCell(cells[2]));
   for (const text of cells.slice(3, 8)) tr.appendChild(plainCell(text));
-  tr.appendChild(ttftCell(cells[8]));
-  tr.appendChild(cacheCell(cells[9]));
-  tr.appendChild(countCell(cells[10]));
+  tr.appendChild(shareCell(cells[8]));
+  tr.appendChild(ttftCell(cells[9]));
+  tr.appendChild(plainCell(fmtPct(cells[10])));
   tr.appendChild(countCell(cells[11]));
+  tr.appendChild(countCell(cells[12]));
   return tr;
 }
 

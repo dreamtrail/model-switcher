@@ -71,6 +71,11 @@ class TestStatsEndpoints:
                 }
                 assert data["requests"]["ttft_ms"] is None
                 assert data["requests"]["tpot_ms"] is None
+                assert data["requests"]["time_split"] == {
+                    "prefill_s": 0.0, "decode_s": 0.0,
+                    "prefill_share": None, "generation_share": None,
+                    "requests": 0,
+                }
                 assert data["throughput"]["avg_rpm"] == 0.0
                 assert data["swaps"] == {
                     "count": 0, "avg_ms": None, "p95_ms": None, "max_ms": None
