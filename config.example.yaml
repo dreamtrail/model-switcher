@@ -40,6 +40,13 @@ qwen3-8b-exl3: 'bash -c "cd /path/to/tabbyAPI && TABBY_LOG_CONSOLE_WIDTH=1000 ex
 # (python3 or its venv's python if there is no "python" command).
 qwen3.8-flash-next: "env -C /path/to/Strata python serve/server.py --engine strata --config strata-qwen3.8-flash-next.json --port ${PORT}"
 
+# --- TensorFold: tensorfold serve (MLX on Apple Silicon, or CUDA) ---
+# The port opens only after the model loads; the first launch also downloads
+# it. Pre-pull with "tensorfold pull MODEL" or raise --timeout.
+# PYTHONUNBUFFERED=1 keeps TensorFold's request log lines from waiting in a
+# pipe buffer. Use the full path to tensorfold if it is not on PATH.
+qwen3.8-27b-tensorfold: 'bash -c "PYTHONUNBUFFERED=1 exec tensorfold serve TensorFold/Qwen3.8-27B-MLX-4bit --host 127.0.0.1 --port ${PORT} --name qwen3.8-27b-tensorfold --no-update-check"'
+
 # --- Mode 2: Natural command (port flag replaced) ---
 # Switcher auto-assigns a free port and replaces --port 8000 with it.
 mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port 8000 --ctx-size 4096"

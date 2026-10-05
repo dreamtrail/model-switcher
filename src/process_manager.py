@@ -38,6 +38,13 @@ _STRATA_PREFIX = "[strata] "
 _STRATA_ERROR_RE = re.compile(r"\b(?:ERROR|FATAL|CRITICAL)\b")
 _STRATA_WARNING_RE = re.compile(r"\b(?:WARNING|WARN)\b")
 
+# TensorFold prints plain lines starting "[tensorfold] " with no level field;
+# severity is the first word(s) of the message: "warning:" / "WARNING:",
+# "request error: ..." (traceback follows on stderr without the prefix).
+_TENSORFOLD_PREFIX = "[tensorfold] "
+_TENSORFOLD_ERROR_RE = re.compile(r"(?:request )?error:", re.IGNORECASE)
+_TENSORFOLD_WARNING_RE = re.compile(r"warning:", re.IGNORECASE)
+
 _UPSTREAM_LEVEL_RE = re.compile(
     r"^\s*(?:"
     r"(?:\d+\.)+\d+\s+"  # llama.cpp: dotted timestamp (13.31.779.183)
@@ -97,6 +104,8 @@ def _upstream_log_level(text: str) -> int:
     """Infer an upstream log level from common severity markers."""
     if text.startswith(_STRATA_PREFIX):
         return _strata_log_level(text)
+    if text.startswith(_TENSORFOLD_PREFIX):
+        return _tensorfold_log_level(text[len(_TENSORFOLD_PREFIX):])
     match = (
         _NINFER_LEVEL_RE.search(text)
         or _TABBY_LEVEL_RE.search(text)
@@ -118,6 +127,15 @@ def _strata_log_level(text: str) -> int:
     if _STRATA_ERROR_RE.search(text):
         return logging.ERROR
     if _STRATA_WARNING_RE.search(text):
+        return logging.WARNING
+    return logging.INFO
+
+
+def _tensorfold_log_level(message: str) -> int:
+    """Level for the message after ``[tensorfold] `` from its leading word."""
+    if _TENSORFOLD_ERROR_RE.match(message):
+        return logging.ERROR
+    if _TENSORFOLD_WARNING_RE.match(message):
         return logging.WARNING
     return logging.INFO
 

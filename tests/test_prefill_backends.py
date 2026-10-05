@@ -15,6 +15,10 @@ Response shapes follow the upstream sources pinned in the plan record:
 - Strata 6f32ec0 (P-20261005-01): usage (with ``cached_tokens``) and
   llama.cpp-style ``timings`` ride on the final chunk that also carries
   ``finish_reason``; ``*_per_second`` is ``null`` when its count is 0.
+- TensorFold 609ca419 (P-20261005-04): no ``timings``; a top-level
+  ``tensorfold`` object (MLX ``prefill_seconds``, CUDA ``prefill_s``, both
+  seconds) on the non-stream body and on the stream's finish chunk; with
+  ``include_usage`` the usage follows in its own ``choices: []`` chunk.
 
 Upstreams are loopback fakes; delays make the proxy TTFT much larger than
 the server's own prefill time so the two sources are distinguishable.
@@ -372,6 +376,152 @@ async def test_strata_fully_cached_prompt_with_null_rates(monkeypatch):
         assert block["tokens"]["prefill"] == 0
         assert block["tokens"]["cached"] == 256
         assert block["tokens"]["prompt"] == 256
+
+
+# ---------------------------------------------------------------------------
+# TensorFold
+# ---------------------------------------------------------------------------
+
+TF_USAGE = {
+    "prompt_tokens": 300, "completion_tokens": 3, "total_tokens": 303,
+    "prompt_tokens_details": {"cached_tokens": 256},
+    "completion_tokens_details": {"reasoning_tokens": 0},
+}
+# MLX ``runtime`` block (server/app.py); seconds, not milliseconds.
+TF_MLX = {
+    "engine": "mlx", "tokens_per_second": 100.0, "seconds": 0.12,
+    "prefill_seconds": 0.088, "time_to_first_token": 0.09,
+    "drafts": True, "token_sha": "abc",
+}
+# CUDA engine stats (cuda/streams.py ``Stream.stats``).
+TF_CUDA = {
+    "prefill_s": 0.088, "decode_s": 0.03, "rounds": 2, "drafts": True,
+    "cached": 256, "min_rows": 2, "drafted": 2, "accepted": 1,
+    "token_sha": "abc",
+}
+
+
+def _tf_stream(stats):
+    """MLX/CUDA with include_usage: stats on the finish chunk, then usage."""
+    return [
+        _chunk({}, finish_reason="stop", tensorfold=stats),
+        _chunk(choices=False, usage=TF_USAGE),
+    ]
+
+
+@pytest.mark.parametrize("stats", [TF_MLX, TF_CUDA], ids=["mlx", "cuda"])
+async def test_tensorfold_stream_uses_server_prefill(monkeypatch, stats):
+    data = await _run(monkeypatch, _streaming_app(_tf_stream(stats)), [True])
+    for block in _blocks(data):
+        prompt = block["rates"]["prompt_tps"]
+        # (300 - 256) / 0.088 s, not 44 / proxy TTFT (~0.2 s).
+        assert prompt["avg"] == pytest.approx(500.0)
+        assert prompt["server_timed_share"] == 1.0
+        assert block["tokens"]["prefill"] == 44
+        assert block["tokens"]["cached"] == 256
+        assert block["ttft_ms"]["count"] == 1
+
+
+@pytest.mark.parametrize("stats", [TF_MLX, TF_CUDA], ids=["mlx", "cuda"])
+async def test_tensorfold_non_stream_uses_server_prefill(monkeypatch, stats):
+    body = {
+        "object": "chat.completion",
+        "choices": [{"index": 0, "message": {"role": "assistant",
+                                             "content": "Hi"},
+                     "finish_reason": "stop"}],
+        "usage": TF_USAGE, "exact_mode": "target-verified",
+        "tensorfold": stats,
+    }
+    data = await _run(monkeypatch, _json_app(body, delay=0.01), [False])
+    for block in _blocks(data):
+        prompt = block["rates"]["prompt_tps"]
+        assert prompt["avg"] == pytest.approx(500.0)
+        assert prompt["server_timed_share"] == 1.0
+        assert block["tokens"]["prefill"] == 44
+
+
+async def test_tensorfold_timings_take_priority(monkeypatch):
+    # Not sent by TensorFold; pins the order if both ever appear.
+    final = [
+        _chunk({}, finish_reason="stop", tensorfold=TF_MLX,
+               timings={"prompt_n": 40, "prompt_ms": 20.0}),
+        _chunk(choices=False, usage=TF_USAGE),
+    ]
+    data = await _run(monkeypatch, _streaming_app(final), [True])
+    for block in _blocks(data):
+        assert block["rates"]["prompt_tps"]["avg"] == pytest.approx(2000.0)
+        assert block["tokens"]["prefill"] == 40
+
+
+@pytest.mark.parametrize(
+    "stats",
+    [
+        {"prefill_seconds": None},  # MLX: no prefill timestamp
+        {"prefill_seconds": 0.0},
+        {"prefill_s": 0.0},
+        {"prefill_seconds": -1.0},
+        {"prefill_seconds": "0.088"},
+        {"prefill_seconds": True},
+        {"seconds": 0.12, "batch_size": 2},  # MLX batched reply
+        "not a dict",
+    ],
+)
+async def test_tensorfold_invalid_prefill_falls_back_to_proxy(
+    monkeypatch, stats,
+):
+    data = await _run(monkeypatch, _streaming_app(_tf_stream(stats)), [True])
+    for block in _blocks(data):
+        prompt = block["rates"]["prompt_tps"]
+        assert prompt["server_timed_share"] == 0.0
+        # 44 tokens over >= ~200 ms of proxy TTFT.
+        assert prompt["avg"] <= 44 / (DELAY_S * 0.75)
+        assert block["tokens"]["prefill"] == 44
+
+
+async def test_tensorfold_zero_prefill_seconds_uses_prefill_s(monkeypatch):
+    stats = {"prefill_seconds": 0.0, "prefill_s": 0.088}
+    data = await _run(monkeypatch, _streaming_app(_tf_stream(stats)), [True])
+    for block in _blocks(data):
+        assert block["rates"]["prompt_tps"]["avg"] == pytest.approx(500.0)
+
+
+async def test_tensorfold_unknown_cache_follows_cache_learned(monkeypatch):
+    # First reply reports cached tokens; the second omits the details, so
+    # its cached count counts as 0 (prompt_time rule), not skipped.
+    served = {"n": 0}
+
+    async def chat(request):
+        served["n"] += 1
+        usage = {"prompt_tokens": 300, "completion_tokens": 3}
+        if served["n"] == 1:
+            usage["prompt_tokens_details"] = {"cached_tokens": 256}
+        return web.json_response({
+            "choices": [{"index": 0, "message": {"role": "assistant",
+                                                 "content": "Hi"}}],
+            "usage": usage, "tensorfold": {"prefill_seconds": 0.1},
+        })
+
+    data = await _run(monkeypatch, _make_app(chat), [False, False])
+    for block in _blocks(data):
+        prompt = block["rates"]["prompt_tps"]
+        assert prompt["skipped_unknown_cache"] == 0
+        assert block["tokens"]["prefill"] == 44 + 300
+        assert prompt["server_timed_share"] == 1.0
+
+
+async def test_tensorfold_never_reporting_cache_is_skipped(monkeypatch):
+    body = {
+        "choices": [{"index": 0, "message": {"role": "assistant",
+                                             "content": "Hi"}}],
+        "usage": {"prompt_tokens": 300, "completion_tokens": 3},
+        "tensorfold": {"prefill_seconds": 0.1},
+    }
+    data = await _run(monkeypatch, _json_app(body, delay=0.01), [False])
+    for block in _blocks(data):
+        prompt = block["rates"]["prompt_tps"]
+        assert prompt["skipped_unknown_cache"] == 1
+        assert prompt["avg"] is None
+        assert block["tokens"]["prefill"] == 0
 
 
 # ---------------------------------------------------------------------------

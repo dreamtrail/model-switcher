@@ -365,6 +365,53 @@ curl -N http://127.0.0.1:8080/v1/chat/completions \
 
 The first request waits while Strata loads the model. Confirm the reply is real text (not a mock reply), the stream ends with `data: [DONE]`, `/stats` shows prompt and generation speed for the model, and the same requests work through the switcher's network name (for example `http://dgx1:8080`). After a swap, check with `nvidia-smi` that GPU memory was freed. Automated tests use local fake servers and do not run Strata, download models, or need a GPU; this support has not yet been tried on real hardware.
 
+## TensorFold
+
+[TensorFold](https://github.com/ashhart/TensorFold) (an OpenAI-compatible server for Apple Silicon through MLX, and for NVIDIA GPUs through CUDA) works through the same foreground-process interface. This integration targets TensorFold at commit `609ca419` (release 0.6.5, 2026-10-03); newer releases may differ. Install it with its own instructions (for example `pip install` into its own venv, or Homebrew on macOS); TensorFold is not a model-switcher dependency.
+
+```yaml
+qwen3.8-27b-tensorfold: 'bash -c "PYTHONUNBUFFERED=1 exec tensorfold serve TensorFold/Qwen3.8-27B-MLX-4bit --host 127.0.0.1 --port ${PORT} --name qwen3.8-27b-tensorfold --no-update-check"'
+```
+
+Why the recipe looks like this:
+
+- **`PYTHONUNBUFFERED=1`** — TensorFold prints its request lines without flushing. On the switcher's pipe they would sit in a buffer and show up late or only at exit. The switcher runs commands without a shell, so a `VAR=value` prefix needs a wrapper: here `bash -c`. `env PYTHONUNBUFFERED=1 tensorfold serve ...` works too.
+- **`exec`** — bash replaces itself with TensorFold, so there is one process and the switcher's SIGTERM reaches TensorFold directly.
+- **`tensorfold serve MODEL`** — `MODEL` is a Hugging Face repo id or a local folder. Write the full path to `tensorfold` (for example `/path/to/venv/bin/tensorfold`) if it is not on the switcher's `PATH`.
+- **`--host 127.0.0.1 --port ${PORT}`** — the switcher assigns the port; TensorFold's default port is 8080, which would clash with the switcher.
+- **`--name ID`** — the model name TensorFold reports in `/v1/models` and replies. Use the config key.
+- **`--no-update-check`** — skips TensorFold's network release check at startup.
+
+**Model name.** TensorFold serves one model, and the request `model` is not enforced: any name works. The switcher's routing decides which model runs.
+
+**Readiness.** TensorFold opens its port only after the model has loaded, and `GET /health` then returns 200 with `"status": "ok"`, so the existing readiness check works unchanged. The first launch also downloads the model, which can take a long time. Download it ahead with `tensorfold pull MODEL`, or raise the switcher's `--timeout` (default 60 s) above the download and load time, for example `--timeout 600`.
+
+**Output and stats.** Chat completions JSON and SSE pass through unchanged. TensorFold supports the switcher's automatic `stream_options.include_usage`: the stream's finish chunk carries a top-level `tensorfold` object, then usage (with `prompt_tokens_details.cached_tokens`) comes in its own chunk before `data: [DONE]`. Non-streaming replies carry both on the body. TensorFold sends no llama.cpp-style `timings`, so:
+
+- **Prompt speed** comes from the server: `prompt − cached` ÷ `tensorfold.prefill_seconds` (MLX) or `tensorfold.prefill_s` (CUDA), both in seconds. On MLX this time starts when the request is submitted, so it also includes waiting in TensorFold's own queue when several requests run at once.
+- **Generation speed** comes from the switcher's own stream timing. TensorFold's `tokens_per_second` is not used, and non-streaming generation is not timed.
+
+`/v1/completions`, `/v1/messages`, and `/v1/responses` are passed through but not covered by the tests here.
+
+**Logs.** TensorFold prints plain lines that start with `[tensorfold] `. A message that starts with `warning:` is logged as a warning, one that starts with `error:` or `request error:` as an error (any letter case), and the rest as info. The word must come first: `[tensorfold] stream error: ...` and `[tensorfold] snapshot save failed: ...` stay info. Python tracebacks after a `request error:` line go to stderr without the prefix and are logged as info.
+
+**Stopping.** On a swap or shutdown, model-switcher sends SIGTERM to the process group, waits 3 s, then sends SIGKILL. TensorFold stops cleanly on SIGTERM, but on MLX it first saves recent conversation checkpoints to disk, which may take longer than 3 s (TensorFold allows up to 120 s; real times not measured). A SIGKILL then loses only those saved checkpoints, which are a cache; replies already sent are not affected. If you need a longer clean stop, add a `shutdown_cmd` hook that stops TensorFold and waits for it ([shutdown hooks](#optional-shutdown-hooks)).
+
+**Multi-GPU.** Only single-process serving fits the switcher. TensorFold's `--tp 2` runs one process per machine (rank 0 serves HTTP, rank 1 follows); the switcher can start only rank 0 on its own machine, so `--tp 2` is not supported.
+
+For a manual check on real hardware, start model-switcher with the recipe above and a long `--timeout`, then:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3.8-27b-tensorfold","messages":[{"role":"user","content":"Hello"}]}'
+curl -N http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3.8-27b-tensorfold","messages":[{"role":"user","content":"Hello"}],"stream":true}'
+```
+
+The first request waits while TensorFold loads (and maybe downloads) the model. Confirm the stream ends with `data: [DONE]`, `/stats` shows prompt and generation speed for the model, and `[tensorfold] ` request lines appear in the switcher log while the server runs. Automated tests use a local fake server and do not run TensorFold, download models, or need a GPU; this support has not yet been tried on real hardware.
+
 ## Statistics
 
 Model-switcher tracks runtime statistics in memory (reset on restart) and serves them at two switcher-local endpoints:
@@ -464,7 +511,7 @@ Token metrics (when the upstream reports an OpenAI `usage` field):
 **Prompt t/s** (`rates.prompt_tps`) uses the best prefill time each response offers, in this order (P-20260929-01):
 
 1. `timings.prompt_n` ÷ `timings.prompt_ms` (llama.cpp, TabbyAPI, Strata) — the server's own count of new prompt tokens and prefill time.
-2. `prompt − cached` ÷ `usage.prompt_time` (TabbyAPI).
+2. `prompt − cached` ÷ `usage.prompt_time` (TabbyAPI), or ÷ `tensorfold.prefill_seconds` / `tensorfold.prefill_s` (TensorFold MLX / CUDA).
 3. `prompt − cached` ÷ `metrics.time_to_first_token_ms` (vLLM).
 4. `prompt − cached` ÷ the switcher's time to first token (streaming only). This also includes queueing, tokenization, the first decode step, and network time, so it reads lower than the server's own number.
 
@@ -477,6 +524,7 @@ Token metrics (when the upstream reports an OpenAI `usage` field):
 | vLLM | `--enable-prompt-tokens-details --enable-per-request-metrics` |
 | SGLang | `--enable-cache-report` (SGLang reports no prefill time, so the rate uses time to first token) |
 | Strata | none |
+| TensorFold | none |
 
 **Gen t/s** (`rates.generation_tps.avg`, plus `tpot_ms`, **Gen total**, and `max_aggregate`) likewise uses the server's own decode time first, for streaming and non-streaming requests alike (P-20260929-03):
 
@@ -494,6 +542,7 @@ Speed is tokens ÷ time (N tokens, not N − 1). Flags for exact generation spee
 | vLLM | `--enable-per-request-metrics` |
 | SGLang | none available: streaming uses the switcher's own timing; non-streaming generation is not timed |
 | Strata | none |
+| TensorFold | none available: streaming uses the switcher's own timing; non-streaming generation is not timed |
 
 Known limitations: these paths shadow upstreams serving the same paths (like `/v1/models`); latency samples are unbounded in memory (fine for a local dev tool); requests naming unknown models each create a per-model stats row keyed by the client-supplied name; the pending SSE line buffer is capped (~64 KiB) — once the cap is hit, non-line-shaped content (e.g. a binary audio stream without newlines) is discarded, so token metrics may be absent for such streams (byte counts remain exact).
 

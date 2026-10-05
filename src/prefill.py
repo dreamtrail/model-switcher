@@ -5,6 +5,9 @@ Backends report their own prompt (prefill) work in different places:
 - llama.cpp and TabbyAPI: top-level ``timings`` with ``prompt_n`` (new,
   uncached prompt tokens), ``prompt_ms`` (prefill time) and ``cache_n``.
 - TabbyAPI: ``usage.prompt_time`` (seconds).
+- TensorFold: top-level ``tensorfold`` object with ``prefill_seconds`` (MLX)
+  or ``prefill_s`` (CUDA), in seconds, on the non-stream body and the
+  stream's finish chunk. Read into the same slot as ``usage.prompt_time``.
 - vLLM (``--enable-per-request-metrics``): top-level
   ``metrics.time_to_first_token_ms``.
 
@@ -92,6 +95,14 @@ def apply_server_prefill(data: Any, server: ServerPrefill) -> None:
         prompt_time = parse_duration(usage.get("prompt_time"))
         if prompt_time is not None:
             server.prompt_time_s = prompt_time
+    tensorfold = data.get("tensorfold")
+    if isinstance(tensorfold, dict):
+        # Zero or invalid (e.g. MLX ``null`` before prefill ends) is ignored.
+        for key in ("prefill_seconds", "prefill_s"):
+            prefill_s = parse_duration(tensorfold.get(key))
+            if prefill_s:
+                server.prompt_time_s = prefill_s
+                break
     metrics = data.get("metrics")
     if isinstance(metrics, dict):
         ttft_ms = parse_duration(metrics.get("time_to_first_token_ms"))
@@ -121,7 +132,8 @@ def select_prefill(
 ) -> PrefillDecision:
     """Pick the prefill sample for one request.
 
-    Priority: ``timings.prompt_n / prompt_ms`` > ``usage.prompt_time`` >
+    Priority: ``timings.prompt_n / prompt_ms`` > ``usage.prompt_time`` or
+    TensorFold ``tensorfold.prefill_seconds`` / ``prefill_s`` (one slot) >
     vLLM ``metrics.time_to_first_token_ms`` > proxy TTFT. For all but the
     first, tokens are prompt − cached; an unknown cached count counts as 0
     when the model has reported one before (``cache_learned``), otherwise

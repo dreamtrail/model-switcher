@@ -12,6 +12,7 @@
 
 ## Discovered
 
+- [P-20261005-05] TensorFold support not yet checked on real TensorFold/Apple Silicon or CUDA (README § TensorFold manual check); CUDA `tensorfold` stats keys only partly known; the switcher's 3 s SIGTERM grace may SIGKILL TensorFold while MLX saves conversation checkpoints (up to 120 s); per-model stop grace shared with P-20261005-02 (see `artifacts/P-20261005-04/plan.md`)
 - [P-20261005-03] Strata review minors (P-20261005-01): `[strata] the engine reported an error: ...` logs as info because only upper-case level words count (user decision pending); recipe shows bare `python` (README notes `python3`/venv); "or another setup" in README § Strata Origin note is vague (see `artifacts/P-20261005-01/review.md`, `review-repair.md`)
 - [P-20261005-02] Strata support not yet smoke-tested on real Strata/GPU (README § Strata manual check); the switcher's 3 s SIGTERM grace may SIGKILL Strata before it frees memory cleanly (Strata waits up to 20 s per stop step); consider a per-model stop grace (see `artifacts/P-20261005-01/plan.md`)
 - [P-20260930-05] Stats tiles review minors (P-20260930-02/-03): hovering the Loads number shows the count title, not the tile explanation; no automated re-render test for the Loads tile; "100% of uptime" truncates at 1152–1199px; Loads/busy/time split not checked against real model servers (see `artifacts/P-20260930-02/plan.md`, `artifacts/P-20260930-03/plan.md`)
@@ -27,6 +28,7 @@
 
 ## Done
 
+- [P-20261005-04] Add TensorFold backend compatibility: `[tensorfold] ` log levels, prompt time from `tensorfold.prefill_seconds` / `prefill_s` — DONE 2026-10-05 14:48 UTC
 - [P-20261005-01] Add Strata backend compatibility; stop forwarding the client `Host` to backends; `"loaded": false` health is still loading; `[strata] ` log levels — DONE 2026-10-05 11:22 UTC
 - [P-20260930-03] Count and time every model load (Loads tile, `loads` JSON); `swaps` kept — DONE 2026-09-30 01:44 UTC
 - [P-20260930-02] Add utilized (busy) time to the Uptime tile and `utilization` JSON — DONE 2026-09-30 01:07 UTC
