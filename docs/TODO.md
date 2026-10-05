@@ -3,15 +3,16 @@
 ## Next
 
 - [P-20260930-04] Split `tests/test_stats_page.py` (1056 LOC, 44 KB) into focused test modules
-- [P-20260929-05] Split `docs/DECISIONS.md` (496 lines, 68 KB): move older sections (before P-20260925) to `docs/DECISIONS_ARCHIVE.md` and link it
+- [P-20260929-05] Split `docs/DECISIONS.md` (518 lines, 72 KB): move older sections (before P-20260925) to `docs/DECISIONS_ARCHIVE.md` and link it
 - [P-20260925-05] Split `src/stats.py` (1874 LOC, 67 KB): move the embedded `STATS_HTML` page into its own module; also share the page CSS that `/control` copies from `/stats` (P-20260926-02)
-- [P-20260913-04] Split `tests/test_proxy.py` (1315 LOC) into focused test modules
+- [P-20260913-04] Split `tests/test_proxy.py` (1376 LOC, 51 KB) into focused test modules
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to README
 - [P-20260826-03] Remove stray blank line before `handle.stopped` in `stop_process` (deferred P2 from P-20260826-01 audit)
 
 ## Discovered
 
+- [P-20261005-03] Strata review minors (P-20261005-01): `[strata] the engine reported an error: ...` logs as info because only upper-case level words count (user decision pending); recipe shows bare `python` (README notes `python3`/venv); "or another setup" in README § Strata Origin note is vague (see `artifacts/P-20261005-01/review.md`, `review-repair.md`)
 - [P-20261005-02] Strata support not yet smoke-tested on real Strata/GPU (README § Strata manual check); the switcher's 3 s SIGTERM grace may SIGKILL Strata before it frees memory cleanly (Strata waits up to 20 s per stop step); consider a per-model stop grace (see `artifacts/P-20261005-01/plan.md`)
 - [P-20260930-05] Stats tiles review minors (P-20260930-02/-03): hovering the Loads number shows the count title, not the tile explanation; no automated re-render test for the Loads tile; "100% of uptime" truncates at 1152–1199px; Loads/busy/time split not checked against real model servers (see `artifacts/P-20260930-02/plan.md`, `artifacts/P-20260930-03/plan.md`)
 - [P-20260929-07] Client disconnect before `prepare()` (while waiting for upstream headers) is still recorded as `502` with the "(pre-prepare)" label, not `client_disconnect`; also no switcher-side stall detection for relayed clients (see `artifacts/P-20260929-06/plan.md`)
