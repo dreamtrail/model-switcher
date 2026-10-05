@@ -40,9 +40,10 @@ _STRATA_WARNING_RE = re.compile(r"\b(?:WARNING|WARN)\b")
 
 # TensorFold prints plain lines starting "[tensorfold] " with no level field;
 # severity is the first word(s) of the message: "warning:" / "WARNING:",
-# "request error: ..." (traceback follows on stderr without the prefix).
+# "request error: ..." (traceback follows on stderr without the prefix),
+# "stream error: ...".
 _TENSORFOLD_PREFIX = "[tensorfold] "
-_TENSORFOLD_ERROR_RE = re.compile(r"(?:request )?error:", re.IGNORECASE)
+_TENSORFOLD_ERROR_RE = re.compile(r"(?:request |stream )?error:", re.IGNORECASE)
 _TENSORFOLD_WARNING_RE = re.compile(r"warning:", re.IGNORECASE)
 
 _UPSTREAM_LEVEL_RE = re.compile(

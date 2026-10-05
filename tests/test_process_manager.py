@@ -663,7 +663,9 @@ class TestUpstreamLogLevel:
             ("[tensorfold] the client saw an error: bad request",
              logging.INFO),
             ("[tensorfold] retry after warning: none", logging.INFO),
-            ("[tensorfold] stream error: RuntimeError: boom", logging.INFO),
+            ("[tensorfold] retry after stream error: boom", logging.INFO),
+            ("[tensorfold] stream error: RuntimeError: boom", logging.ERROR),
+            ("[tensorfold] STREAM ERROR: upper case", logging.ERROR),
             ("[tensorfold] snapshot save failed: OSError: disk full",
              logging.INFO),
             # A colon is required right after the word.

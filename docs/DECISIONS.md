@@ -528,7 +528,7 @@ chunk detection, and page layout from that section still apply.
 - **No server decode time** — `tokens_per_second` and `seconds` are not used: their exact span (queue time included or not) is unverified. Generation speed uses the switcher's own stream timing; non-streaming generation is not timed.
 
 ### Logs and Stopping
-- **Log levels by the message's first word** — TensorFold prints plain lines starting `[tensorfold] ` with no level field. For those lines only, a message that starts with `warning:` means warning and one that starts with `error:` or `request error:` means error (any case); the rest is info. Later words do not count, so `stream error:` and `... failed:` lines stay info. Other lines keep the existing Strata, NInfer, TabbyAPI, and generic rules.
+- **Log levels by the message's first word** — TensorFold prints plain lines starting `[tensorfold] ` with no level field. For those lines only, a message that starts with `warning:` means warning and one that starts with `error:`, `request error:`, or `stream error:` means error (any case); the rest is info. Later words do not count, so `... failed:` lines stay info. `stream error:` (MLX failed stream, TensorFold `server/http.py:433`) was added by user directive (P-20261006-01). Other lines keep the existing Strata, NInfer, TabbyAPI, and generic rules.
 - **Stop grace not changed** — on MLX, TensorFold saves conversation checkpoints on stop (its own timeout is up to 120 s), so the 3 s grace may SIGKILL it first. Only cached checkpoints are lost, not replies. A per-model grace period is out of scope (shared follow-up with Strata, P-20261005-02); the `shutdown_cmd` hook can stop it more slowly.
 
 ### Verification Trade-off

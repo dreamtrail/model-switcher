@@ -393,7 +393,7 @@ Why the recipe looks like this:
 
 `/v1/completions`, `/v1/messages`, and `/v1/responses` are passed through but not covered by the tests here.
 
-**Logs.** TensorFold prints plain lines that start with `[tensorfold] `. A message that starts with `warning:` is logged as a warning, one that starts with `error:` or `request error:` as an error (any letter case), and the rest as info. The word must come first: `[tensorfold] stream error: ...` and `[tensorfold] snapshot save failed: ...` stay info. Python tracebacks after a `request error:` line go to stderr without the prefix and are logged as info.
+**Logs.** TensorFold prints plain lines that start with `[tensorfold] `. A message that starts with `warning:` is logged as a warning, one that starts with `error:`, `request error:`, or `stream error:` as an error (any letter case), and the rest as info. The words must come first: `[tensorfold] snapshot save failed: ...` stays info. Python tracebacks after a `request error:` line go to stderr without the prefix and are logged as info.
 
 **Stopping.** On a swap or shutdown, model-switcher sends SIGTERM to the process group, waits 3 s, then sends SIGKILL. TensorFold stops cleanly on SIGTERM, but on MLX it first saves recent conversation checkpoints to disk, which may take longer than 3 s (TensorFold allows up to 120 s; real times not measured). A SIGKILL then loses only those saved checkpoints, which are a cache; replies already sent are not affected. If you need a longer clean stop, add a `shutdown_cmd` hook that stops TensorFold and waits for it ([shutdown hooks](#optional-shutdown-hooks)).
 
