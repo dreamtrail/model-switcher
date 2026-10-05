@@ -3,7 +3,7 @@
 ## Next
 
 - [P-20260930-04] Split `tests/test_stats_page.py` (1056 LOC, 44 KB) into focused test modules
-- [P-20260929-05] Split `docs/DECISIONS.md` (518 lines, 72 KB): move older sections (before P-20260925) to `docs/DECISIONS_ARCHIVE.md` and link it
+- [P-20260929-05] Split `docs/DECISIONS.md` (535 lines, 75 KB): move older sections (before P-20260925) to `docs/DECISIONS_ARCHIVE.md` and link it
 - [P-20260925-05] Split `src/stats.py` (1874 LOC, 67 KB): move the embedded `STATS_HTML` page into its own module; also share the page CSS that `/control` copies from `/stats` (P-20260926-02)
 - [P-20260913-04] Split `tests/test_proxy.py` (1376 LOC, 51 KB) into focused test modules
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
@@ -12,6 +12,7 @@
 
 ## Discovered
 
+- [P-20261006-02] TensorFold review nits (P-20261005-04, P-20261006-01): README/DECISIONS say `exec` lets SIGTERM reach TensorFold "directly" (it goes to the group anyway; the gain is that the tracked pid is TensorFold); `src/process_manager.py:46` is 80 chars; DECISIONS cites TensorFold `server/http.py:433` without commit 609ca419; no tests for `stream errors:` / `streamerror:` near misses (see `artifacts/P-20261005-04/review.md`, `artifacts/P-20261006-01/plan.md`)
 - [P-20261005-05] TensorFold support not yet checked on real TensorFold/Apple Silicon or CUDA (README § TensorFold manual check); CUDA `tensorfold` stats keys only partly known; the switcher's 3 s SIGTERM grace may SIGKILL TensorFold while MLX saves conversation checkpoints (up to 120 s); per-model stop grace shared with P-20261005-02 (see `artifacts/P-20261005-04/plan.md`)
 - [P-20261005-03] Strata review minors (P-20261005-01): `[strata] the engine reported an error: ...` logs as info because only upper-case level words count (user decision pending); recipe shows bare `python` (README notes `python3`/venv); "or another setup" in README § Strata Origin note is vague (see `artifacts/P-20261005-01/review.md`, `review-repair.md`)
 - [P-20261005-02] Strata support not yet smoke-tested on real Strata/GPU (README § Strata manual check); the switcher's 3 s SIGTERM grace may SIGKILL Strata before it frees memory cleanly (Strata waits up to 20 s per stop step); consider a per-model stop grace (see `artifacts/P-20261005-01/plan.md`)
@@ -28,6 +29,7 @@
 
 ## Done
 
+- [P-20261006-01] Log `[tensorfold] stream error:` lines as errors (user directive) — DONE 2026-10-05 15:12 UTC
 - [P-20261005-04] Add TensorFold backend compatibility: `[tensorfold] ` log levels, prompt time from `tensorfold.prefill_seconds` / `prefill_s` — DONE 2026-10-05 14:48 UTC
 - [P-20261005-01] Add Strata backend compatibility; stop forwarding the client `Host` to backends; `"loaded": false` health is still loading; `[strata] ` log levels — DONE 2026-10-05 11:22 UTC
 - [P-20260930-03] Count and time every model load (Loads tile, `loads` JSON); `swaps` kept — DONE 2026-09-30 01:44 UTC
