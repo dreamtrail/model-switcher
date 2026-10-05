@@ -12,6 +12,9 @@ Response shapes follow the upstream sources pinned in the plan record:
 - SGLang 26d7539: ``prompt_tokens_details`` only with
   ``--enable-cache-report`` and omitted when nothing was cached; no prefill
   duration in the OpenAI response.
+- Strata 6f32ec0 (P-20261005-01): usage (with ``cached_tokens``) and
+  llama.cpp-style ``timings`` ride on the final chunk that also carries
+  ``finish_reason``; ``*_per_second`` is ``null`` when its count is 0.
 
 Upstreams are loopback fakes; delays make the proxy TTFT much larger than
 the server's own prefill time so the two sources are distinguishable.
@@ -317,6 +320,58 @@ async def test_sglang_never_reporting_model_is_skipped(monkeypatch):
         assert prompt["avg"] is None
         assert prompt["avg_aggregate"] is None
         assert block["tokens"]["prefill"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Strata
+# ---------------------------------------------------------------------------
+
+STRATA_USAGE = {
+    "prompt_tokens": 300, "completion_tokens": 3, "total_tokens": 303,
+    "prompt_tokens_details": {"cached_tokens": 256},
+}
+STRATA_TIMINGS = {
+    "cache_n": 256, "prompt_n": 44, "prompt_ms": 88.0,
+    "prompt_per_token_ms": 2.0, "prompt_per_second": 500.0,
+    "predicted_n": 3, "predicted_ms": 30.0,
+    "predicted_per_token_ms": 10.0, "predicted_per_second": 100.0,
+}
+
+
+async def test_strata_finish_chunk_timings(monkeypatch):
+    final = [_chunk({}, usage=STRATA_USAGE, timings=STRATA_TIMINGS,
+                    finish_reason="stop")]
+    data = await _run(monkeypatch, _streaming_app(final), [True])
+    for block in _blocks(data):
+        prompt = block["rates"]["prompt_tps"]
+        # prompt_n / prompt_ms = 44 / 88 ms, not 44 / proxy TTFT.
+        assert prompt["avg"] == pytest.approx(500.0)
+        assert prompt["server_timed_share"] == 1.0
+        assert block["tokens"]["prefill"] == 44
+        assert block["tokens"]["cached"] == 256
+        assert block["ttft_ms"]["count"] == 1
+
+
+async def test_strata_fully_cached_prompt_with_null_rates(monkeypatch):
+    # prompt_n = prompt_tokens - cache_n = 0: Strata sends null rates.
+    usage = {"prompt_tokens": 256, "completion_tokens": 3,
+             "total_tokens": 259,
+             "prompt_tokens_details": {"cached_tokens": 256}}
+    timings = {
+        "cache_n": 256, "prompt_n": 0, "prompt_ms": 0.0,
+        "prompt_per_token_ms": None, "prompt_per_second": None,
+        "predicted_n": 3, "predicted_ms": 30.0,
+        "predicted_per_token_ms": 10.0, "predicted_per_second": 100.0,
+    }
+    final = [_chunk({}, usage=usage, timings=timings, finish_reason="stop")]
+    data = await _run(monkeypatch, _streaming_app(final), [True])
+    for block in _blocks(data):
+        prompt = block["rates"]["prompt_tps"]
+        assert prompt["avg"] is None
+        assert prompt["skipped_unknown_cache"] == 0
+        assert block["tokens"]["prefill"] == 0
+        assert block["tokens"]["cached"] == 256
+        assert block["tokens"]["prompt"] == 256
 
 
 # ---------------------------------------------------------------------------

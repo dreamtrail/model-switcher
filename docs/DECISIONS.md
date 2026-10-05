@@ -494,3 +494,25 @@ chunk detection, and page layout from that section still apply.
 
 ### Status
 - Implemented under P-20260930-03 with swapper-level tests (`tests/test_stats_loads.py`), key-set and contract updates, and page tests (`tests/test_stats_page.py`). README describes the tile and `loads`.
+
+## P-20261005-01 — Strata Compatibility
+
+### Backend Integration
+- **Reuse the generic foreground-command contract** — Strata (Niko1221/Strata) at commit `6f32ec0` runs a stdlib Python HTTP front end, `serve/server.py`, over a C++/CUDA engine. It takes `--port`, binds `127.0.0.1` by default, opens its port only after the model has loaded, and stops on SIGTERM. No backend adapter, dependency, registry, config field, or request-body rewrite is added.
+- **Launch from the repo root with `--engine strata`** — the default engine is `mock` (fake replies), and Strata's own `run-<model>.sh` starts from the repo root with a relative `--config`. Commands run without a shell, so the recipe uses `env -C <Strata> python serve/server.py --engine strata --config strata-<model>.json --port ${PORT}`.
+- **Any model name** — Strata serves one model and answers any request `model`; the switcher's own routing picks the model, and model IDs are forwarded unchanged.
+- **Leave Strata's lazy load and idle unload off** — they duplicate the switcher's job and make `/health` report `"loaded": false`.
+
+### Host Rewrite
+- **Problem** — without an API key Strata answers 403 to a `Host` header that is a DNS name other than `localhost` (DNS-rebinding guard). The switcher forwarded the client's `Host`, so a client using `http://dgx1:8080` was refused.
+- **Choice** — user decision 2026-10-05: drop `Host` from forwarded request headers for every backend, so aiohttp sends the upstream address (`127.0.0.1:<port>`), the same as nginx's default `proxy_pass`. The alternative, setting `STRATA_ALLOWED_HOSTS=*` in the recipe, was not chosen: it needs a per-backend workaround and turns the guard off.
+- **Impact** — backends no longer see the client's host name. No switcher code used the forwarded `Host`; other request headers (auth, content type, custom) are still forwarded unchanged.
+
+### Readiness and Output
+- **`"loaded": false` is still loading** — a 200 `/health` JSON object with `"loaded": false` keeps the poll going; `true`, an absent key, or a non-boolean value keeps the earlier rules. It is checked before the `status` rule because Strata sends `"status": "ok"` with it. The FreeToken `status` `loading`/`error` rule is unchanged.
+- **Stream and stats need no change** — Strata ignores `stream_options` and always puts usage (with `cached_tokens`) and llama.cpp-style `timings` on the final chunk that also has `finish_reason`; the existing parsers read both, and `null` `*_per_second` values are ignored.
+- **Log levels** — Strata prints plain lines starting `[strata] ` with no level field. For those lines only, an upper-case `WARNING`/`WARN` word means warning and `ERROR`/`FATAL`/`CRITICAL` means error (error wins if both appear); the rest is info. Lower-case "error" in message text stays info. Other lines keep the existing NInfer, TabbyAPI, and generic rules.
+- **Stop grace not changed** — Strata may need more than the 3 s grace to free memory cleanly before SIGKILL. A per-model grace period is out of scope; the `shutdown_cmd` hook can stop it more slowly.
+
+### Verification Trade-off
+- **Use deterministic loopback fakes pinned to `6f32ec0`** — a stdlib HTTP/1.0 fake launched through the documented `env -C` recipe covers port-after-load, `/health`, the Host guard, JSON and SSE (`: keep-alive`, `reasoning_content`, final usage + `timings`, `[DONE]`), the `/v1/completions` 404, and `[strata] ` log lines, through the real config, health, switcher, process, and proxy paths without installing Strata, downloading models, or using a GPU. Real-hardware behavior (load time, memory release on stop) is not verified; README documents a manual smoke check.

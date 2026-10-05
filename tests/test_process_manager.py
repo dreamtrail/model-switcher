@@ -593,6 +593,51 @@ class TestUpstreamLogLevel:
         assert _upstream_log_level(line) == logging.INFO
 
 
+    # --- Strata format (P-20261005-01) ---
+
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            # Verbatim shapes from Strata serve/server.py @ 6f32ec0.
+            ("[strata] still starting (42 s) - please wait ...", logging.INFO),
+            ("[strata] reading the prompt: 2048 tokens, 3.1 s so far",
+             logging.INFO),
+            ("[strata] done: 128 tokens in 4.2 s (30.5 tok/s)", logging.INFO),
+            ("[strata] refused a request for Host 'dgx1:8080'", logging.INFO),
+            ("[strata] stopping ...", logging.INFO),
+            ("[strata] WARNING: RAM is tight - 3.2 GiB free", logging.WARNING),
+            ("[strata] WARN: low VRAM headroom", logging.WARNING),
+            ("[strata] ERROR: engine exited with code 1", logging.ERROR),
+            ("[strata] FATAL: could not open the model", logging.ERROR),
+            ("[strata] CRITICAL: out of memory", logging.ERROR),
+            ("[strata] WARNING: retry after ERROR in engine", logging.ERROR),
+            # Lower-case words are message text, not levels.
+            ("[strata] the engine reported an error: bad request",
+             logging.INFO),
+            ("[strata] a warning about nothing", logging.INFO),
+            # Word boundaries: no partial matches.
+            ("[strata] WARNINGS_SEEN=0 ERRORS=0", logging.INFO),
+        ],
+    )
+    def test_strata_line_levels(self, line, expected):
+        assert _upstream_log_level(line) == expected
+
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            # Not "[strata] "-prefixed: the existing rules apply unchanged.
+            ("loading the model ...", logging.INFO),
+            ("       WARNING: no API key - anyone on this machine can use it",
+             logging.WARNING),
+            ("ERROR something failed", logging.ERROR),
+            ("[strata]WARNING: no space after the tag", logging.INFO),
+            ("12:34:56.789 INFO:     [strata] WARNING: quoted", logging.INFO),
+        ],
+    )
+    def test_strata_rule_needs_exact_prefix(self, line, expected):
+        assert _upstream_log_level(line) == expected
+
+
 async def _wait_for_pid_file(path, timeout: float = 3) -> int:
     """Wait for a test process to write a child PID file."""
     loop = asyncio.get_running_loop()

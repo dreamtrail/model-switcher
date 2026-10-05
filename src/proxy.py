@@ -147,9 +147,15 @@ def _forward_headers(request: web.Request) -> dict[str, str]:
     content-length is dropped: aiohttp recomputes it from the data= bytes,
     which keeps the header consistent when the body is mutated (e.g.
     stream_options injection).
+
+    host is dropped too, so aiohttp sends the upstream address
+    (``127.0.0.1:<port>``) like a default nginx proxy_pass. Backends that
+    guard against DNS rebinding (Strata) refuse a client Host such as
+    ``myserver.lan:8080``.
     """
     skip = set(_HOP_BY_HOP_HEADERS)
     skip.add("content-length")
+    skip.add("host")
     connection_hdr = request.headers.get("connection", "").lower()
     if connection_hdr:
         # Connection header may list additional hop-by-hop headers

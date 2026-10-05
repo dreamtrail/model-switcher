@@ -321,6 +321,50 @@ curl -N http://127.0.0.1:8080/v1/completions \
 
 The first request waits while TabbyAPI loads the model. Confirm both streams end with `data: [DONE]` and that `/stats` shows prompt and completion tokens for the model. Automated tests use local fake servers and do not run TabbyAPI, download models, or need a GPU.
 
+## Strata
+
+[Strata](https://github.com/Niko1221/Strata) (a Qwen3.8-Flash-Next inference engine with a small Python HTTP front end) works through the same foreground-process interface. This integration targets Strata at commit `6f32ec0` (2026-10-04); Strata changes quickly, so newer commits may differ. Install it in its own folder with its setup script, which builds the engine and writes a `strata-<model>.json` config next to a `run-<model>.sh` script; Strata is not a model-switcher dependency.
+
+Run `serve/server.py` from the Strata repo root and pass `--engine strata`:
+
+```yaml
+qwen3.8-flash-next: "env -C /path/to/Strata python serve/server.py --engine strata --config strata-qwen3.8-flash-next.json --port ${PORT}"
+```
+
+Why the recipe looks like this:
+
+- **`--engine strata`** — the default engine is `mock`, which returns fake replies without loading a model.
+- **`env -C`** — model-switcher executes commands directly rather than through a shell, and Strata expects to start from its repo root (its own `run-<model>.sh` does the same; the `--config` path is relative to it). `env -C <dir>` sets that folder without a shell; it needs GNU coreutils 8.28 or newer (macOS and BusyBox `env` lack `-C`).
+- **`python`** — must be the Python that Strata was installed with. Debian and Ubuntu may have no `python` command, so write `python3` or the full path to Strata's venv Python (for example `/path/to/Strata/<venv>/bin/python`).
+- **`--port ${PORT}`** — the switcher assigns the port. Strata already binds `127.0.0.1` by default; the model path lives in the JSON config, not on the command line.
+
+**Model name.** Strata serves one model and accepts any `model` name in a request, so the switcher's routing decides which model runs. Use the same name for the config key and the request `model`; it does not have to match Strata's own `model_name`.
+
+**Readiness.** Strata opens its port only after the model has loaded, which can take minutes. Raise the switcher's `--timeout` (default 60 s) above your load time, for example `--timeout 600`. Then `GET /health` returns 200 with `"loaded": true`. A 200 with `"loaded": false` (Strata's lazy mode or after its own idle unload) counts as still loading. Leave Strata's own lazy loading and idle unload off: do not pass `--lazy` or `--idle-unload`, and check that the JSON config does not set `lazy_load` or `idle_unload_s`. The switcher already loads on demand and unloads idle models.
+
+**Output.** Chat completions JSON and SSE pass through unchanged, including `: keep-alive` comments, `reasoning_content` deltas, and the final `data: [DONE]`. Strata ignores the switcher's automatic `stream_options` and always sends usage (with `prompt_tokens_details.cached_tokens`) plus llama.cpp-style `timings` on the final chunk, so token counts and server-timed prompt and generation speed are recorded. Strata has no `/v1/completions` or embeddings; such requests get Strata's 404. `/v1/messages` and `/v1/responses` are passed through but not covered by the tests here. Strata runs one request at a time by default and queues the rest.
+
+**Request guards.** Without an API key, Strata refuses (403) any request whose `Host` is a DNS name other than `localhost`, to guard against DNS rebinding. The switcher already replaces `Host` with `127.0.0.1:<port>` ([How It Works](#how-it-works)), so clients can use any name, for example `http://dgx1:8080`, and you do not need `STRATA_ALLOWED_HOSTS`.
+
+Strata's source (commit `6f32ec0`, not tested here) has two more guards for `/v1/*` POST requests without an API key: a browser `Origin` header from another site gets 403, and a non-JSON `Content-Type` gets 415. The switcher passes `Origin` through unchanged, so a web page on another site that calls the switcher directly needs an API key (`--api-key` or `STRATA_API_KEY`, sent by the client) or another setup.
+
+**Logs.** Strata prints plain lines that start with `[strata] `. Lines with the word `WARNING` or `WARN` are logged as warnings, lines with `ERROR`, `FATAL`, or `CRITICAL` as errors, and the rest as info. Only upper-case words count, so a line such as `[strata] the engine reported an error: ...` stays info.
+
+**Stopping.** On a swap or shutdown, model-switcher sends SIGTERM to the process group (the Python server and the engine), waits 3 s, then sends SIGKILL. Strata may need longer to free tens of GB of memory cleanly; after a SIGKILL the operating system should still free it when the processes exit (expected, not tested). If you need a longer clean stop, add a `shutdown_cmd` hook that stops Strata and waits for it ([shutdown hooks](#optional-shutdown-hooks)).
+
+For a manual smoke check on real hardware, start model-switcher with the recipe above and a long `--timeout`, then:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3.8-flash-next","messages":[{"role":"user","content":"Hello"}]}'
+curl -N http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3.8-flash-next","messages":[{"role":"user","content":"Hello"}],"stream":true}'
+```
+
+The first request waits while Strata loads the model. Confirm the reply is real text (not a mock reply), the stream ends with `data: [DONE]`, `/stats` shows prompt and generation speed for the model, and the same requests work through the switcher's network name (for example `http://dgx1:8080`). After a swap, check with `nvidia-smi` that GPU memory was freed. Automated tests use local fake servers and do not run Strata, download models, or need a GPU; this support has not yet been tried on real hardware.
+
 ## Statistics
 
 Model-switcher tracks runtime statistics in memory (reset on restart) and serves them at two switcher-local endpoints:
@@ -419,7 +463,7 @@ Token metrics (when the upstream reports an OpenAI `usage` field):
 
 **Prompt t/s** (`rates.prompt_tps`) uses the best prefill time each response offers, in this order (P-20260929-01):
 
-1. `timings.prompt_n` ÷ `timings.prompt_ms` (llama.cpp, TabbyAPI) — the server's own count of new prompt tokens and prefill time.
+1. `timings.prompt_n` ÷ `timings.prompt_ms` (llama.cpp, TabbyAPI, Strata) — the server's own count of new prompt tokens and prefill time.
 2. `prompt − cached` ÷ `usage.prompt_time` (TabbyAPI).
 3. `prompt − cached` ÷ `metrics.time_to_first_token_ms` (vLLM).
 4. `prompt − cached` ÷ the switcher's time to first token (streaming only). This also includes queueing, tokenization, the first decode step, and network time, so it reads lower than the server's own number.
@@ -432,10 +476,11 @@ Token metrics (when the upstream reports an OpenAI `usage` field):
 | TabbyAPI (ExLlamaV3) | none |
 | vLLM | `--enable-prompt-tokens-details --enable-per-request-metrics` |
 | SGLang | `--enable-cache-report` (SGLang reports no prefill time, so the rate uses time to first token) |
+| Strata | none |
 
 **Gen t/s** (`rates.generation_tps.avg`, plus `tpot_ms`, **Gen total**, and `max_aggregate`) likewise uses the server's own decode time first, for streaming and non-streaming requests alike (P-20260929-03):
 
-1. `timings.predicted_n` ÷ `timings.predicted_ms` (llama.cpp, TabbyAPI).
+1. `timings.predicted_n` ÷ `timings.predicted_ms` (llama.cpp, TabbyAPI, Strata).
 2. `completion_tokens` ÷ `usage.completion_time` (TabbyAPI).
 3. `completion_tokens` ÷ `metrics.generation_time_ms` (vLLM).
 4. `completion_tokens` ÷ the switcher's time from the first output chunk to the stream end (streaming only), used only when the output arrived in at least two chunks. A stream whose whole output came in one chunk — for example a TabbyAPI tool call, which is held back and sent in the final chunk — would otherwise look impossibly fast, so it is left out and counted in `rates.generation_tps.skipped_buffered`.
@@ -448,6 +493,7 @@ Speed is tokens ÷ time (N tokens, not N − 1). Flags for exact generation spee
 | TabbyAPI (ExLlamaV3) | none |
 | vLLM | `--enable-per-request-metrics` |
 | SGLang | none available: streaming uses the switcher's own timing; non-streaming generation is not timed |
+| Strata | none |
 
 Known limitations: these paths shadow upstreams serving the same paths (like `/v1/models`); latency samples are unbounded in memory (fine for a local dev tool); requests naming unknown models each create a per-model stats row keyed by the client-supplied name; the pending SSE line buffer is capped (~64 KiB) — once the cap is hit, non-line-shaped content (e.g. a binary audio stream without newlines) is discarded, so token metrics may be absent for such streams (byte counts remain exact).
 
@@ -478,7 +524,7 @@ For positive `--timeout` values, model swaps and non-streaming requests must fin
 2. Switcher checks if that model is running.
 3. If not (or a different model is active), it stops the current one and starts the requested model.
 4. It waits for the new model to report healthy (`/health` endpoint).
-5. The request is proxied to the upstream server.
+5. The request is proxied to the upstream server. Request headers are forwarded except hop-by-hop headers and `Host`: the upstream gets its own address (`127.0.0.1:<port>`) as `Host`, like a default nginx proxy, so backends that reject unknown host names (such as [Strata](#strata)) work when clients use the switcher's network name.
 6. Streaming responses (SSE) are passed through in real-time.
 
 Only one model runs at a time.

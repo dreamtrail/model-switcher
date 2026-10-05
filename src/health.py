@@ -23,6 +23,11 @@ async def _health_200_is_ready(response: aiohttp.ClientResponse) -> bool:
     if not isinstance(payload, dict):
         return True
 
+    # Strata (lazy mode or after its own idle unload) answers 200 with
+    # "status": "ok" but "loaded": false; the model is not in memory yet.
+    if payload.get("loaded") is False:
+        return False
+
     status = payload.get("status")
     if status == "ok":
         return True

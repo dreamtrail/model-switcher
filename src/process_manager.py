@@ -32,6 +32,12 @@ _TABBY_LEVEL_RE = re.compile(
     r"(?P<level>TRACE|DEBUG|INFO|SUCCESS|WARNING|ERROR|CRITICAL):(?:\s|$)"
 )
 
+# Strata (serve/server.py) prints plain lines starting "[strata] " with no
+# level field; warnings say "WARNING: ...". Only upper-case level words count.
+_STRATA_PREFIX = "[strata] "
+_STRATA_ERROR_RE = re.compile(r"\b(?:ERROR|FATAL|CRITICAL)\b")
+_STRATA_WARNING_RE = re.compile(r"\b(?:WARNING|WARN)\b")
+
 _UPSTREAM_LEVEL_RE = re.compile(
     r"^\s*(?:"
     r"(?:\d+\.)+\d+\s+"  # llama.cpp: dotted timestamp (13.31.779.183)
@@ -89,6 +95,8 @@ def _log_upstream_line(text: str) -> None:
 
 def _upstream_log_level(text: str) -> int:
     """Infer an upstream log level from common severity markers."""
+    if text.startswith(_STRATA_PREFIX):
+        return _strata_log_level(text)
     match = (
         _NINFER_LEVEL_RE.search(text)
         or _TABBY_LEVEL_RE.search(text)
@@ -102,6 +110,15 @@ def _upstream_log_level(text: str) -> int:
         return logging.WARNING
     if marker in {"E", "F", "ERROR", "FATAL", "CRITICAL"}:
         return logging.ERROR
+    return logging.INFO
+
+
+def _strata_log_level(text: str) -> int:
+    """Level for a Strata ``[strata] ...`` line from upper-case level words."""
+    if _STRATA_ERROR_RE.search(text):
+        return logging.ERROR
+    if _STRATA_WARNING_RE.search(text):
+        return logging.WARNING
     return logging.INFO
 
 

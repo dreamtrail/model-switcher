@@ -143,6 +143,122 @@ class TestWaitForReady:
         finally:
             await server.close()
 
+    # --- "loaded" flag (Strata, P-20261005-01) ---
+
+    async def test_loaded_false_waits_until_loaded_true(self):
+        """A 200 body with ``"loaded": false`` stays pending, even with ok."""
+        allow_loaded = asyncio.Event()
+        unloaded_seen = asyncio.Event()
+        health_count = 0
+        models_count = 0
+
+        async def handle_health(request):
+            nonlocal health_count
+            health_count += 1
+            if not allow_loaded.is_set():
+                unloaded_seen.set()
+                return aiohttp.web.json_response(
+                    {"status": "ok", "loaded": False, "service": "strata"}
+                )
+            return aiohttp.web.json_response(
+                {"status": "ok", "loaded": True, "service": "strata"}
+            )
+
+        async def handle_models(request):
+            nonlocal models_count
+            models_count += 1
+            return aiohttp.web.json_response({"object": "list", "data": []})
+
+        app = aiohttp.web.Application()
+        app.router.add_get("/health", handle_health)
+        app.router.add_get("/v1/models", handle_models)
+        server = TestServer(app)
+        await server.start_server()
+        task = asyncio.create_task(
+            wait_for_ready(server.port, timeout=2, interval=0.01)
+        )
+        try:
+            await asyncio.wait_for(unloaded_seen.wait(), timeout=1)
+            await asyncio.sleep(0.05)
+            assert not task.done()
+            assert health_count >= 2
+
+            allow_loaded.set()
+            await asyncio.wait_for(task, timeout=1)
+            assert models_count == 0
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            await server.close()
+
+    async def test_persistent_loaded_false_times_out_without_fallback(self):
+        models_count = 0
+
+        async def handle_health(request):
+            return aiohttp.web.json_response({"status": "ok", "loaded": False})
+
+        async def handle_models(request):
+            nonlocal models_count
+            models_count += 1
+            return aiohttp.web.json_response({"object": "list", "data": []})
+
+        app = aiohttp.web.Application()
+        app.router.add_get("/health", handle_health)
+        app.router.add_get("/v1/models", handle_models)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            with pytest.raises(TimeoutError, match="did not become ready"):
+                await wait_for_ready(server.port, timeout=0.05, interval=0.01)
+            assert models_count == 0
+        finally:
+            await server.close()
+
+    @pytest.mark.parametrize(
+        "body",
+        (
+            pytest.param({"status": "ok", "loaded": True}, id="ok-loaded"),
+            pytest.param({"loaded": True}, id="loaded-only"),
+            pytest.param({"status": "ok"}, id="loaded-absent"),
+            pytest.param({"loaded": "false"}, id="loaded-string"),
+            pytest.param({"loaded": 0}, id="loaded-zero"),
+            pytest.param({"loaded": None}, id="loaded-null"),
+        ),
+    )
+    async def test_loaded_true_absent_or_non_bool_is_ready(self, body):
+        """Only a JSON ``false`` blocks readiness; other values keep old rules."""
+        async def handle_health(request):
+            return aiohttp.web.json_response(body)
+
+        app = aiohttp.web.Application()
+        app.router.add_get("/health", handle_health)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            await wait_for_ready(server.port, timeout=1, interval=0.01)
+        finally:
+            await server.close()
+
+    @pytest.mark.parametrize("lifecycle_status", ("loading", "error"))
+    async def test_loaded_true_keeps_status_loading_error_rule(
+        self, lifecycle_status
+    ):
+        async def handle_health(request):
+            return aiohttp.web.json_response(
+                {"status": lifecycle_status, "loaded": True}
+            )
+
+        app = aiohttp.web.Application()
+        app.router.add_get("/health", handle_health)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            with pytest.raises(TimeoutError, match="did not become ready"):
+                await wait_for_ready(server.port, timeout=0.05, interval=0.01)
+        finally:
+            await server.close()
+
     async def test_returns_on_health_200(self):
         """wait_for_ready returns when /health returns 200."""
         async def handle_health(request):

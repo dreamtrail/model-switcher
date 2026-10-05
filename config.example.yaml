@@ -33,6 +33,13 @@ freetoken-model: "ft serve --model /path/to/model --served-model-name freetoken-
 # Auth is disabled: anyone who can reach the switcher is a TabbyAPI admin.
 qwen3-8b-exl3: 'bash -c "cd /path/to/tabbyAPI && TABBY_LOG_CONSOLE_WIDTH=1000 exec venv/bin/python main.py --host 127.0.0.1 --port ${PORT} --model-dir /path/to/models --model-name qwen3-8b-exl3 --disable-auth true"'
 
+# --- Strata: run serve/server.py from the Strata repo root ---
+# --engine strata is required (the default engine is a fake "mock").
+# The port opens only after the model loads; raise --timeout for slow loads.
+# env -C needs GNU coreutils 8.28+. Use the Python Strata was installed with
+# (python3 or its venv's python if there is no "python" command).
+qwen3.8-flash-next: "env -C /path/to/Strata python serve/server.py --engine strata --config strata-qwen3.8-flash-next.json --port ${PORT}"
+
 # --- Mode 2: Natural command (port flag replaced) ---
 # Switcher auto-assigns a free port and replaces --port 8000 with it.
 mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port 8000 --ctx-size 4096"

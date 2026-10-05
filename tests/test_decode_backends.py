@@ -9,6 +9,9 @@ Response shapes follow the upstream sources pinned in the plan record:
 - vLLM 6a6c295: top-level ``metrics.generation_time_ms`` on the final usage
   chunk (and the non-stream body) with ``--enable-per-request-metrics``.
 - SGLang 26d7539: no decode duration in the OpenAI response.
+- Strata 6f32ec0 (P-20261005-01): llama.cpp-style ``timings`` with usage on
+  the final chunk that also carries ``finish_reason`` (and on the non-stream
+  body); ``*_per_second`` is ``null`` when its count is 0.
 
 Upstreams are loopback fakes; delays make the proxy's own decode time
 clearly different from the server's so the two sources are distinguishable.
@@ -347,6 +350,73 @@ async def test_sglang_non_stream_is_not_timed(monkeypatch):
         assert gen["avg_aggregate"] is None
         assert gen["skipped_buffered"] == 0
         assert block["tokens"]["completion"] == 10
+
+
+# ---------------------------------------------------------------------------
+# Strata
+# ---------------------------------------------------------------------------
+
+STRATA_USAGE = {"prompt_tokens": 20, "completion_tokens": 10,
+                "total_tokens": 30,
+                "prompt_tokens_details": {"cached_tokens": 0}}
+STRATA_TIMINGS = {
+    "cache_n": 0, "prompt_n": 20, "prompt_ms": 10.0,
+    "prompt_per_token_ms": 0.5, "prompt_per_second": 2000.0,
+    "predicted_n": 10, "predicted_ms": 50.0,
+    "predicted_per_token_ms": 5.0, "predicted_per_second": 200.0,
+}
+
+
+async def test_strata_stream_finish_chunk_timings(monkeypatch):
+    app = _router(stream_handler=_stream_app([
+        (0, _chunk({"role": "assistant", "content": ""})),
+        (0, _chunk({"reasoning_content": "Think"})),
+        (DELAY_S, _chunk({"content": "Hi"})),
+        (0, _chunk({}, usage=STRATA_USAGE, timings=STRATA_TIMINGS,
+                   finish_reason="stop")),
+    ]))
+    data, stats = await _run(monkeypatch, app, [True])
+    for block in _blocks(data):
+        gen = block["rates"]["generation_tps"]
+        # 10 tokens / 50 ms, not 10 / ~200 ms of proxy decode time.
+        assert gen["avg"] == pytest.approx(200.0)
+        assert gen["server_timed_share"] == 1.0
+        assert gen["skipped_buffered"] == 0
+        assert block["tokens"]["completion"] == 10
+    # reasoning_content and content are two output chunks.
+    assert list(stats.gen_calibration) == [(10, 2)]
+
+
+async def test_strata_non_stream_body_timings(monkeypatch):
+    app = _router(json_handler=_json_app(
+        _completion(STRATA_USAGE, timings=STRATA_TIMINGS),
+    ))
+    data, _ = await _run(monkeypatch, app, [False])
+    for block in _blocks(data):
+        gen = block["rates"]["generation_tps"]
+        assert gen["avg"] == pytest.approx(200.0)
+        assert gen["avg_aggregate"]["tps"] == pytest.approx(200.0)
+
+
+async def test_strata_zero_output_null_rates_are_not_a_sample(monkeypatch):
+    usage = {"prompt_tokens": 20, "completion_tokens": 0,
+             "total_tokens": 20,
+             "prompt_tokens_details": {"cached_tokens": 0}}
+    timings = {
+        "cache_n": 0, "prompt_n": 20, "prompt_ms": 10.0,
+        "prompt_per_token_ms": 0.5, "prompt_per_second": 2000.0,
+        "predicted_n": 0, "predicted_ms": 0.0,
+        "predicted_per_token_ms": None, "predicted_per_second": None,
+    }
+    app = _router(json_handler=_json_app(
+        _completion(usage, timings=timings), delay=0.01,
+    ))
+    data, _ = await _run(monkeypatch, app, [False])
+    for block in _blocks(data):
+        gen = block["rates"]["generation_tps"]
+        assert gen["avg"] is None
+        assert gen["avg_aggregate"] is None
+        assert block["rates"]["prompt_tps"]["avg"] == pytest.approx(2000.0)
 
 
 # ---------------------------------------------------------------------------

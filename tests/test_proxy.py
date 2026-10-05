@@ -306,6 +306,67 @@ class TestForwardHeaders:
             await server.close()
 
 
+    async def test_drops_client_host_header(self):
+        """The client's Host is not forwarded (P-20261005-01)."""
+        async def handler(request):
+            return aiohttp.web.json_response(_forward_headers(request))
+
+        app = aiohttp.web.Application()
+        app.router.add_get("/test", handler)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            async with TestClient(server) as client:
+                resp = await client.get(
+                    "/test", headers={"Host": "dgx1:8080", "X-Keep": "1"},
+                )
+                data = await resp.json()
+                assert {key.lower() for key in data} >= {"x-keep"}
+                assert "host" not in {key.lower() for key in data}
+        finally:
+            await server.close()
+
+    @pytest.mark.parametrize("stream", (False, True), ids=("json", "stream"))
+    async def test_upstream_receives_its_own_address_as_host(self, stream):
+        """A client Host such as dgx1:8080 reaches the backend as 127.0.0.1:<port>."""
+        seen = []
+
+        async def upstream_handler(request):
+            seen.append(request.headers.getall("Host"))
+            return aiohttp.web.json_response({"ok": True})
+
+        upstream_app = aiohttp.web.Application()
+        upstream_app.router.add_post("/v1/chat/completions", upstream_handler)
+        upstream_server = TestServer(upstream_app, host="127.0.0.1")
+        await upstream_server.start_server()
+        upstream_port = upstream_server.port
+        upstream_url = f"http://127.0.0.1:{upstream_port}"
+        forward = stream_proxy if stream else proxy_request
+
+        async def proxy_handler(request):
+            body = await request.read()
+            return await forward(request, upstream_url, body, timeout=10)
+
+        proxy_app = aiohttp.web.Application()
+        proxy_app.router.add_post("/v1/chat/completions", proxy_handler)
+        proxy_server = TestServer(proxy_app)
+        await proxy_server.start_server()
+        try:
+            async with TestClient(proxy_server) as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": "test"},
+                    headers={"Host": "dgx1:8080"},
+                )
+                assert resp.status == 200
+                await resp.read()
+        finally:
+            await proxy_server.close()
+            await upstream_server.close()
+
+        assert seen == [[f"127.0.0.1:{upstream_port}"]]
+
+
 class TestHandleModelsList:
 
     async def test_returns_model_list(self):
