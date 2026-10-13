@@ -50,6 +50,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=%h/bin/llm-server
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
 Environment=HOME=%h
@@ -60,6 +61,24 @@ WantedBy=default.target
 
 `ExecStart` points at a wrapper in `$HOME/bin` that launches the switcher
 (see [CLI Reference](../README.md#cli-reference) for flags).
+
+### Reload the config with systemctl
+
+`systemctl --user reload llm-server.service` sends SIGHUP to the switcher. It
+re-reads its config file and applies the changes without a restart, the same as
+the control API's reload ([what changes and what does not](../README.md#reloading-the-config)).
+Once the switcher is running it never exits on SIGHUP. A SIGHUP during startup
+(before it logs `Listening on`) still terminates it. An invalid config keeps the
+old one and logs a warning; check the result with
+`journalctl --user -u llm-server.service -n 20`.
+
+The wrapper must `exec` the switcher as its last command (for example
+`exec ~/model-switcher/run.sh --config ~/models.yaml`). Without `exec`,
+`$MAINPID` is the wrapper shell, and SIGHUP goes to the shell instead of the
+switcher. A bash wrapper is killed by SIGHUP (it exits with status 129), so
+systemd sees the service exit and `Restart=on-failure` would restart it, which
+reloads nothing and drops the loaded model. The bash part was checked; what
+systemd then does was not tested.
 
 ### Linger is required (read first)
 

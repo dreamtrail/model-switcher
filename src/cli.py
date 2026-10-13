@@ -131,6 +131,42 @@ async def _run_server(
     logger.info("Server stopped")
 
 
+def reload_on_sighup(swapper: Swapper) -> None:
+    """Reload the config for SIGHUP, exactly like the control API does.
+
+    Logs the summary (info) or the reason it did not reload (warning).
+    A busy or shutting-down switcher is skipped without a retry. This
+    never raises and never stops the switcher.
+    """
+    try:
+        kind, detail = swapper.control_reload_config()
+    except Exception:
+        logger.exception("SIGHUP: config reload crashed; old config kept")
+        return
+    if kind == "success":
+        logger.info(
+            "SIGHUP: config reloaded (added %d, removed %d, changed %d%s)",
+            len(detail["added"]),
+            len(detail["removed"]),
+            len(detail["changed"]),
+            (
+                "; the running model keeps its old settings until it stops"
+                if detail["running_changed"] else ""
+            ),
+        )
+    elif kind == "config_invalid":
+        logger.warning("SIGHUP: config not reloaded: %s", detail)
+    elif kind == "control_busy":
+        logger.warning(
+            "SIGHUP: reload skipped because a model is loading or "
+            "unloading; send SIGHUP again when it is done"
+        )
+    elif kind == "shutting_down":
+        logger.info("SIGHUP: reload skipped, the switcher is shutting down")
+    else:
+        logger.warning("SIGHUP: reload skipped (%s)", kind)
+
+
 async def _main(argv: list[str] | None = None) -> None:
     """Async main entry point."""
     args = parse_args(argv)
@@ -196,6 +232,21 @@ async def _main(argv: list[str] | None = None) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, _signal_handler)
+        except NotImplementedError:
+            pass
+
+    def _sighup_handler() -> None:
+        if shutdown_requested:
+            logger.info("SIGHUP: reload skipped, shutdown in progress")
+            return
+        reload_on_sighup(swapper)
+
+    # SIGHUP reloads the config (like POST /api/v1/control/reload) and
+    # never stops the switcher. Not available on every platform.
+    sighup = getattr(signal, "SIGHUP", None)
+    if sighup is not None:
+        try:
+            loop.add_signal_handler(sighup, _sighup_handler)
         except NotImplementedError:
             pass
 

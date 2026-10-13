@@ -321,6 +321,139 @@ class TestMainRuntime:
 
         assert shutdown_called is True
 
+    async def test_main_registers_sighup_and_it_reloads_without_exiting(
+        self, monkeypatch, caplog
+    ):
+        """SIGHUP runs the control reload; it never starts a shutdown."""
+        registered_handlers = {}
+        reload_calls = []
+
+        class FakeClientSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class FakeSwapper:
+            def __init__(
+                self, config, *, timeout, idle_timeout, quick_switch, client
+            ):
+                self.config = config
+
+            def control_reload_config(self):
+                reload_calls.append(1)
+                return "success", {
+                    "added": ["b"], "removed": [], "changed": ["a"],
+                    "running_changed": False,
+                }
+
+            async def shutdown(self):
+                pass
+
+        async def fake_run_server(host, port, swapper, shutdown_event):
+            registered_handlers[signal.SIGHUP]()
+            registered_handlers[signal.SIGHUP]()
+            assert shutdown_event.is_set() is False
+            assert asyncio.current_task().cancelling() == 0
+
+        def fake_add_signal_handler(sig, callback):
+            registered_handlers[sig] = callback
+
+        loop = asyncio.get_running_loop()
+        config = type("Config", (), {"models": {"model-a": object()}})()
+        monkeypatch.setattr(loop, "add_signal_handler", fake_add_signal_handler)
+        monkeypatch.setattr(cli_module, "load_config", lambda path: config)
+        monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)
+        monkeypatch.setattr(cli_module, "Swapper", FakeSwapper)
+        monkeypatch.setattr(cli_module, "_run_server", fake_run_server)
+
+        with caplog.at_level("INFO", logger="src.cli"):
+            await cli_module._main(["--config", "config.yaml"])
+
+        assert reload_calls == [1, 1]
+        assert "SIGHUP: config reloaded (added 1, removed 0, changed 1)" in (
+            caplog.text
+        )
+
+    async def test_sighup_after_shutdown_started_is_skipped(
+        self, monkeypatch, caplog
+    ):
+        registered_handlers = {}
+        reload_calls = []
+
+        class FakeClientSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class FakeSwapper:
+            def __init__(
+                self, config, *, timeout, idle_timeout, quick_switch, client
+            ):
+                self.config = config
+
+            def control_reload_config(self):
+                reload_calls.append(1)
+                return "success", {}
+
+            async def shutdown(self):
+                pass
+
+        async def fake_run_server(host, port, swapper, shutdown_event):
+            registered_handlers[signal.SIGTERM]()
+            registered_handlers[signal.SIGHUP]()
+
+        def fake_add_signal_handler(sig, callback):
+            registered_handlers[sig] = callback
+
+        loop = asyncio.get_running_loop()
+        config = type("Config", (), {"models": {"model-a": object()}})()
+        monkeypatch.setattr(loop, "add_signal_handler", fake_add_signal_handler)
+        monkeypatch.setattr(cli_module, "load_config", lambda path: config)
+        monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)
+        monkeypatch.setattr(cli_module, "Swapper", FakeSwapper)
+        monkeypatch.setattr(cli_module, "_run_server", fake_run_server)
+
+        with caplog.at_level("INFO", logger="src.cli"):
+            await cli_module._main(["--config", "config.yaml"])
+
+        assert reload_calls == []
+        assert "SIGHUP: reload skipped, shutdown in progress" in caplog.text
+
+    async def test_missing_sighup_support_does_not_break_startup(
+        self, monkeypatch
+    ):
+        """Where add_signal_handler is unsupported, startup still works."""
+        ran = []
+
+        class FakeClientSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class FakeSwapper:
+            def __init__(
+                self, config, *, timeout, idle_timeout, quick_switch, client
+            ):
+                self.config = config
+
+            async def shutdown(self):
+                pass
+
+        async def fake_run_server(host, port, swapper, shutdown_event):
+            ran.append(1)
+
+        def refuse(sig, callback):
+            raise NotImplementedError
+
+        loop = asyncio.get_running_loop()
+        config = type("Config", (), {"models": {"model-a": object()}})()
+        monkeypatch.setattr(loop, "add_signal_handler", refuse)
+        monkeypatch.setattr(cli_module, "load_config", lambda path: config)
+        monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)
+        monkeypatch.setattr(cli_module, "Swapper", FakeSwapper)
+        monkeypatch.setattr(cli_module, "_run_server", fake_run_server)
+
+        await cli_module._main(["--config", "config.yaml"])
+
+        assert ran == [1]
+
     async def test_main_config_error_exits_1(self):
         """_main exits with code 1 when config file does not exist.
 
@@ -340,6 +473,58 @@ class TestMainRuntime:
         with pytest.raises(SystemExit) as exc:
             await _main(["--config", str(bad_config)])
         assert exc.value.code == 1
+
+
+class TestReloadOnSighup:
+    """reload_on_sighup logs each outcome and never raises."""
+
+    class _Swapper:
+        def __init__(self, result):
+            self.result = result
+
+        def control_reload_config(self):
+            if isinstance(self.result, BaseException):
+                raise self.result
+            return self.result
+
+    @pytest.mark.parametrize(
+        ("result", "level", "text"),
+        [
+            (
+                ("success", {"added": [], "removed": ["x"], "changed": [],
+                             "running_changed": True}),
+                "INFO",
+                "SIGHUP: config reloaded (added 0, removed 1, changed 0; "
+                "the running model keeps its old settings until it stops)",
+            ),
+            (
+                ("config_invalid", "Model 'a' has an empty command"),
+                "WARNING",
+                "SIGHUP: config not reloaded: Model 'a' has an empty command",
+            ),
+            (
+                ("control_busy", None), "WARNING",
+                "SIGHUP: reload skipped because a model is loading or "
+                "unloading; send SIGHUP again when it is done",
+            ),
+            (
+                ("shutting_down", None), "INFO",
+                "SIGHUP: reload skipped, the switcher is shutting down",
+            ),
+            (("other", None), "WARNING", "SIGHUP: reload skipped (other)"),
+            (
+                RuntimeError("boom"), "ERROR",
+                "SIGHUP: config reload crashed; old config kept",
+            ),
+        ],
+    )
+    def test_outcomes_are_logged(self, caplog, result, level, text):
+        with caplog.at_level("INFO", logger="src.cli"):
+            cli_module.reload_on_sighup(self._Swapper(result))
+        records = [r for r in caplog.records if r.name == "src.cli"]
+        assert [(r.levelname, r.getMessage()) for r in records] == [
+            (level, text)
+        ]
 
 
 class TestRunServer:

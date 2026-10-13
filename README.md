@@ -233,7 +233,7 @@ The switcher re-reads the file it was started with (`--config`) and applies mode
 
 If the file is missing or invalid, nothing changes and the old config keeps working; the reply is 400 `config_invalid` with the error, for example `Config not reloaded: Model 'a' has an empty command` or `Config not reloaded: Invalid YAML in config.yaml: mapping values are not allowed here (line 2, column 4)`. The message names only the config file (not its full path) and never quotes source lines. A reload while a model is loading or unloading (including an idle unload) returns 409 `control_busy` (try again after it finishes); during shutdown it returns 503 `shutting_down`.
 
-There is no signal or file-watch trigger. SIGHUP is not handled, so `kill -HUP` stops the switcher instead of reloading it; do not add a systemd `ExecReload=` that sends it.
+**SIGHUP** does the same reload: `kill -HUP <pid>` re-reads the file and logs `SIGHUP: config reloaded (added 1, removed 0, changed 1)`, or a warning with the reason when it did not reload (invalid file, or a model is loading or unloading: send it again later). Once the switcher is running it never exits on SIGHUP. During startup (before it logs `Listening on`), SIGHUP still terminates it, as it did before. For systemd, add `ExecReload=/bin/kill -HUP $MAINPID` so `systemctl reload` works; the wrapper must `exec` the switcher ([unit and wrapper](docs/SETUP.md#reload-the-config-with-systemctl)). There is no file-watch trigger.
 
 ## SGLang
 

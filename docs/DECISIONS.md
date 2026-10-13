@@ -559,7 +559,7 @@ chunk detection, and page layout from that section still apply.
 ## P-20261013-04 — Reload config without restart
 
 ### Trigger
-- **Control API and panel button only** — user decision 2026-10-13: `POST /api/v1/control/reload` (no body, needs `X-Model-Switcher-Control: 1`) and a Reload config button on `/control`. No SIGHUP handler and no file watching. SIGHUP is still unhandled, so `kill -HUP` stops the switcher (TODO P-20261013-05).
+- **Control API and panel button first** — user decision 2026-10-13: `POST /api/v1/control/reload` (no body, needs `X-Model-Switcher-Control: 1`) and a Reload config button on `/control`. No file watching. SIGHUP was left unhandled at first and is handled since P-20261013-07.
 - **Same file as startup** — the CLI keeps the absolute `--config` path on the swapper (set after construction so test fakes keep their constructor). A swapper without a path answers `config_invalid`.
 
 ### What Changes
@@ -580,9 +580,9 @@ chunk detection, and page layout from that section still apply.
 ### Verification Trade-off
 - **Fake and real local servers** — refusals, change detection, ports, temp copies, variants, and the API are tested with faked process start/stop (`tests/test_config_reload.py`); one test runs real servers from a shared script through add, change, remove, and invalid reloads (`tests/test_config_reload_e2e.py`). The panel script is run in Node with a fake DOM. Real model servers and a real browser were not used.
 
-## P-20261013-07 — Variant and reload minors
+## P-20261013-07 — Variant and reload minors, SIGHUP reload
 
-User approved the plan 2026-10-13 (IDs P-20261013-03 and -06).
+User approved the plan 2026-10-13 (IDs P-20261013-03, -06, -05, in that order).
 
 ### Config Validation
 - **Names must be strings** — `load_config` rejects a model or variant name that YAML read as a number, boolean, or null (`123:`, `yes:`, `~:`) with a `ValueError` that says to put quotes around the name. Before, a numeric name loaded and then broke the reload log line and temp script name (HTTP 500). The same error is now a 400 `config_invalid` on reload and a one-line `Config error` at startup. The message shows the value with its type (`123 (int)`, `2024-01-01 (date)`, `null`), and the `default` mismatch message quotes strings, so `default: 1` against a variant `'1'` reads `default 1 (int) is not one of its variants: '1'`.
@@ -592,3 +592,11 @@ User approved the plan 2026-10-13 (IDs P-20261013-03 and -06).
 - **Script contents are part of the change check** — `ModelConfig.spec` has a fourth item: a SHA-256 of the script file when the first token of `cmd` is an existing file (`port_rewrite.script_fingerprint`), else None. The check does not look at `${PORT}`, because the loader fills it in before the startup copy step, so such an entry is a script copy too. To give a changed or new script entry the same result after a reload, the reload now fills in `${PORT}` with the new port before the copy step (only when the first token is a file; other commands keep the raw `${PORT}`, which is substituted later). Before, a reload kept the raw placeholder and ran the original script in place. Editing a script with the same config line now counts as `changed`: new port, new temp copy, used by the next start; the running process keeps its old copy. A script that cannot be read gets a marker hash, so loading still works; the entry then counts as changed and the copy step returns `config_invalid` (old config kept). This replaces the earlier "script edits need a restart" limit. A script used only through `shutdown_cmd` is not tracked.
 - **Reload counter moves on success only** — the `r<N>` generation in temp copy names advances when the new config is assigned. A failed attempt may leave unused copies; the next attempt reuses the name and overwrites them (they were never in use).
 - **Port test uses fixed ports** — the running model and the kept model get distinct fixed ports, so the test fails if either reservation is missing (checked in a temp copy: without the running-port reservation it fails).
+
+### SIGHUP
+- **SIGHUP runs the same reload as the API** — `src/cli.py` registers SIGHUP next to SIGINT/SIGTERM (skipped where `add_signal_handler` or `SIGHUP` is unavailable) and calls `Swapper.control_reload_config`. Success is logged at info with counts, an invalid config at warning with the reason, `control_busy` at warning ("send SIGHUP again"), and shutdown at info. A busy reload is not retried or queued: a retry loop would hide that a model is loading, and the user can send the signal again. Any unexpected error is logged and swallowed. Once the handler is registered, SIGHUP never exits the switcher, and after a shutdown signal it is ignored. A SIGHUP that arrives earlier (config load and swapper setup, before `Listening on`) still terminates the process, because the handler is registered with the other signals just before the server starts; moving it earlier was not worth the risk of reloading a half-built swapper.
+- **systemd** — `ExecReload=/bin/kill -HUP $MAINPID` in the unit shown in `docs/SETUP.md`; the wrapper must `exec` the switcher so `$MAINPID` is the switcher. A bash wrapper without `exec` is killed by SIGHUP, so systemd sees the service exit (restart under `Restart=on-failure`: inferred, not tested).
+- **No new trigger beyond SIGHUP** — file watching is still not added.
+
+### Verification Trade-off
+- **Real process for SIGHUP** — `tests/test_cli_sighup_e2e.py` starts `python -m src` with a real shell-script model server, edits the config, sends SIGHUP (valid, invalid, valid again), and ends with SIGTERM. Unit tests in `tests/test_cli.py` cover the handler wiring with a fake swapper. No systemd run was done.
