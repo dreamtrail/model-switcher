@@ -143,7 +143,15 @@ const document = {
   createElement(tagName) { return new Element(tagName); },
   querySelectorAll(selector) {
     if (selector !== "button, input") throw new Error("unexpected selector " + selector);
-    return fixedControls.concat(elements.get("models").children);
+    const nested = [];
+    const walk = (node) => {
+      for (const child of node.children) {
+        if (child.tagName === "button") nested.push(child);
+        walk(child);
+      }
+    };
+    walk(elements.get("models"));
+    return fixedControls.concat(nested);
   },
 };
 const responseQueue = RESPONSES;
@@ -458,3 +466,110 @@ elements.set("lifecycle-sub", new Element("span", "lifecycle-sub"));
             "dot": dot,
             "sub": sub,
         }
+
+
+# ---------------------------------------------------------------------------
+# P-20261013-01: one button per variant for variant models
+# ---------------------------------------------------------------------------
+
+
+VARIANT_STATE = {
+    **FRESH,
+    "models": ["a", "qwen"],
+    "variants": {"qwen": {
+        "variants": ["text", "<b>vision</b>"],
+        "default": "text",
+        "active": "<b>vision</b>",
+    }},
+    "active_model": "qwen@text",
+    "lifecycle": "ready",
+}
+
+
+class TestPanelVariants:
+    _execute = staticmethod(TestExecutablePanelJavaScript._execute)
+
+    def test_variant_model_renders_one_button_per_variant_with_markers(self):
+        output = self._execute(r'''
+(async () => {
+  await flush();
+  const dump = (node) => ({
+    tag: node.tagName, className: node.className, text: node.textContent,
+    children: node.children.map(dump),
+  });
+  console.log(JSON.stringify(byId("models").children.map(dump)));
+})();
+''', [{"ok": True, "status": 200, "data": VARIANT_STATE}])
+        plain, group = output
+        assert (plain["tag"], plain["className"], plain["text"]) == (
+            "button", "model", "a"
+        )
+        assert (group["tag"], group["className"]) == ("div", "variant-group")
+        title, text_button, vision_button = group["children"]
+        assert (title["className"], title["text"]) == ("group-name", "qwen")
+        # Loaded variant: same green "Loaded" pill as plain models.
+        assert text_button["className"] == "model loaded"
+        label, pill = text_button["children"]
+        assert label["text"] == "text"
+        assert pill["className"] == "pill"
+        assert [(c["className"], c["text"]) for c in pill["children"]] == [
+            ("dot good", ""), ("", "Loaded"),
+        ]
+        # Active (chosen) but not loaded: "Active" pill; hostile name is text.
+        assert vision_button["className"] == "model"
+        label, pill = vision_button["children"]
+        assert label["text"] == "<b>vision</b>"
+        assert pill["className"] == "pill active"
+        assert [(c["className"], c["text"]) for c in pill["children"]] == [
+            ("dot", ""), ("", "Active"),
+        ]
+
+    def test_variant_button_sends_model_and_variant(self):
+        responses = [
+            {"ok": True, "status": 200, "data": VARIANT_STATE},
+            {"ok": True, "status": 200, "data": VARIANT_STATE},
+            {"ok": True, "status": 200, "data": VARIANT_STATE},
+        ]
+        output = self._execute(r'''
+(async () => {
+  await flush();
+  const group = byId("models").children[1];
+  const states = [];
+  group.children[2].click();
+  states.push(document.querySelectorAll("button, input").every((n) => n.disabled));
+  for (let i = 0; i < 5; i += 1) await flush();
+  console.log(JSON.stringify({
+    calls: fetchCalls,
+    disabledWhileMutating: states[0],
+    enabledAfter: document.querySelectorAll("button, input").every((n) => !n.disabled),
+    remaining: responseQueue.length,
+  }));
+})();
+''', responses)
+        calls = output["calls"]
+        assert [call["url"] for call in calls] == [
+            "/api/v1/control/state",
+            "/api/v1/control/model",
+            "/api/v1/control/state",
+        ]
+        assert calls[1]["options"] == {
+            "method": "PUT",
+            "headers": {
+                "X-Model-Switcher-Control": "1",
+                "Content-Type": "application/json",
+            },
+            "body": '{"model":"qwen","variant":"<b>vision</b>"}',
+        }
+        assert output["disabledWhileMutating"] is True
+        assert output["enabledAfter"] is True
+        assert output["remaining"] == 0
+
+    def test_state_without_variants_key_still_renders_plain_buttons(self):
+        output = self._execute(r'''
+(async () => {
+  await flush();
+  render({models: ["a", "b"], active_model: "b", lifecycle: "ready", settings: {}});
+  console.log(JSON.stringify(byId("models").children.map((n) => n.textContent)));
+})();
+''')
+        assert output == ["a", "bLoaded"]

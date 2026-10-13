@@ -121,7 +121,7 @@ async def _run_server(
     logger.info("Listening on %s:%d", host, port)
     logger.info(
         "Available models: %s",
-        ", ".join(swapper.config.models.keys()),
+        ", ".join(swapper.config.public_names()),
     )
 
     await shutdown_event.wait()

@@ -270,3 +270,93 @@ class TestTempDir:
         """cleanup_temp_dir does not fail on nonexistent dir."""
         cleanup_temp_dir(Path("/tmp/model-switcher-nonexistent"))
         # no exception
+
+
+class TestTempScriptPerModel:
+    """P-20261013-01: entries sharing one script get separate temp copies."""
+
+    def test_model_ids_sharing_a_script_get_separate_copies(self, tmp_path: Path):
+        script = tmp_path / "start.sh"
+        script.write_text("#!/bin/sh\nllama-server --port 8000\n")
+        script.chmod(0o755)
+
+        temp_dir = create_temp_dir()
+        try:
+            cmd_a, temp_a = rewrite_command(
+                str(script), 1111, temp_dir=temp_dir, model_id="qwen@text"
+            )
+            cmd_b, temp_b = rewrite_command(
+                str(script), 2222, temp_dir=temp_dir, model_id="qwen@vision"
+            )
+            assert temp_a != temp_b
+            assert temp_a.parent == temp_b.parent == temp_dir
+            assert "--port 1111" in temp_a.read_text()
+            assert "--port 2222" in temp_b.read_text()
+            assert cmd_a == str(temp_a) and cmd_b == str(temp_b)
+            assert temp_a.name.startswith("start.sh-qwen_text-")
+            assert temp_b.name.startswith("start.sh-qwen_vision-")
+            assert temp_a.name.endswith(f"-{os.getpid()}")
+        finally:
+            cleanup_temp_dir(temp_dir)
+
+    def test_ids_that_sanitize_alike_still_differ(self, tmp_path: Path):
+        script = tmp_path / "start.sh"
+        script.write_text("#!/bin/sh\nserve --port 8000\n")
+        temp_dir = create_temp_dir()
+        try:
+            _, first = rewrite_command(
+                str(script), 1, temp_dir=temp_dir, model_id="a@b"
+            )
+            _, second = rewrite_command(
+                str(script), 2, temp_dir=temp_dir, model_id="a/b"
+            )
+            assert first != second
+            assert "/" not in first.name.removeprefix("start.sh-")
+            assert "@" not in first.name
+        finally:
+            cleanup_temp_dir(temp_dir)
+
+    def test_without_model_id_keeps_old_name(self, tmp_path: Path):
+        script = tmp_path / "start.sh"
+        script.write_text("#!/bin/sh\nserve --port 8000\n")
+        temp_dir = create_temp_dir()
+        try:
+            _, temp = rewrite_command(str(script), 1, temp_dir=temp_dir)
+            assert temp.name == f"start.sh-{os.getpid()}"
+        finally:
+            cleanup_temp_dir(temp_dir)
+
+    async def test_swapper_rewrites_each_variant_of_a_shared_script(
+        self, tmp_path: Path
+    ):
+        import yaml
+
+        from src.config import load_config
+        from src.swapper import Swapper
+
+        script = tmp_path / "start.sh"
+        script.write_text("#!/bin/sh\nserve --port 8000 \"$@\"\n")
+        script.chmod(0o755)
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump({
+            "m": {"variants": {
+                "text": f"{script} --mode text",
+                "vision": f"{script} --mode vision",
+            }},
+            "other": str(script),
+        }))
+        swapper = Swapper(load_config(path))
+        try:
+            models = swapper.config.models
+            scripts = {
+                model_id: Path(mc.cmd.split()[0])
+                for model_id, mc in models.items()
+            }
+            assert len(set(scripts.values())) == 3
+            for model_id, temp in scripts.items():
+                assert temp.parent == swapper._temp_dir
+                assert f"--port {models[model_id].port}" in temp.read_text()
+            assert models["m@text"].cmd.endswith("--mode text")
+            assert models["m@vision"].cmd.endswith("--mode vision")
+        finally:
+            await swapper.shutdown()

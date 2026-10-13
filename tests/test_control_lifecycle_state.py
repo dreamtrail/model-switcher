@@ -105,6 +105,7 @@ class TestLifecycleStatePriority:
             await asyncio.wait_for(stop_entered.wait(), 1)
             assert swapper.control_state() | {} == {
                 "models": ["a", "b", "c"],
+                "variants": {},
                 "active_model": "a",
                 "pending_model": "b",
                 "lifecycle": "loading",

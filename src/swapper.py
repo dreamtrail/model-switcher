@@ -6,13 +6,14 @@ import asyncio
 import json
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 import aiohttp
 from aiohttp import web
 
-from src.config import Config
+from src.config import Config, variant_id
 from src.control import dispatch_control
 from src.health import wait_for_ready
 from src.port_rewrite import create_temp_dir
@@ -413,7 +414,7 @@ class Swapper(_SwapperLifecycleMixin):
 
         # Static /v1/models endpoint
         if path in ("/v1/models", "/models") and request.method == "GET":
-            model_names = list(self.config.models.keys())
+            model_names = self.config.public_names()
             return await handle_models_list(request, model_names)
 
         # Statistics endpoints (switcher-local, never proxied upstream)
@@ -464,9 +465,19 @@ class Swapper(_SwapperLifecycleMixin):
                 status=400,
             )
 
+        # A public name maps to the model id to run (the active variant
+        # for variant entries). Internal ids such as "name@variant" are
+        # not public, so clients sending them get 404 like unknown names.
+        target = self.config.resolve(model_name)
+
         # Unknown targets cannot consume capacity or mutate switch intent.
-        if model_name not in self.config.models:
-            self.stats.record_rejection("404", model_name)
+        if target is None:
+            # A client-sent internal id must not add a 404 to that
+            # variant's stats row; count it globally only.
+            self.stats.record_rejection(
+                "404",
+                None if model_name in self.config.models else model_name,
+            )
             return web.json_response(
                 _openai_error(f"Unknown model: {model_name}"),
                 status=404,
@@ -475,27 +486,40 @@ class Swapper(_SwapperLifecycleMixin):
         # Busy from here: queue and model-load wait count as utilized time.
         self._begin_busy()
         try:
-            outcome = await self._acquire_model(model_name, automatic=True)
+            outcome = await self._acquire_model(target, automatic=True)
             if outcome.kind != "success" or outcome.handle is None:
                 if outcome.kind == "success":
                     outcome = _LoadOutcome("model_start_failed")
-                return self._response_for_outcome(outcome, model_name)
+                return self._response_for_outcome(outcome, target)
             self._begin_activity()
             return await self._proxy_with_recorded_activity(
-                request, model_name, body, outcome.handle
+                request, target, body, outcome.handle
             )
         finally:
             self._end_busy()
 
     async def _acquire_model(
-        self, model_name: str, *, automatic: bool
+        self,
+        model_name: str,
+        *,
+        automatic: bool,
+        on_admit: Callable[[], None] | None = None,
     ) -> _LoadOutcome:
-        """Join or own the cancellation-safe model acquisition state machine."""
+        """Join or own the cancellation-safe model acquisition state machine.
+
+        ``on_admit`` runs synchronously right after an admission that joins,
+        owns, or already has the model, before any await, so it can publish
+        state that later admissions must see.
+        """
         generation: int
         while True:
             admission, value = self._admit_request(
                 model_name, automatic=automatic
             )
+            if on_admit is not None and (
+                admission != "outcome" or value.kind == "success"
+            ):
+                on_admit()
             if admission == "outcome":
                 return value
             if admission == "owner":
@@ -591,7 +615,15 @@ class Swapper(_SwapperLifecycleMixin):
         else:
             lifecycle = "idle"
         return {
-            "models": list(self.config.models.keys()),
+            "models": self.config.public_names(),
+            "variants": {
+                name: {
+                    "variants": list(group.variants),
+                    "default": group.default,
+                    "active": group.active,
+                }
+                for name, group in self.config.variants.items()
+            },
             "active_model": active_model,
             "pending_model": (
                 self._desired_model if lifecycle == "loading" else None
@@ -605,20 +637,45 @@ class Swapper(_SwapperLifecycleMixin):
             },
         }
 
-    async def control_load_model(self, model_name: str) -> str:
-        """Synchronously load one model without inference accounting."""
-        if model_name not in self.config.models:
+    async def control_load_model(
+        self, model_name: str, variant: str | None = None
+    ) -> str:
+        """Synchronously load one model without inference accounting.
+
+        ``model_name`` is a public name. For a variant entry, ``variant``
+        picks the variant to make active and load; without it the current
+        active variant loads. The choice is published in the same
+        synchronous step as admission, so requests arriving afterwards
+        resolve to the new variant; it stays if the load later fails.
+        """
+        group = self.config.variants.get(model_name)
+        target = self.config.resolve(model_name)
+        if target is None:
             return "unknown_model"
+        on_admit = None
+        if variant is not None:
+            if group is None:
+                return "model_has_no_variants"
+            if variant not in group.variants:
+                return "unknown_variant"
+            target = variant_id(model_name, variant)
+
+            def on_admit() -> None:
+                group.active = variant
         # Preserve precedence while making an already-active selection a true
         # no-op that does not rearm its idle countdown.
         if self._shutting_down:
             return "shutting_down"
         if self._stop_only_operation is not None:
             return "control_busy"
-        if not self._swapping and model_name == self.active_model:
+        if not self._swapping and target == self.active_model:
+            if on_admit is not None:
+                on_admit()
             return "success"
 
-        outcome = await self._acquire_model(model_name, automatic=False)
+        outcome = await self._acquire_model(
+            target, automatic=False, on_admit=on_admit
+        )
         if outcome.kind == "success":
             self._schedule_idle_timer()
         return outcome.kind

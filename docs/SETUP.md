@@ -13,8 +13,9 @@ See the [README quick start](../README.md#quick-start) (venv, `requirements.txt`
 
 ## Shutdown-hook stop budgets
 
-Optional per-model `shutdown_cmd` and `shutdown_timeout` are described in the
-[configuration guide](../README.md#optional-shutdown-hooks). Supply your own
+Optional `shutdown_cmd` and `shutdown_timeout` are set per model, or per
+variant for [variant models](../README.md#model-variants), and are described in
+the [configuration guide](../README.md#optional-shutdown-hooks). Supply your own
 local executable; this project does not provide remote scripts or SSH setup.
 The service's environment, working directory, PATH, and permissions apply to
 hooks. Use absolute executable paths where appropriate and arrange credentials

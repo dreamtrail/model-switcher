@@ -214,3 +214,140 @@ class TestLoadConfig:
         """Model name in ModelConfig matches the config key."""
         for name, mc in simple_config.models.items():
             assert mc.name == name
+
+
+# ---------------------------------------------------------------------------
+# P-20261013-01: model variants under one public name
+# ---------------------------------------------------------------------------
+
+
+class TestVariantConfig:
+    def test_variants_expand_to_ids_with_own_cmd_port_and_hook(self, tmp_config):
+        config = load_config(tmp_config({
+            "plain": "srv --port ${PORT}",
+            "qwen": {
+                "default": "vision",
+                "variants": {
+                    "text": "text-srv --port ${PORT} -a qwen",
+                    "vision": {
+                        "cmd": "vision-srv --port ${PORT}",
+                        "shutdown_cmd": "/bin/stop-vision",
+                        "shutdown_timeout": 12,
+                    },
+                },
+            },
+        }))
+        assert list(config.models) == ["plain", "qwen@text", "qwen@vision"]
+        text, vision = config.models["qwen@text"], config.models["qwen@vision"]
+        assert text.name == "qwen@text"
+        assert text.cmd == f"text-srv --port {text.port} -a qwen"
+        assert text.shutdown_cmd is None and text.shutdown_timeout == 30
+        assert vision.cmd == f"vision-srv --port {vision.port}"
+        assert vision.shutdown_cmd == "/bin/stop-vision"
+        assert vision.shutdown_timeout == 12
+        assert text.port != vision.port
+        group = config.variants["qwen"]
+        assert (group.variants, group.default, group.active) == (
+            ["text", "vision"], "vision", "vision"
+        )
+        assert config.public_names() == ["plain", "qwen"]
+        assert config.resolve("qwen") == "qwen@vision"
+        assert config.resolve("plain") == "plain"
+        # Internal ids are not public names.
+        assert config.resolve("qwen@text") is None
+        assert config.resolve("missing") is None
+
+    def test_default_falls_back_to_first_variant(self, tmp_path):
+        # Literal YAML: file order decides the first variant.
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            "m:\n"
+            "  variants:\n"
+            "    b: \"x --port ${PORT}\"\n"
+            "    a: \"y --port ${PORT}\"\n"
+        )
+        config = load_config(path)
+        assert config.variants["m"].variants == ["b", "a"]
+        assert config.variants["m"].default == "b"
+        assert config.variants["m"].active == "b"
+        assert config.public_names() == ["m"]
+
+    def test_plain_configs_have_no_variants(self, tmp_config):
+        config = load_config(tmp_config({"a": "x", "b": {"cmd": "y"}}))
+        assert config.variants == {}
+        assert config.public_names() == ["a", "b"]
+        # Manually built configs (as in many tests) keep working.
+        manual = Config(models={"a": ModelConfig("a", "x", 1)})
+        assert manual.public_names() == ["a"]
+        assert manual.resolve("a") == "a"
+
+    @pytest.mark.parametrize(
+        ("data", "message"),
+        [
+            ({"a@b": "x"}, "Model 'a@b' name must not contain '@'"),
+            ({"m": {"variants": {"t@1": "x"}}},
+             "Model 'm' variant 't@1' name must not contain '@'"),
+            ({"m": {"variants": {}}}, "'variants' must be a non-empty mapping"),
+            ({"m": {"variants": ["x"]}}, "'variants' must be a non-empty mapping"),
+            ({"m": {"variants": None}}, "'variants' must be a non-empty mapping"),
+            ({"m": {"variants": {"t": 5}}},
+             "Model 'm' variant 't' value must be a string or mapping"),
+            ({"m": {"variants": {"t": ""}}},
+             "Model 'm' variant 't' has an empty command"),
+            ({"m": {"variants": {"t": {"shutdown_cmd": "s"}}}},
+             "Model 'm' variant 't' has an empty command"),
+            ({"m": {"variants": {"t": {"cmd": "x", "shutdown_cmd": ""}}}},
+             "Model 'm' variant 't' has an invalid shutdown_cmd"),
+            ({"m": {"variants": {"t": {"cmd": "x", "shutdown_timeout": 3}}}},
+             "Model 'm' variant 't' shutdown_timeout requires shutdown_cmd"),
+            ({"m": {"variants": {"t": {
+                "cmd": "x", "shutdown_cmd": "s", "shutdown_timeout": 0}}}},
+             "Model 'm' variant 't' has an invalid shutdown_timeout"),
+            ({"m": {"variants": {"t": {"cmd": "x", "port": 1}}}},
+             "Model 'm' variant 't' has unknown key 'port'"),
+            ({"m": {"variants": {"t": {"cmd": "x", "variants": {}}}}},
+             "Model 'm' variant 't' has unknown key 'variants'"),
+            ({"m": {"variants": {1: "x"}}},
+             "Model 'm' variant names must be non-empty strings"),
+            ({"m": {"variants": {"": "x"}}},
+             "Model 'm' variant names must be non-empty strings"),
+            ({"m": {"variants": {"t": "x"}, "default": "v"}},
+             "Model 'm' default 'v' is not one of its variants: t"),
+            ({"m": {"variants": {"t": "x"}, "default": None}},
+             "Model 'm' default None is not one of its variants: t"),
+            ({"m": {"variants": {"t": "x"}, "cmd": "y"}},
+             "Model 'm' cannot set 'cmd' next to 'variants'"),
+            ({"m": {"variants": {"t": "x"}, "shutdown_cmd": "y"}},
+             "Model 'm' cannot set 'shutdown_cmd' next to 'variants'"),
+            ({"m": {"variants": {"t": "x"}, "shutdown_timeout": 3}},
+             "Model 'm' cannot set 'shutdown_timeout' next to 'variants'"),
+            ({"m": {"variants": {"t": "x"}, "extra": 1}},
+             "Model 'm' has unknown key 'extra'"),
+        ],
+    )
+    def test_invalid_variant_configs_fail_with_clear_errors(
+        self, tmp_config, data, message
+    ):
+        with pytest.raises(ValueError) as excinfo:
+            load_config(tmp_config(data))
+        assert message in str(excinfo.value)
+
+
+def test_commented_variants_example_in_config_example_loads(tmp_path):
+    """The commented variants example in config.example.yaml is valid."""
+    lines = pathlib.Path("config.example.yaml").read_text().splitlines()
+    start = lines.index("# qwen3.8-27b:")
+    block = []
+    for line in lines[start:]:
+        if not line.startswith("# "):
+            break
+        block.append(line[2:])
+    path = tmp_path / "variants.yaml"
+    path.write_text("\n".join(block) + "\n")
+    config = load_config(path)
+    assert config.public_names() == ["qwen3.8-27b"]
+    assert config.variants["qwen3.8-27b"].variants == ["text", "vision"]
+    assert config.resolve("qwen3.8-27b") == "qwen3.8-27b@text"
+    assert config.models["qwen3.8-27b@vision"].shutdown_cmd == (
+        "/path/to/stop-other-server"
+    )

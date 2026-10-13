@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -20,7 +21,11 @@ _PORT_FLAGS_RE = re.compile(
 
 
 def rewrite_command(
-    cmd: str, port: int, *, temp_dir: Path | None = None
+    cmd: str,
+    port: int,
+    *,
+    temp_dir: Path | None = None,
+    model_id: str | None = None,
 ) -> tuple[str, Path | None]:
     """Rewrite a command to use the given port.
 
@@ -36,6 +41,8 @@ def rewrite_command(
         port: The auto-assigned free port.
         temp_dir: Directory for temp script copies. If None, scripts get
             ``--port`` appended instead of being rewritten.
+        model_id: Model id put in the temp script name, so entries that
+            share one script file get separate copies.
 
     Returns:
         A tuple of (rewritten_command, temp_path_or_None).
@@ -53,7 +60,9 @@ def rewrite_command(
     first_token = cmd.split()[0] if cmd.split() else cmd
     script_path = Path(first_token)
     if script_path.is_file() and temp_dir is not None:
-        return _rewrite_script(script_path, cmd, port_str, temp_dir)
+        return _rewrite_script(
+            script_path, cmd, port_str, temp_dir, model_id
+        )
 
     # Direct command (or script without temp_dir) — replace port flags
     rewritten = _PORT_FLAGS_RE.sub(
@@ -69,7 +78,11 @@ def rewrite_command(
 
 
 def _rewrite_script(
-    script_path: Path, cmd: str, port_str: str, temp_dir: Path
+    script_path: Path,
+    cmd: str,
+    port_str: str,
+    temp_dir: Path,
+    model_id: str | None = None,
 ) -> tuple[str, Path]:
     """Copy a script to temp_dir, replace port flags, return temp path.
 
@@ -78,6 +91,7 @@ def _rewrite_script(
         cmd: The original command string (may include args after script path).
         port_str: The port number as a string.
         temp_dir: Directory to place the temp script copy.
+        model_id: Optional model id added to the temp file name.
 
     Returns:
         A tuple of (full_command_with_temp_path, temp_path).
@@ -91,8 +105,8 @@ def _rewrite_script(
         content,
     )
 
-    # Create temp file with unique name
-    temp_path = temp_dir / f"{script_path.name}-{os.getpid()}"
+    # Create temp file with unique name (per model id when given)
+    temp_path = temp_dir / _temp_script_name(script_path.name, model_id)
     temp_path.write_text(rewritten_content, encoding="utf-8")
     _copy_executable_permission(script_path, temp_path)
 
@@ -116,6 +130,19 @@ def _rewrite_script(
             full_cmd = f"{temp_path} --port {port_str}"
 
     return full_cmd, temp_path
+
+
+def _temp_script_name(script_name: str, model_id: str | None) -> str:
+    """Name of a script's temp copy; unique per model id and process.
+
+    The id is sanitized for use in a file name; a short hash of the raw id
+    keeps ids that sanitize to the same text apart.
+    """
+    if model_id is None:
+        return f"{script_name}-{os.getpid()}"
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", model_id)[:64]
+    digest = hashlib.sha256(model_id.encode("utf-8")).hexdigest()[:8]
+    return f"{script_name}-{safe}-{digest}-{os.getpid()}"
 
 
 def _replace_port_in_match(match_text: str, port_str: str) -> str:

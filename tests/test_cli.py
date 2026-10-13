@@ -16,6 +16,7 @@ import pytest
 from src import __version__
 import src.cli as cli_module
 from src.cli import _main, parse_args
+from src.config import Config, ModelConfig
 
 
 class TestParseArgs:
@@ -361,7 +362,8 @@ class TestRunServer:
                 captured["site_started"] = True
 
         class FakeSwapper:
-            config = type("Config", (), {"models": {"model-a": object()}})()
+            # Real Config: the startup log lists its public names.
+            config = Config(models={"model-a": ModelConfig("model-a", "x")})
 
             async def handle_request(self, request):
                 raise AssertionError("handler should not be called")

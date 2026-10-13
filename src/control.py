@@ -28,8 +28,13 @@ class ControlController(Protocol):
     ) -> str:
         """Atomically apply settings and return a lifecycle outcome kind."""
 
-    async def control_load_model(self, model_name: str) -> str:
-        """Load a configured model and return a lifecycle outcome kind."""
+    async def control_load_model(
+        self, model_name: str, variant: str | None = None
+    ) -> str:
+        """Load a configured model and return a lifecycle outcome kind.
+
+        ``variant`` (variant entries only) makes that variant active first.
+        """
 
     async def control_unload_model(self) -> str:
         """Unload the tracked model and return a lifecycle outcome kind."""
@@ -238,17 +243,38 @@ async def _put_model(
         return error
     if (
         not isinstance(data, dict)
-        or set(data) != {"model"}
+        or set(data) not in ({"model"}, {"model", "variant"})
         or not isinstance(data["model"], str)
         or not data["model"]
+        or (
+            "variant" in data
+            and (not isinstance(data["variant"], str) or not data["variant"])
+        )
     ):
         return _error(
             400, "Invalid control request", "invalid_control_request"
         )
     model_name = data["model"]
-    outcome = await controller.control_load_model(model_name)
+    if "variant" in data:
+        variant = data["variant"]
+        outcome = await controller.control_load_model(model_name, variant)
+    else:
+        variant = None
+        outcome = await controller.control_load_model(model_name)
     if outcome == "unknown_model":
         return _error(404, f"Unknown model: {model_name}", "unknown_model")
+    if outcome == "unknown_variant":
+        return _error(
+            404,
+            f"Unknown variant for model {model_name}: {variant}",
+            "unknown_variant",
+        )
+    if outcome == "model_has_no_variants":
+        return _error(
+            400,
+            f"Model {model_name} has no variants",
+            "model_has_no_variants",
+        )
     if outcome != "success":
         return _outcome_error(outcome)
     return _state_response(controller)
@@ -426,6 +452,13 @@ CONTROL_HTML = """<!DOCTYPE html>
     font-size: 0.7rem; font-weight: 500;
   }
   .pill .dot { width: 0.4rem; height: 0.4rem; }
+  .pill.active { background: var(--wash); }
+  .variant-group {
+    display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.35rem;
+    padding: 0.2rem 0.3rem 0.2rem 0.6rem; border-radius: 10px;
+    border: 1px dashed var(--ring);
+  }
+  .variant-group .group-name { color: var(--ink-2); font-size: 0.8rem; }
   .setting {
     display: flex; align-items: center; gap: 0.6rem; margin: 0 0 0.75rem;
     color: var(--ink-2); font-size: 0.9rem;
@@ -536,25 +569,49 @@ function renderLifecycle(value) {
   if (dot) dot.className = known[0] ? "dot " + known[0] : "dot";
   text("lifecycle-sub", known[1]);
 }
-function modelButton(name, loaded) {
+function statusPill(word, loaded) {
+  const pill = document.createElement("span");
+  pill.className = loaded ? "pill" : "pill active";
+  const dot = document.createElement("span");
+  dot.className = loaded ? "dot good" : "dot";
+  pill.appendChild(dot);
+  const label = document.createElement("span");
+  label.textContent = word;
+  pill.appendChild(label);
+  return pill;
+}
+function modelButton(name, loaded, active) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = loaded ? "model loaded" : "model";
   const label = document.createElement("span");
   label.textContent = name;
   button.appendChild(label);
-  if (loaded) {
-    const pill = document.createElement("span");
-    pill.className = "pill";
-    const dot = document.createElement("span");
-    dot.className = "dot good";
-    pill.appendChild(dot);
-    const word = document.createElement("span");
-    word.textContent = "Loaded";
-    pill.appendChild(word);
-    button.appendChild(pill);
-  }
+  // "Loaded": this process serves requests now. "Active": the variant that
+  // requests for the model name go to (shown when it is not loaded).
+  if (loaded) button.appendChild(statusPill("Loaded", true));
+  else if (active) button.appendChild(statusPill("Active", false));
   return button;
+}
+function variantGroup(name, group, state) {
+  const box = document.createElement("div");
+  box.className = "variant-group";
+  const title = document.createElement("span");
+  title.className = "group-name";
+  title.textContent = name;
+  box.appendChild(title);
+  for (const variant of Array.isArray(group.variants) ? group.variants : []) {
+    const id = name + "@" + String(variant);
+    const button = modelButton(
+      String(variant), id === state.active_model, variant === group.active
+    );
+    button.disabled = mutating;
+    button.addEventListener("click", function () {
+      loadVariant(name, String(variant));
+    });
+    box.appendChild(button);
+  }
+  return box;
 }
 function render(state) {
   if (!state || typeof state !== "object") return;
@@ -570,8 +627,14 @@ function render(state) {
   byId("idle-timeout").value = String(settings.idle_timeout_seconds ?? 0);
   const list = byId("models");
   list.textContent = "";
+  const groups = state.variants && typeof state.variants === "object" ? state.variants : {};
   for (const name of Array.isArray(state.models) ? state.models : []) {
-    const button = modelButton(String(name), name === state.active_model);
+    const group = Object.prototype.hasOwnProperty.call(groups, name) ? groups[name] : null;
+    if (group && typeof group === "object") {
+      list.appendChild(variantGroup(String(name), group, state));
+      continue;
+    }
+    const button = modelButton(String(name), name === state.active_model, false);
     button.disabled = mutating;
     button.addEventListener("click", function () { loadModel(String(name)); });
     list.appendChild(button);
@@ -621,6 +684,9 @@ async function mutate(path, method, body) {
   }
 }
 function loadModel(name) { return mutate("/model", "PUT", {model: name}); }
+function loadVariant(name, variant) {
+  return mutate("/model", "PUT", {model: name, variant: variant});
+}
 function unloadModel() { return mutate("/model", "DELETE"); }
 function saveSettings() {
   if (!latestState) return;

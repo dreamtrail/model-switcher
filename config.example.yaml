@@ -2,6 +2,9 @@
 # Each key is a model name used in API requests.
 # Each value is a startup command string, or a mapping with cmd and optional
 # shutdown_cmd / shutdown_timeout. Existing string entries remain supported.
+# A mapping with "variants" gives one name several launch commands; pick the
+# active one at runtime from /control (see the variants example at the end).
+# Model and variant names must not contain "@".
 #
 # The switcher always auto-assigns a free port for each model.
 # Port rewriting works in three ways:
@@ -78,3 +81,23 @@ my-model: "./start-model.sh --ctx 8192 --threads 4"
 #   cmd: "my-model-server --port ${PORT}"
 #   shutdown_cmd: "/path/to/stop-my-model --model hooked-model"
 #   shutdown_timeout: 30
+
+# --- Model variants: one model name, several launch commands ---
+# Clients always send the model name ("qwen3.8-27b"); the switcher runs the
+# active variant. Switch variants on /control or with
+# PUT /api/v1/control/model {"model": "qwen3.8-27b", "variant": "vision"}.
+# Each variant is a command string or a mapping with cmd and optional
+# shutdown_cmd / shutdown_timeout (hooks are per variant). default is optional
+# (first variant if omitted). The choice is kept in memory only: a restart
+# starts on default. Each variant's server must accept the model name, because
+# the request body is forwarded unchanged. Stats show one row per variant
+# (qwen3.8-27b@text, qwen3.8-27b@vision). A name may appear only once, so
+# remove the plain qwen3.8-27b entry above before using this one.
+# qwen3.8-27b:
+#   default: text
+#   variants:
+#     text: "llama-server --model /path/to/qwen3.8-27b.gguf --port ${PORT} -a qwen3.8-27b"
+#     vision:
+#       cmd: "other-server --model /path/to/qwen3.8-27b-vl --port ${PORT} --served-model-name qwen3.8-27b"
+#       shutdown_cmd: "/path/to/stop-other-server"
+#       shutdown_timeout: 30

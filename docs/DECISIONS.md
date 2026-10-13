@@ -533,3 +533,25 @@ chunk detection, and page layout from that section still apply.
 
 ### Verification Trade-off
 - **Use a deterministic loopback fake pinned to `609ca419`** — a stdlib HTTP/1.1 fake installed as `tensorfold` on `PATH` and launched through the unmodified `config.example.yaml` recipe covers port-after-load, `/health`, JSON and SSE (finish chunk with `tensorfold`, separate usage chunk, `[DONE]`), a 500 with `request error:` and a stderr traceback, `PYTHONUNBUFFERED` reaching the server, log levels, and a clean SIGTERM stop, through the real config, health, switcher, process, and proxy paths. TensorFold is not installed, no model is downloaded, and no GPU is used; real-hardware behavior (load and download time, stop time, CUDA stats keys) is not verified, and README documents a manual check.
+
+## P-20261013-01 — Model variants
+
+### Config Shape
+- **One entry, several launch variants** — user decision 2026-10-13 (option A): a top-level entry may have `variants:` (name -> command string or mapping with `cmd`, `shutdown_cmd`, `shutdown_timeout`) and an optional `default` (first variant if omitted). Plain entries are unchanged, and automatic switching between different names is kept.
+- **Each variant is its own model internally** — `load_config` expands a variant to a `ModelConfig` with the id `name@variant`, so it has its own command, port, and shutdown hook (user decision: hooks per variant, because variants may use different servers). `Config.variants` holds, per public name, the variant names, `default`, and the runtime `active` choice. Everything below the entry points (quick switch, idle release, swaps, hooks, stats) works on the id unchanged.
+- **Strict validation for the new syntax** — `@` is rejected in model and variant names so ids cannot collide; `variants` must be a non-empty mapping; `default` must name a variant; `cmd`/`shutdown_*` or unknown keys beside `variants`, and unknown keys inside a variant mapping, are errors. Plain mappings still ignore unknown keys, as before.
+
+### Routing
+- **Resolve once at the entry points** — `Config.resolve` maps a public name to the active variant id in `handle_request` (before the 404 check) and in `control_load_model`. Internal ids are not public: a client sending `name@variant` gets 404, and that rejection is counted only globally so it does not add an error to the real variant's stats row. `/v1/models` lists public names only. The request body is forwarded unchanged, so each variant's server must serve the public name.
+- **Choice and admission in one synchronous step** — `PUT /api/v1/control/model` with `{"model", "variant"}` sets the active variant inside the admission step of `_acquire_model` (an `on_admit` callback with no await before it). Requests that arrive afterwards resolve to the new variant and join its load. If admission refuses the load (`switch_in_progress`, `queue_full`, `control_busy`, `shutting_down`), the choice does not change, so a refused switch leaves routing as it was. If the load is admitted and then fails, the choice stays: it is what the user picked. New error kinds: 404 `unknown_variant`, 400 `model_has_no_variants`.
+- **State** — `models` stays the public names; `active_model`/`pending_model` are ids (they match stats rows); new key `variants`. The control page shows one button per variant with "Loaded" and "Active" badges.
+
+### Persistence and Stats
+- **In memory only** — the chosen variant is not saved; a restart starts on `default`, matching the other process-local control settings. Persisting it is open (user undecided): TODO P-20261013-02.
+- **One stats row per variant** — user decision: rows are keyed by id (`qwen3.8-27b@vision`); no stats code changed.
+
+### Script Temp Copies
+- **Temp copy name includes the model id** — the copy of a startup script was named `{script}-{pid}`, so two entries using the same script overwrote each other's copy (wrong port). Variants make sharing a script likely, so the name is now `{script}-{sanitized id}-{hash of id}-{pid}`; the hash keeps ids that sanitize to the same text apart.
+
+### Verification Trade-off
+- **Fake and real local servers, no real backends** — routing, control API, atomicity, and stats are tested through the real Swapper with in-process upstreams and faked process start/stop (`tests/test_variants_routing.py`); one test runs real processes from a shared script with per-variant hooks through the real config, port rewrite, process, health, proxy, and control paths (`tests/test_variants_e2e.py`). Real model servers were not run.

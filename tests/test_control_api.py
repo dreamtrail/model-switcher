@@ -69,6 +69,7 @@ class TestStateAndReservedRoutes:
         assert response.headers["Cache-Control"] == "no-store"
         assert data == {
             "models": ["model-a", "model-b"],
+            "variants": {},
             "active_model": None,
             "pending_model": None,
             "lifecycle": "idle",
@@ -183,6 +184,7 @@ class TestSettingsValidation:
             }
             base = {
                 "models": ["a"],
+                "variants": {},
                 "active_model": None,
                 "pending_model": None,
                 "lifecycle": "idle",

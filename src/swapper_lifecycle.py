@@ -617,8 +617,8 @@ class _SwapperLifecycleMixin:
         """
         if self._temp_dir is None:
             return
-        for mc in self.config.models.values():
+        for model_id, mc in self.config.models.items():
             rewritten_cmd, _temp_path = rewrite_command(
-                mc.cmd, mc.port, temp_dir=self._temp_dir
+                mc.cmd, mc.port, temp_dir=self._temp_dir, model_id=model_id
             )
             mc.cmd = rewritten_cmd

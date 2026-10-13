@@ -41,6 +41,7 @@ mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port ${PORT}"
 
 - `${PORT}` — replaced at runtime with a free port.
 - Commands run in the foreground; the switcher manages their lifecycle.
+- One name can have several launch commands (for example text and vision): see [Model variants](#model-variants).
 
 ### Optional shutdown hooks
 
@@ -78,6 +79,44 @@ is the script's confirmation, **not independent verification of remote state**.
 No remote scripts or SSH integration are included. See
 [service stop budgets and limitations](docs/SETUP.md#shutdown-hook-stop-budgets).
 
+### Model variants
+
+A variant entry gives one model name several launch commands. Clients (for
+example an agent harness) always send the same name; you pick which variant
+runs from the [control panel or API](#control-panel-and-runtime-api). The
+client never sees the switch.
+
+```yaml
+qwen3.8-27b:
+  default: text            # optional; the first variant if omitted
+  variants:
+    text: "llama-server --model /path/to/qwen3.8-27b.gguf --port ${PORT} -a qwen3.8-27b"
+    vision:
+      cmd: "other-server --model /path/to/qwen3.8-27b-vl --port ${PORT} --served-model-name qwen3.8-27b"
+      shutdown_cmd: "/path/to/stop-other-server"
+      shutdown_timeout: 30
+```
+
+- Each variant is a command string or a mapping with `cmd` and optional
+  `shutdown_cmd` / `shutdown_timeout`, with the same rules as a plain entry.
+  Each variant gets its own port and its own [shutdown hook](#optional-shutdown-hooks).
+- Only `variants` and `default` may sit beside each other at the top of the
+  entry; `cmd`, `shutdown_cmd`, `shutdown_timeout`, or any other key there is a
+  config error. Unknown keys inside a variant are errors too. `default` must name
+  a variant. Model and variant names must not contain `@`.
+- Inside the switcher each variant is a separate model with the id
+  `name@variant` (`qwen3.8-27b@vision`). That id appears in `active_model`,
+  `pending_model`, logs, and [statistics](#statistics) rows (one row per variant).
+  Clients cannot use it: a request for `qwen3.8-27b@vision` gets 404.
+- A request for `qwen3.8-27b` goes to the active variant, which starts as
+  `default`. Switching the variant stops the running one (its own hook first),
+  starts the new one, and sends later `qwen3.8-27b` requests to it.
+- The request body is forwarded unchanged, so every variant's server must
+  accept the public name (`-a`, `--served-model-name`, or the like).
+- `GET /v1/models` lists `qwen3.8-27b` once, not the variants.
+- The chosen variant is kept in memory only; a restart starts each entry on its
+  `default`.
+
 ## Quick Switching
 
 By default, a request for the model that is already loading joins that load. A request for a different model is refused immediately with HTTP 409 and `error.code: "switch_in_progress"`; it is not queued to trigger another slow load afterward.
@@ -94,7 +133,7 @@ Process creation failures return HTTP 500 with `error.code: "model_start_failed"
 
 ## Control Panel and Runtime API
 
-Open `http://localhost:8080/control` to use the dependency-free control panel on the existing listener. It shows configured, active, and pending models, lifecycle state, in-flight request count, and the three runtime settings. It can load or switch to a model, unload the active model, and update settings. It uses the same look as the statistics dashboard (light and dark theme, status tiles, cards); the loaded model's button carries a "Loaded" badge, and the header links to `/stats` (the dashboard links back to `/control`). It never displays or edits model commands, assigned ports, process IDs, environment values, or the config path.
+Open `http://localhost:8080/control` to use the dependency-free control panel on the existing listener. It shows configured, active, and pending models, lifecycle state, in-flight request count, and the three runtime settings. It can load or switch to a model, unload the active model, and update settings. A [variant model](#model-variants) shows its name with one button per variant: the loaded variant has a "Loaded" badge, and the active variant (where requests go) has an "Active" badge when it is not loaded; clicking a variant makes it active and loads it. It uses the same look as the statistics dashboard (light and dark theme, status tiles, cards); the loaded model's button carries a "Loaded" badge, and the header links to `/stats` (the dashboard links back to `/control`). It never displays or edits model commands, assigned ports, process IDs, environment values, or the config path.
 
 > **Network trust warning:** the control API has no authentication or authorization. `X-Model-Switcher-Control: 1` protects browsers against cross-site request forgery; it does **not** prove who the caller is. Binding model-switcher to `0.0.0.0` or another shared interface grants every network-reachable client process-control authority. Use this only on a trusted local network. If the listener is exposed beyond that boundary, put an authenticated service in front of it or do not expose it.
 
@@ -105,7 +144,7 @@ The switcher-local routes are:
 | `GET` | `/control` | Browser control panel |
 | `GET` | `/api/v1/control/state` | Full runtime state |
 | `PUT` | `/api/v1/control/settings` | Replace all three runtime settings |
-| `PUT` | `/api/v1/control/model` | Load or switch to one configured model |
+| `PUT` | `/api/v1/control/model` | Load or switch to one configured model (or variant) |
 | `DELETE` | `/api/v1/control/model` | Unload the tracked model |
 
 `/control` and every path at or below `/api/v1/control` are reserved and intentionally shadow matching upstream routes. State responses use `Cache-Control: no-store`. Every mutation requires `X-Model-Switcher-Control: 1`; PUT requests also require `Content-Type: application/json` and a body no larger than 4 KiB. DELETE is bodyless. The service emits no CORS permission headers.
@@ -114,7 +153,10 @@ Example state:
 
 ```json
 {
-  "models": ["llama-3.1-8b", "mistral-7b"],
+  "models": ["llama-3.1-8b", "mistral-7b", "qwen3.8-27b"],
+  "variants": {
+    "qwen3.8-27b": {"variants": ["text", "vision"], "default": "text", "active": "text"}
+  },
   "active_model": "llama-3.1-8b",
   "pending_model": null,
   "lifecycle": "ready",
@@ -126,6 +168,8 @@ Example state:
   }
 }
 ```
+
+`models` lists the names clients send. `variants` has one entry per [variant model](#model-variants) (empty `{}` when there are none). `active_model` and `pending_model` are model ids, so a variant shows as `qwen3.8-27b@text`.
 
 The lifecycle vocabulary is `idle`, `loading`, `ready`, `unloading`, `cleanup_failed`, and `shutting_down`. Mutations wait for model readiness or confirmed cleanup and then return the full state document. Loading the already-active healthy model and unloading when no model is tracked are successful no-ops.
 
@@ -142,15 +186,22 @@ curl -X PUT http://127.0.0.1:8080/api/v1/control/model \
   -H 'X-Model-Switcher-Control: 1' \
   -d '{"model":"mistral-7b"}'
 
+curl -X PUT http://127.0.0.1:8080/api/v1/control/model \
+  -H 'Content-Type: application/json' \
+  -H 'X-Model-Switcher-Control: 1' \
+  -d '{"model":"qwen3.8-27b","variant":"vision"}'
+
 curl -X DELETE http://127.0.0.1:8080/api/v1/control/model \
   -H 'X-Model-Switcher-Control: 1'
 ```
+
+The model body is `{"model": name}` or, for a variant model, `{"model": name, "variant": variant}`. With `variant`, that variant becomes active in the same step that admits the load, so requests arriving after it go to the new variant (they join its load instead of getting `switch_in_progress`). If the load is refused before it starts (for example 409 `switch_in_progress` without quick switching, or `control_busy`), the active variant does not change. If the load starts and then fails, the new choice stays. `{"model": name}` alone loads the active variant. An unknown variant returns 404 `unknown_variant`; `variant` on a model without variants returns 400 `model_has_no_variants`; a variant id such as `qwen3.8-27b@vision` in `model` returns 404 `unknown_model`. With quick switching, a pending request for the old variant is superseded (409 `swap_superseded`).
 
 `automatic_switch=false` pins inference routing to the currently healthy model. Explicit requests for that model and model-less requests routed to it continue; known requests that would load, join, or change a model return HTTP 409 with `error.code: "automatic_switch_disabled"`. Unknown models remain 404. Manual model controls bypass only this automatic-switch policy: they still share the same bounded admission, latest-wins quick-switch setting, cleanup, readiness, and shutdown rules. A manual unload returns 409 `control_busy` while a load/switch or another unload is pending. Disabling automatic switching does not cancel work already admitted.
 
 Changing a positive idle timeout restarts the countdown from the update time when a healthy model is idle; zero disables idle unload. Cleanup already in progress still finishes. Manual switches and unloads preserve the existing model-change behavior and may interrupt in-flight requests using the previous process; the panel shows the in-flight count but does not drain requests.
 
-All control settings are process-local. Restart restores `automatic_switch=true`, the command-line `--quick-switch` value, and the command-line `--idle-timeout` value; no YAML is changed.
+All control settings are process-local. Restart restores `automatic_switch=true`, the command-line `--quick-switch` value, the command-line `--idle-timeout` value, and each variant model's `default` variant; no YAML is changed.
 
 ## SGLang
 
@@ -266,7 +317,7 @@ Current NInfer artifacts expose these embedded IDs:
 - `qwen3.8-27b`
 - `qwen3.6-35b-a3b`
 
-The API request's `model` must match the config key exactly, including case. The groupwise and NVFP4 artifacts for each 27B family share the same embedded ID, so both weight variants of that family cannot be configured simultaneously without aliases. Model-switcher does not rewrite model IDs.
+The API request's `model` must match the config key exactly, including case. The groupwise and NVFP4 artifacts for each 27B family share the same embedded ID, so both weight variants of that family cannot be configured simultaneously without aliases as separate entries. Configure them as [variants](#model-variants) of that one ID instead and pick the active artifact from `/control`; the request `model` stays the embedded ID. Model-switcher does not rewrite model IDs.
 
 NInfer's `/health` becomes available after model loading and warm-up. Model-switcher then proxies its OpenAI-compatible JSON and SSE output unchanged: Chat Completions streams end with `data: [DONE]`, while Responses API streams use named `event:` records and a terminal response event without `[DONE]`. Upstream statuses, error bodies, and headers such as `x-request-id` are forwarded normally. On a swap or shutdown, model-switcher sends SIGTERM before its existing forced-stop fallback.
 
@@ -544,7 +595,7 @@ Speed is tokens ÷ time (N tokens, not N − 1). Flags for exact generation spee
 | Strata | none |
 | TensorFold | none available: streaming uses the switcher's own timing; non-streaming generation is not timed |
 
-Known limitations: these paths shadow upstreams serving the same paths (like `/v1/models`); latency samples are unbounded in memory (fine for a local dev tool); requests naming unknown models each create a per-model stats row keyed by the client-supplied name; the pending SSE line buffer is capped (~64 KiB) — once the cap is hit, non-line-shaped content (e.g. a binary audio stream without newlines) is discarded, so token metrics may be absent for such streams (byte counts remain exact).
+Known limitations: these paths shadow upstreams serving the same paths (like `/v1/models`); latency samples are unbounded in memory (fine for a local dev tool); requests naming unknown models each create a per-model stats row keyed by the client-supplied name (a client-sent variant id such as `name@variant` is counted only in the global errors, not in that variant's row); the pending SSE line buffer is capped (~64 KiB) — once the cap is hit, non-line-shaped content (e.g. a binary audio stream without newlines) is discarded, so token metrics may be absent for such streams (byte counts remain exact).
 
 ## CLI Reference
 
@@ -563,14 +614,14 @@ For positive `--timeout` values, model swaps and non-streaming requests must fin
 
 ## API Endpoints
 
-- `GET /v1/models` — list available models (static from config)
+- `GET /v1/models` — list available models (static from config; a [variant model](#model-variants) appears once under its public name)
 - `GET /models` — alias for `/v1/models`
 - `* /{path:.*}` — proxied to the active upstream model
 
 ## How It Works
 
 1. Client sends a request with a `model` field.
-2. Switcher checks if that model is running.
+2. Switcher maps the name to the model to run (the active variant for a [variant model](#model-variants)) and checks if it is running.
 3. If not (or a different model is active), it stops the current one and starts the requested model.
 4. It waits for the new model to report healthy (`/health` endpoint).
 5. The request is proxied to the upstream server. Request headers are forwarded except hop-by-hop headers and `Host`: the upstream gets its own address (`127.0.0.1:<port>`) as `Host`, like a default nginx proxy, so backends that reject unknown host names (such as [Strata](#strata)) work when clients use the switcher's network name.
