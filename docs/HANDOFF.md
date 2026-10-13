@@ -1,20 +1,22 @@
 ## Handoff Card
 
-- Goal: TensorFold inference server support (done, plus stream-error log fix); next, docs/code size cleanup.
-- As-Of: 2026-10-05 15:15 UTC (2026-10-06 00:15 +0900)
-- Branch/HEAD: master @ 8437daf (before this handoff commit); 3 commits ahead of upstream, not pushed
+- Goal: Model variants, live config reload (API, panel, SIGHUP), binary-by-path fix, and /stats Errors dot removal are done; next, size cleanups.
+- As-Of: 2026-10-13 05:18 UTC (2026-10-13 14:18 +0900)
+- Branch/HEAD: master @ 9c332d7 (before this handoff commit); 5 commits ahead of upstream, not pushed
 - Mode: FINISHED
-- Working On: P-20260930-04
-- Stop Point: P-20261005-04 committed (740242d) and P-20261006-01 committed (8437daf), each after independent review (PASS with minors).
-- Next Step: Size cleanups in TODO Next order. Push/deploy is the owner's call (user not yet asked to push). Real TensorFold/GPU check is P-20261005-05.
+- Working On: P-20261013-12
+- Stop Point: P-20261013-11 committed (9c332d7) after review PASS; all session plans closed in their records.
+- Next Step: Size cleanups in TODO Next order. Pushing is the owner's call (not yet asked). P-20261013-09 (doubled port flag) is the most user-visible Discovered bug; the user may promote it.
+- Running Agents: none
+- Uncommitted Work: none
 - Key Decisions:
-  - TensorFold needs no health/proxy change: port opens only after load; `/health` 200 = ready.
-  - Prompt time from `tensorfold.prefill_seconds` (MLX) / `prefill_s` (CUDA), same slot as `usage.prompt_time`; generation speed stays proxy-timed (`tokens_per_second`/`seconds` span unverified).
-  - `[tensorfold] ` message starting `error:` / `request error:` / `stream error:` = error, `warning:` = warning; `... failed:` stays info (`docs/DECISIONS.md` § P-20261005-04).
-- Key Files: `src/process_manager.py` (`_TENSORFOLD_*`), `src/prefill.py`, `tests/test_tensorfold_compat.py`, README § TensorFold, `config.example.yaml`; records `artifacts/P-20261005-04/` (plan, research, review), `artifacts/P-20261006-01/plan.md`.
+  - Variants: internal id `name@variant`, one stats row each; clients only see the public name; chosen variant is in memory, restart starts on `default` (P-20261013-02 open).
+  - Reload: running model keeps its old settings until next start; unchanged entries keep port and script copy; reload refused (409) during a load/unload; errors show the config file name only.
+  - Script mode needs a UTF-8 text file without NUL bytes; anything else (programs by path) is a direct command.
+- Key Files: `src/config.py` (variants, validation), `src/swapper_lifecycle.py` (`control_reload_config`), `src/port_rewrite.py` (`_is_text_script`, `script_fingerprint`), `src/cli.py` (`reload_on_sighup`), `src/control.py` (reload route, variant buttons); records `artifacts/P-20261013-01/`, `-04/`, `-07/`, `-10/`, `-11/` (plan.md, review files).
 - Env Hints: `.venv` available, not active; Python 3.13.5.
-- Critical Context: User forbids Co-Authored-By trailers. Reviewers must not run `git stash`/checkout. TensorFold recipe pinned to TensorFold commit 609ca419 (fake server only).
-- Completed Since Last: P-20261005-04, P-20261006-01
+- Critical Context: User forbids Co-Authored-By trailers. Reviewers must not run `git stash`/checkout. `docs/SETUP.md` `ExecReload=` not run under real systemd; wrapper must `exec` the switcher.
+- Completed Since Last: P-20261013-01, P-20261013-04, P-20261013-03, P-20261013-06, P-20261013-05, P-20261013-08, P-20261013-11
 - Commands: `timeout 300 .venv/bin/python -m pytest -q tests`; `timeout 60 .venv/bin/python -m compileall -q src tests`; `git diff --check`.
-- Verification: full suite 1166 passed at 740242d (before 8437daf); 8437daf: affected 110 passed, diff --check clean; full suite not re-run after 8437daf.
-- Risks/Blockers: TensorFold and Strata not run on real hardware; 3 s stop grace vs MLX checkpoint save / Strata stop (P-20261005-05, P-20261005-02).
+- Verification: full suite 1318 passed (review of 1cca45d + 9c332d7 tree); stats tests 330 passed at 9c332d7.
+- Risks/Blockers: no feature this session was run on real model servers or a real browser; P-20261013-09 can break servers that reject a repeated `--port`.
