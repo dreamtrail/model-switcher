@@ -441,8 +441,8 @@ class TestStatsPageRendering:
         assert rows[3]["children"][8]["className"] == "muted"
         assert rows[1]["children"][8]["title"] == ""
 
-        # Errors: critical dot only when > 0; zero is muted.
-        assert _classes(rows[0]["children"][2]) == ["dot critical", ""]
+        # Errors: plain count (no dot) when > 0; zero is muted.
+        assert _classes(rows[0]["children"][2]) == [""]
         assert _classes(rows[3]["children"][2]) == ["muted"]
         # TTFT: numbers in primary ink, unit muted.
         assert _classes(rows[0]["children"][9]) == ["", "muted"]

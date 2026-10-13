@@ -1362,7 +1362,6 @@ STATS_HTML = """<!DOCTYPE html>
   }
   .pill .dot { width: 0.4rem; height: 0.4rem; }
   .muted { color: var(--muted); }
-  td .dot.critical { margin-right: 0.4rem; vertical-align: 0.1em; }
   .chips { display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0 1.25rem 1.1rem; }
   .chip {
     display: inline-flex; align-items: center; gap: 0.45rem;
@@ -1701,7 +1700,6 @@ function nameCell(name, loaded) {
 function errorsCell(failure) {
   const td = el("td");
   if (isNum(failure) && failure > 0) {
-    td.appendChild(el("span", "dot critical"));
     td.appendChild(el("span", "", fmtInt(failure)));
   } else {
     td.appendChild(el("span", "muted", fmtInt(failure)));
