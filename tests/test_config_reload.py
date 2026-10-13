@@ -193,26 +193,26 @@ class TestReloadModels:
     async def test_new_ports_avoid_the_running_process_and_kept_entries(
         self, tmp_path, fakes, cleanup, monkeypatch
     ):
-        path = tmp_path / "config.yaml"
-        write(path, {"a": "serve-a", "b": "serve-b"})
-        swapper = make_swapper(path)
-        cleanup.append(swapper)
-        assert await swapper.control_load_model("a") == "success"
-        running_port = swapper._current.port
-        kept_port = swapper.config.models["b"].port
-        # A port clear of both (and of their adjacent ports).
-        clear = min(running_port, kept_port) - 10
+        # Fixed, distinct ports for the running model "a" and the kept
+        # model "b", so the test cannot pass by luck if one reservation
+        # is missing.
+        running_port, kept_port, clear = 41000, 42000, 43000
+        startup = iter([running_port, kept_port])
+        # The reload's candidates: the running port, its adjacent port,
+        # the kept port, its adjacent port, then a clear one.
         candidates = iter([
             running_port, running_port + 1, kept_port, kept_port + 1, clear,
         ])
-        # Fake OS candidates only inside the reload's port picker, so the
-        # loader's own startup-style port calls cannot use them up.
         real_find_free_port = config_module._find_free_port
         picking = False
         picks: list[set[int]] = []
 
         def fake_os_port():
-            return next(candidates) if picking else real_find_free_port()
+            # Fake OS candidates only inside the reload's port picker, so
+            # the loader's own port calls cannot use them up.
+            if picking:
+                return next(candidates)
+            return next(startup, None) or real_find_free_port()
 
         def spy_find_free_port(reserved=frozenset()):
             nonlocal picking
@@ -227,6 +227,14 @@ class TestReloadModels:
         monkeypatch.setattr(
             lifecycle_module, "find_free_port", spy_find_free_port
         )
+        path = tmp_path / "config.yaml"
+        write(path, {"a": "serve-a", "b": "serve-b"})
+        swapper = make_swapper(path)
+        cleanup.append(swapper)
+        assert swapper.config.models["a"].port == running_port
+        assert swapper.config.models["b"].port == kept_port
+        assert await swapper.control_load_model("a") == "success"
+        assert swapper._current.port == running_port
         write(path, {"a": "serve-a --ctx 8", "b": "serve-b"})
 
         kind, _ = swapper.control_reload_config()
@@ -368,6 +376,14 @@ class TestRefusals:
                     "Model 'q' variant 't' 'cmd' must be a string, got list",
                 ),
                 ("a: {cmd: x, shutdown_cmd: 5}\n", "invalid shutdown_cmd"),
+                ("123: serve-x\n", "Model name 123 (int) must be a string; put quotes"),
+                ("yes: serve-x\n", "Model name True (bool) must be a string; put quotes"),
+                ("~: serve-x\n", "Model name null must be a string; put quotes"),
+                (
+                    "q:\n  variants:\n    1: serve-x\n",
+                    "Model 'q' variant name 1 (int) must be a string; put quotes",
+                ),
+                ("q: {cmd: x, default: t}\n", "has 'default' but no 'variants'"),
                 (None, "Config not reloaded: Config file not found: config.yaml"),
             ]
             for text, expected in cases:
@@ -518,6 +534,46 @@ class TestRefusals:
         assert await unload == "success"
         assert swapper.control_reload_config()[0] == "success"
 
+    async def test_reload_during_idle_unload_is_control_busy(
+        self, tmp_path, fakes, cleanup
+    ):
+        path = tmp_path / "config.yaml"
+        write(path, {"a": "serve-a"})
+        swapper = Swapper(load_config(path), idle_timeout=0.02)
+        swapper.config_path = path
+        cleanup.append(swapper)
+        old = swapper.config
+        assert await swapper.control_load_model("a") == "success"
+        fakes.stop_gate = asyncio.Event()
+        server = await make_server(swapper)
+        async with TestClient(server) as client:
+            for _ in range(500):
+                if swapper.control_state()["lifecycle"] == "unloading":
+                    break
+                await asyncio.sleep(0.01)
+            assert swapper.control_state()["lifecycle"] == "unloading"
+            assert swapper._stop_only_operation == "idle"
+            write(path, {"a": "serve-a", "b": "serve-b"})
+
+            response = await client.post(
+                "/api/v1/control/reload", headers=HEADERS
+            )
+            data = await response.json()
+            assert response.status == 409
+            assert data["error"]["code"] == "control_busy"
+            assert swapper.config is old
+
+            fakes.stop_gate.set()
+            for _ in range(500):
+                if swapper.control_state()["lifecycle"] == "idle":
+                    break
+                await asyncio.sleep(0.01)
+            response = await client.post(
+                "/api/v1/control/reload", headers=HEADERS
+            )
+            assert response.status == 200
+            assert (await response.json())["reload"]["added"] == ["b"]
+
     async def test_reload_after_shutdown_starts_is_refused(
         self, tmp_path, fakes
     ):
@@ -637,3 +693,160 @@ class TestTempScripts:
         port_b = swapper.config.models["b"].port
         assert f"--port {port_b}" in new_b.read_text()
         assert len(list(copy_b.parent.iterdir())) == 4
+
+    async def test_failed_reloads_do_not_advance_the_reload_counter(
+        self, tmp_path, fakes, cleanup
+    ):
+        script = tmp_path / "run.sh"
+        script.write_text(SCRIPT.format(python=shlex.quote(sys.executable)))
+        path = tmp_path / "config.yaml"
+        write(path, {"a": f"{script} --name a"})
+        swapper = make_swapper(path)
+        cleanup.append(swapper)
+        assert swapper._config_generation == 0
+
+        # Invalid file, then a script that cannot be copied.
+        path.write_text("a: [unclosed\n")
+        assert swapper.control_reload_config()[0] == "config_invalid"
+        bad = tmp_path / "bad.sh"
+        bad.write_bytes(b"\xff\xfe not utf-8")
+        write(path, {"a": f"{script} --name a", "b": f"{bad}"})
+        assert swapper.control_reload_config()[0] == "config_invalid"
+        # Refused reloads do not count either.
+        swapper._swapping = True
+        assert swapper.control_reload_config() == ("control_busy", None)
+        swapper._swapping = False
+        assert swapper._config_generation == 0
+
+        write(path, {"a": f"{script} --name a2"})
+        assert swapper.control_reload_config()[0] == "success"
+        assert swapper._config_generation == 1
+        copy = Path(swapper.config.models["a"].cmd.split()[0])
+        assert "-r1-" in copy.name
+
+    async def test_edited_script_with_same_config_line_counts_as_changed(
+        self, tmp_path, fakes, cleanup
+    ):
+        script = tmp_path / "run.sh"
+        script.write_text(SCRIPT.format(python=shlex.quote(sys.executable)))
+        script.chmod(0o755)
+        path = tmp_path / "config.yaml"
+        write(path, {
+            "a": f"{script} --name a",
+            "b": f"{script} --name b",
+            "c": "serve-c --port 1",
+        })
+        swapper = make_swapper(path)
+        cleanup.append(swapper)
+        old = dict(swapper.config.models)
+        old_copy = Path(old["a"].cmd.split()[0])
+        old_text = old_copy.read_text()
+        assert await swapper.control_load_model("a") == "success"
+        # Same config text; only the script file changes.
+        script.write_text(
+            SCRIPT.format(python=shlex.quote(sys.executable))
+            + "# edited\n"
+        )
+
+        kind, summary = swapper.control_reload_config()
+
+        assert kind == "success"
+        assert summary == {
+            "added": [], "removed": [], "changed": ["a", "b"],
+            "running_changed": True,
+        }
+        assert swapper.config.models["c"] is old["c"]
+        new = swapper.config.models["a"]
+        assert new is not old["a"]
+        new_copy = Path(new.cmd.split()[0])
+        assert new_copy != old_copy
+        assert "# edited" in new_copy.read_text()
+        assert f"--port {new.port}" in new_copy.read_text()
+        # The running process keeps its old copy untouched.
+        assert old_copy.read_text() == old_text
+        assert await swapper.control_unload_model() == "success"
+        assert await swapper.control_load_model("a") == "success"
+        assert fakes.started[-1] == ("a", new.cmd, new.port)
+
+    async def test_unedited_script_stays_unchanged_across_reloads(
+        self, tmp_path, fakes, cleanup
+    ):
+        script = tmp_path / "run.sh"
+        script.write_text(SCRIPT.format(python=shlex.quote(sys.executable)))
+        path = tmp_path / "config.yaml"
+        write(path, {"a": f"{script} --name a", "b": "serve-b"})
+        swapper = make_swapper(path)
+        cleanup.append(swapper)
+        old = dict(swapper.config.models)
+        # A file touched without changing its bytes is still unchanged.
+        script.write_text(script.read_text())
+
+        kind, summary = swapper.control_reload_config()
+
+        assert kind == "success"
+        assert summary["changed"] == []
+        assert swapper.config.models["a"] is old["a"]
+        assert swapper.config.models["b"] is old["b"]
+
+    async def test_script_edit_to_unreadable_content_keeps_old_config(
+        self, tmp_path, fakes, cleanup
+    ):
+        script = tmp_path / "run.sh"
+        script.write_text(SCRIPT.format(python=shlex.quote(sys.executable)))
+        path = tmp_path / "config.yaml"
+        write(path, {"a": f"{script} --name a"})
+        swapper = make_swapper(path)
+        cleanup.append(swapper)
+        old = swapper.config
+        script.write_bytes(b"\xff\xfe not utf-8")
+
+        kind, message = swapper.control_reload_config()
+
+        assert kind == "config_invalid"
+        assert "utf-8" in message
+        assert swapper.config is old
+        assert swapper._config_generation == 0
+
+    async def test_changed_port_placeholder_script_runs_a_temp_copy_after_reload(
+        self, tmp_path, fakes, cleanup
+    ):
+        """Reload gives a ${PORT} script entry the same result as startup.
+
+        The loader fills in ${PORT} before the script copy, so the entry
+        runs a temp copy with the new port in its args and its body.
+        """
+        script = tmp_path / "run.sh"
+        script.write_text("#!/bin/sh\n# port ${PORT}\nexit 0\n")
+        script.chmod(0o755)
+        path = tmp_path / "config.yaml"
+        write(path, {"a": f"{script} --port ${{PORT}}", "b": "serve-b --port ${PORT}"})
+        swapper = make_swapper(path)
+        cleanup.append(swapper)
+        startup = swapper.config.models["a"]
+        startup_copy = Path(startup.cmd.split()[0])
+        assert startup_copy != script and startup_copy.parent == swapper._temp_dir
+        assert f"# port {startup.port}" in startup_copy.read_text()
+        assert startup.cmd.endswith(f"--port {startup.port}")
+        old_b = swapper.config.models["b"]
+        # The script changes; the config text stays the same.
+        script.write_text("#!/bin/sh\n# port ${PORT}\n# edited\nexit 0\n")
+
+        kind, summary = swapper.control_reload_config()
+
+        assert kind == "success"
+        assert summary["changed"] == ["a"]
+        new = swapper.config.models["a"]
+        copy = Path(new.cmd.split()[0])
+        assert copy != script and copy != startup_copy
+        assert copy.parent == swapper._temp_dir and "-r1-" in copy.name
+        assert new.port != startup.port
+        assert new.cmd == f"{copy} --port {new.port}"
+        text = copy.read_text()
+        assert f"# port {new.port}" in text and "# edited" in text
+        assert "${PORT}" not in text
+        # The old copy is untouched, and the placeholder command that is
+        # not a script keeps its raw form (the server gets the port as is).
+        assert f"# port {startup.port}" in startup_copy.read_text()
+        assert swapper.config.models["b"] is old_b
+        assert await swapper.control_load_model("a") == "success"
+        assert fakes.started[-1] == ("a", new.cmd, new.port)

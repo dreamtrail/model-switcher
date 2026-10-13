@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Iterable
 from contextlib import suppress
@@ -13,7 +14,9 @@ from pathlib import Path
 import yaml
 
 from src.config import Config, ModelConfig, find_free_port, load_config
-from src.port_rewrite import cleanup_temp_dir, rewrite_command
+from src.port_rewrite import (
+    cleanup_temp_dir, is_script_command, rewrite_command,
+)
 from src.process_manager import ProcessHandle, ProcessStopError, is_running
 from src.shutdown_hook import run_shutdown_hook
 
@@ -657,7 +660,9 @@ class _SwapperLifecycleMixin:
         stays in use. ``"shutting_down"`` and ``"control_busy"`` carry None.
 
         Unchanged entries keep their ModelConfig (port, rewritten command,
-        temp script). New and changed entries get fresh ports and fresh
+        temp script). An entry counts as changed when its config text
+        changed or, in script mode, the script file's contents changed.
+        New and changed entries get fresh ports and fresh
         temp script names. The running process is never touched: it keeps
         the settings it was started with until its next start.
         """
@@ -706,12 +711,16 @@ class _SwapperLifecycleMixin:
             mc.port = find_free_port(reserved)
             reserved.add(mc.port)
             mc.cmd = mc.spec[0]
+            if is_script_command(mc.cmd):
+                # Same as startup: the loader fills in ${PORT} before the
+                # script is copied (other commands keep the placeholder).
+                mc.cmd = re.sub(r"\$\{PORT\}", str(mc.port), mc.cmd)
 
-        self._config_generation += 1
+        # The counter moves only when the reload succeeds. A failed
+        # attempt may leave unused copies; the next attempt overwrites them.
+        generation = self._config_generation + 1
         try:
-            self._rewrite_commands(
-                new_config, fresh, generation=self._config_generation
-            )
+            self._rewrite_commands(new_config, fresh, generation=generation)
         except (OSError, ValueError) as exc:
             message = _reload_error(exc, path)
             logger.error("Config reload failed: %s", message)
@@ -728,6 +737,7 @@ class _SwapperLifecycleMixin:
         )
         # One synchronous assignment: no await between check and swap.
         self.config = new_config
+        self._config_generation = generation
         logger.info(
             "Config reloaded: added %s, removed %s, changed %s%s",
             ", ".join(added) or "none",

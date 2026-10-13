@@ -41,6 +41,7 @@ mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port ${PORT}"
 
 - `${PORT}` — replaced at runtime with a free port.
 - Commands run in the foreground; the switcher manages their lifecycle.
+- Model and variant names must be strings. Quote a name that YAML reads as a number, a boolean, null, or a date, such as `"70"`, `"yes"`, `"null"`, or `"2024-01-01"`; otherwise the switcher refuses the config (at startup and on reload) and names the value, for example `Model name 70 (int) must be a string`.
 - One name can have several launch commands (for example text and vision): see [Model variants](#model-variants).
 - After editing the file, apply it without a restart: see [Reloading the config](#reloading-the-config).
 
@@ -104,7 +105,8 @@ qwen3.8-27b:
 - Only `variants` and `default` may sit beside each other at the top of the
   entry; `cmd`, `shutdown_cmd`, `shutdown_timeout`, or any other key there is a
   config error. Unknown keys inside a variant are errors too. `default` must name
-  a variant. Model and variant names must not contain `@`.
+  a variant, and `default` without `variants` is an error. Model and variant
+  names must not contain `@`.
 - Inside the switcher each variant is a separate model with the id
   `name@variant` (`qwen3.8-27b@vision`). That id appears in `active_model`,
   `pending_model`, logs, and [statistics](#statistics) rows (one row per variant).
@@ -135,7 +137,7 @@ Process creation failures return HTTP 500 with `error.code: "model_start_failed"
 
 ## Control Panel and Runtime API
 
-Open `http://localhost:8080/control` to use the dependency-free control panel on the existing listener. It shows configured, active, and pending models, lifecycle state, in-flight request count, and the three runtime settings. It can load or switch to a model, unload the active model, update settings, and [reload the config file](#reloading-the-config). A [variant model](#model-variants) shows its name with one button per variant: the loaded variant has a "Loaded" badge, and the active variant (where requests go) has an "Active" badge when it is not loaded; clicking a variant makes it active and loads it. It uses the same look as the statistics dashboard (light and dark theme, status tiles, cards); the loaded model's button carries a "Loaded" badge, and the header links to `/stats` (the dashboard links back to `/control`). It never displays or edits model commands, assigned ports, process IDs, environment values, or the config path.
+Open `http://localhost:8080/control` to use the dependency-free control panel on the existing listener. It shows configured, active, and pending models, lifecycle state, in-flight request count, and the three runtime settings. It can load or switch to a model, unload the active model, update settings, and [reload the config file](#reloading-the-config). A [variant model](#model-variants) shows its name with one button per variant: the loaded variant has a "Loaded" badge, and the active variant (where requests go) has an "Active" badge when it is not loaded; clicking a variant makes it active and loads it. It uses the same look as the statistics dashboard (light and dark theme, status tiles, cards); the header links to `/stats` (the dashboard links back to `/control`). It never displays or edits model commands, assigned ports, process IDs, environment values, or the config path.
 
 > **Network trust warning:** the control API has no authentication or authorization. `X-Model-Switcher-Control: 1` protects browsers against cross-site request forgery; it does **not** prove who the caller is. Binding model-switcher to `0.0.0.0` or another shared interface grants every network-reachable client process-control authority. Use this only on a trusted local network. If the listener is exposed beyond that boundary, put an authenticated service in front of it or do not expose it.
 
@@ -223,13 +225,13 @@ The switcher re-reads the file it was started with (`--config`) and applies mode
 
 - **New models** are listed in `/v1/models` and can be requested right away.
 - **Removed models** get 404 for named requests at once.
-- **Changed models** are entries whose `cmd`, `shutdown_cmd`, or `shutdown_timeout` text changed. They get a new port and, for scripts, a new temp copy; the old copy is never overwritten.
-- **Unchanged models** keep their port, command, and temp copy. Only the config text is compared: if you edit a startup script but not its config line, the entry counts as unchanged and keeps its old copy until a restart.
+- **Changed models** are entries whose `cmd`, `shutdown_cmd`, or `shutdown_timeout` text changed. They get a new port and, for scripts, a new temp copy; the old copy is never overwritten. If the command starts with a script file, the script's contents count too: editing the script changes the entry even when its config line stays the same.
+- **Unchanged models** keep their port, command, and temp copy. The config text and a hash of the script file (when the command starts with one) are compared.
 - **The running model is not touched** (`running_changed: true` when it was changed or removed). It keeps its old command, port, and hook until it stops; its next start uses the new settings. A removed running model keeps serving model-less requests until you switch or unload it, or the idle timeout stops it. The panel shows a note in both cases.
 - **Variants:** the active variant stays active if it still exists, otherwise the entry's `default`. A changed `default:` alone does not switch the active variant, even if that variant was only active because it was the old default; pick the variant on `/control` (or restart) to use the new default.
 - **Not reloaded:** command-line flags and the [runtime settings](#control-panel-and-runtime-api) above. The YAML file is only read, never written.
 
-If the file is missing or invalid, nothing changes and the old config keeps working; the reply is 400 `config_invalid` with the error, for example `Config not reloaded: Model 'a' has an empty command` or `Config not reloaded: Invalid YAML in config.yaml: mapping values are not allowed here (line 2, column 4)`. The message names only the config file (not its full path) and never quotes source lines. A reload while a model is loading or unloading returns 409 `control_busy` (try again after it finishes); during shutdown it returns 503 `shutting_down`.
+If the file is missing or invalid, nothing changes and the old config keeps working; the reply is 400 `config_invalid` with the error, for example `Config not reloaded: Model 'a' has an empty command` or `Config not reloaded: Invalid YAML in config.yaml: mapping values are not allowed here (line 2, column 4)`. The message names only the config file (not its full path) and never quotes source lines. A reload while a model is loading or unloading (including an idle unload) returns 409 `control_busy` (try again after it finishes); during shutdown it returns 503 `shutting_down`.
 
 There is no signal or file-watch trigger. SIGHUP is not handled, so `kill -HUP` stops the switcher instead of reloading it; do not add a systemd `ExecReload=` that sends it.
 
@@ -347,7 +349,7 @@ Current NInfer artifacts expose these embedded IDs:
 - `qwen3.8-27b`
 - `qwen3.6-35b-a3b`
 
-The API request's `model` must match the config key exactly, including case. The groupwise and NVFP4 artifacts for each 27B family share the same embedded ID, so both weight variants of that family cannot be configured simultaneously without aliases as separate entries. Configure them as [variants](#model-variants) of that one ID instead and pick the active artifact from `/control`; the request `model` stays the embedded ID. Model-switcher does not rewrite model IDs.
+The API request's `model` must match the config key exactly, including case. The groupwise and NVFP4 artifacts for each 27B family share the same embedded ID, so two separate entries for both weight variants of that family would need the same config key, which is impossible. Configure them as [variants](#model-variants) of that one ID instead and pick the active artifact from `/control`; the request `model` stays the embedded ID. Model-switcher does not rewrite model IDs.
 
 NInfer's `/health` becomes available after model loading and warm-up. Model-switcher then proxies its OpenAI-compatible JSON and SSE output unchanged: Chat Completions streams end with `data: [DONE]`, while Responses API streams use named `event:` records and a terminal response event without `[DONE]`. Upstream statuses, error bodies, and headers such as `x-request-id` are forwarded normally. On a swap or shutdown, model-switcher sends SIGTERM before its existing forced-stop fallback.
 

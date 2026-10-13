@@ -422,5 +422,5 @@ def test_readme_documents_exact_ids_and_shared_id_constraint():
         assert f"`{model_id}`" in section
     assert "groupwise and NVFP4" in section
     assert "share the same embedded ID" in section
-    assert "cannot be configured simultaneously without aliases" in section
+    assert "would need the same config key" in section
     assert "does not rewrite model IDs" in section

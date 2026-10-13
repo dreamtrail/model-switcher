@@ -81,6 +81,34 @@ def rewrite_command(
     return rewritten, None
 
 
+def is_script_command(cmd: str) -> bool:
+    """True when the first token of ``cmd`` is an existing file."""
+    tokens = cmd.split()
+    return bool(tokens) and Path(tokens[0]).is_file()
+
+
+def script_fingerprint(cmd: str) -> str | None:
+    """Hash of the script file ``cmd`` runs in script mode, else None.
+
+    Script mode is when the first token is an existing file (see
+    ``is_script_command``). The config loader fills in ``${PORT}`` before
+    the startup copy step, so a placeholder in the command does not change
+    this; a reload does the same for script entries (see
+    ``control_reload_config``). A config reload compares the hash, so
+    editing the script (with the same config line) counts as a change. An
+    unreadable file gives a marker instead of an error, so loading still
+    works; the reload's copy step then reports the real problem for
+    changed entries.
+    """
+    if not is_script_command(cmd):
+        return None
+    script_path = Path(cmd.split()[0])
+    try:
+        return hashlib.sha256(script_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        return f"unreadable:{type(exc).__name__}"
+
+
 def _rewrite_script(
     script_path: Path,
     cmd: str,

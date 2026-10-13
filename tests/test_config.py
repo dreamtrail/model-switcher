@@ -8,6 +8,7 @@ Derived from plan P-20260612-07 acceptance criteria:
 
 from __future__ import annotations
 
+import datetime
 import pathlib
 
 import pytest
@@ -308,13 +309,27 @@ class TestVariantConfig:
             ({"m": {"variants": {"t": {"cmd": "x", "variants": {}}}}},
              "Model 'm' variant 't' has unknown key 'variants'"),
             ({"m": {"variants": {1: "x"}}},
-             "Model 'm' variant names must be non-empty strings"),
+             "Model 'm' variant name 1 (int) must be a string; put quotes"),
+            ({"m": {"variants": {True: "x"}}},
+             "Model 'm' variant name True (bool) must be a string; put quotes"),
             ({"m": {"variants": {"": "x"}}},
-             "Model 'm' variant names must be non-empty strings"),
+             "Model 'm' variant names must not be empty"),
+            ({"m": {"default": "t"}},
+             "Model 'm' has 'default' but no 'variants'"),
+            ({"m": {"cmd": "x", "default": "t"}},
+             "Model 'm' has 'default' but no 'variants'"),
+            ({datetime.date(2024, 1, 1): "x"},
+             "Model name 2024-01-01 (date) must be a string; put quotes"),
+            ({"m": {"variants": {"1": "x"}, "default": 1}},
+             "Model 'm' default 1 (int) is not one of its variants: '1'"),
+            ({1: "x"}, "Model name 1 (int) must be a string; put quotes"),
+            ({True: "x"}, "Model name True (bool) must be a string; put quotes"),
+            ({None: "x"}, "Model name null must be a string; put quotes"),
+            ({1.5: "x"}, "Model name 1.5 (float) must be a string; put quotes"),
             ({"m": {"variants": {"t": "x"}, "default": "v"}},
-             "Model 'm' default 'v' is not one of its variants: t"),
+             "Model 'm' default 'v' is not one of its variants: 't'"),
             ({"m": {"variants": {"t": "x"}, "default": None}},
-             "Model 'm' default None is not one of its variants: t"),
+             "Model 'm' default null is not one of its variants: 't'"),
             ({"m": {"variants": {"t": "x"}, "cmd": "y"}},
              "Model 'm' cannot set 'cmd' next to 'variants'"),
             ({"m": {"variants": {"t": "x"}, "shutdown_cmd": "y"}},
@@ -364,13 +379,32 @@ class TestReloadSupport:
             "q": {"variants": {"t": "serve-t"}},
         })
         config = load_config(path)
-        assert config.models["a"].spec == ("serve --port ${PORT}", None, 30)
+        assert config.models["a"].spec == (
+            "serve --port ${PORT}", None, 30, None
+        )
         assert "${PORT}" not in config.models["a"].cmd
-        assert config.models["b"].spec == ("serve-b", "stop-b", 5)
-        assert config.models["q@t"].spec == ("serve-t", None, 30)
+        assert config.models["b"].spec == ("serve-b", "stop-b", 5, None)
+        assert config.models["q@t"].spec == ("serve-t", None, 30, None)
         # Code-built entries have no spec; spec does not affect equality.
         assert ModelConfig("a", "x", 1).spec is None
         assert ModelConfig("a", "x", 1) == ModelConfig("a", "x", 1, spec=(1,))
+
+    def test_spec_holds_a_hash_of_the_script_in_script_mode(self, tmp_path):
+        script = tmp_path / "run.sh"
+        script.write_text("#!/bin/sh\nserve\n")
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            f"a: '{script} --name a'\n"
+            f"b: '{script} --port ${{PORT}}'\n"
+        )
+        first = load_config(path).models["a"].spec
+        assert len(first[3]) == 64
+        # ${PORT} does not matter: the loader fills it in before the copy.
+        assert len(load_config(path).models["b"].spec[3]) == 64
+        assert load_config(path).models["b"].spec[3] == first[3]
+        script.write_text("#!/bin/sh\nserve --other\n")
+        second = load_config(path).models["a"].spec
+        assert second[:3] == first[:3] and second[3] != first[3]
 
     def test_find_free_port_skips_reserved_and_adjacent_ports(
         self, monkeypatch

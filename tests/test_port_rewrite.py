@@ -311,8 +311,24 @@ class TestTempScriptPerModel:
                 str(script), 2, temp_dir=temp_dir, model_id="a/b"
             )
             assert first != second
-            assert "/" not in first.name.removeprefix("start.sh-")
             assert "@" not in first.name
+            assert first.parent == temp_dir and second.parent == temp_dir
+        finally:
+            cleanup_temp_dir(temp_dir)
+
+    @pytest.mark.parametrize("model_id", ["../x", "../../x@y", "/tmp/x", "a/../b"])
+    def test_model_id_cannot_move_the_copy_out_of_the_temp_dir(
+        self, tmp_path: Path, model_id: str
+    ):
+        script = tmp_path / "start.sh"
+        script.write_text("#!/bin/sh\nserve --port 8000\n")
+        temp_dir = create_temp_dir()
+        try:
+            _, copy = rewrite_command(
+                str(script), 1, temp_dir=temp_dir, model_id=model_id
+            )
+            assert copy.parent == temp_dir
+            assert copy.exists()
         finally:
             cleanup_temp_dir(temp_dir)
 

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import yaml
 
+from src.port_rewrite import script_fingerprint
 
 
 @dataclass
@@ -23,12 +24,26 @@ class ModelConfig:
     shutdown_cmd: str | None = field(default=None, repr=False)
     shutdown_timeout: float = 30
     # Raw launch spec from the file (cmd before port rewriting, hook,
-    # hook timeout). A config reload compares it to spot changed entries;
-    # None means unknown (built in code), which always counts as changed.
+    # hook timeout, hash of the script file in script mode or None). A
+    # config reload compares it to spot changed entries; None means
+    # unknown (built in code), which always counts as changed.
     spec: tuple | None = field(default=None, repr=False, compare=False)
 
 
 VARIANT_SEPARATOR = "@"
+
+
+def _show(value: object) -> str:
+    """Readable form of a config value for error messages.
+
+    Strings are quoted (``'1'``), so ``1`` (int) and ``'1'`` differ; other
+    values show their type, for example ``2024-01-01 (date)``.
+    """
+    if isinstance(value, str):
+        return repr(value)
+    if value is None:
+        return "null"
+    return f"{value} ({type(value).__name__})"
 
 
 def variant_id(name: str, variant: str) -> str:
@@ -160,7 +175,12 @@ def load_config(path: str | Path) -> Config:
     models: dict[str, ModelConfig] = {}
     variants: dict[str, VariantGroup] = {}
     for name, value in data.items():
-        if VARIANT_SEPARATOR in str(name):
+        if not isinstance(name, str):
+            raise ValueError(
+                f"Model name {_show(name)} must be a string; "
+                "put quotes around the name in the YAML file"
+            )
+        if VARIANT_SEPARATOR in name:
             raise ValueError(
                 f"Model '{name}' name must not contain "
                 f"'{VARIANT_SEPARATOR}'"
@@ -169,6 +189,8 @@ def load_config(path: str | Path) -> Config:
             group = _parse_variant_entry(name, value, models)
             variants[name] = group
             continue
+        if isinstance(value, dict) and "default" in value:
+            raise ValueError(f"Model '{name}' has 'default' but no 'variants'")
         if not isinstance(value, (str, dict)):
             raise ValueError(
                 f"Model '{name}' value must be a string or mapping with 'cmd', "
@@ -180,7 +202,10 @@ def load_config(path: str | Path) -> Config:
         models[name] = ModelConfig(
             name=name, cmd=cmd, shutdown_cmd=shutdown_cmd,
             shutdown_timeout=shutdown_timeout,
-            spec=(cmd, shutdown_cmd, shutdown_timeout),
+            spec=(
+                cmd, shutdown_cmd, shutdown_timeout,
+                script_fingerprint(cmd),
+            ),
         )
 
     if not models:
@@ -265,11 +290,13 @@ def _parse_variant_entry(
 
     names: list[str] = []
     for variant, spec in raw_variants.items():
-        if not isinstance(variant, str) or not variant:
+        if not isinstance(variant, str):
             raise ValueError(
-                f"{label} variant names must be non-empty strings, "
-                f"got {variant!r}"
+                f"{label} variant name {_show(variant)} must be a string; "
+                "put quotes around the name in the YAML file"
             )
+        if not variant:
+            raise ValueError(f"{label} variant names must not be empty")
         if VARIANT_SEPARATOR in variant:
             raise ValueError(
                 f"{label} variant '{variant}' name must not contain "
@@ -290,14 +317,17 @@ def _parse_variant_entry(
         models[model_id] = ModelConfig(
             name=model_id, cmd=cmd, shutdown_cmd=shutdown_cmd,
             shutdown_timeout=shutdown_timeout,
-            spec=(cmd, shutdown_cmd, shutdown_timeout),
+            spec=(
+                cmd, shutdown_cmd, shutdown_timeout,
+                script_fingerprint(cmd),
+            ),
         )
         names.append(variant)
 
     default = value.get("default", names[0])
     if not isinstance(default, str) or default not in names:
         raise ValueError(
-            f"{label} default {default!r} is not one of its variants: "
-            + ", ".join(names)
+            f"{label} default {_show(default)} is not one of its variants: "
+            + ", ".join(repr(n) for n in names)
         )
     return VariantGroup(variants=names, default=default, active=default)

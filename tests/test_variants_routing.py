@@ -168,6 +168,26 @@ class TestRouting:
             assert snapshot["requests"]["errors"] == {"404": 1}
             assert "qwen@text" not in snapshot["models"]
 
+    async def test_internal_variant_id_in_query_is_404(self, monkeypatch):
+        """``?model=name@variant`` gets the same 404 as the JSON body."""
+        async with _variant_stack(monkeypatch) as stack:
+            response = await stack.client.post(
+                "/v1/chat/completions?model=qwen@text", json={}
+            )
+            data = await response.json()
+            assert response.status == 404
+            assert data["error"]["message"] == "Unknown model: qwen@text"
+            assert stack.events == []
+            snapshot = stack.swapper.stats.snapshot()
+            assert snapshot["requests"]["errors"] == {"404": 1}
+            assert "qwen@text" not in snapshot["models"]
+            # The public name in the query still works.
+            response = await stack.client.post(
+                "/v1/chat/completions?model=qwen", json={}
+            )
+            assert response.status == 200
+            assert (await response.json())["served_by"] == "qwen@text"
+
     async def test_plain_model_routes_as_before(self, monkeypatch):
         async with _variant_stack(monkeypatch) as stack:
             status, data = await _chat(stack.client, "plain")
@@ -213,6 +233,32 @@ class TestControlVariantSwitch:
             assert models["qwen@text"]["loads"]["count"] == 1
             assert models["qwen@vision"]["loads"]["count"] == 1
             assert "qwen" not in models
+
+    async def test_variant_switch_works_with_automatic_switch_off(
+        self, monkeypatch
+    ):
+        """A control switch is manual, so it ignores automatic_switch."""
+        async with _variant_stack(monkeypatch) as stack:
+            assert (await _chat(stack.client, "qwen"))[0] == 200
+            stack.swapper.automatic_switch = False
+            status, state = await _put(
+                stack.client, {"model": "qwen", "variant": "vision"}
+            )
+            assert status == 200
+            assert state["active_model"] == "qwen@vision"
+            assert state["settings"]["automatic_switch"] is False
+            # The public name now follows the chosen variant (no switch).
+            status, data = await _chat(stack.client, "qwen")
+            assert (status, data["served_by"]) == (200, "qwen@vision")
+            # Another model still needs a manual switch.
+            status, data = await _chat(stack.client, "plain")
+            assert status == 409
+            assert data["error"]["code"] == "automatic_switch_disabled"
+            assert stack.events == [
+                ("start", "qwen@text"),
+                ("stop", "qwen@text"),
+                ("start", "qwen@vision"),
+            ]
 
     async def test_model_alone_loads_active_variant(self, monkeypatch):
         async with _variant_stack(monkeypatch) as stack:

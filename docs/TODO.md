@@ -12,9 +12,9 @@
 
 ## Discovered
 
-- [P-20261013-06] Config reload review minors (P-20261013-04): no test for a reload during idle unload; the reload counter increments on failed reloads; editing a startup script without changing its config line needs a restart (documented); port test cannot detect a missing running-port reservation if running and kept models get the same random port (see `artifacts/P-20261013-04/review.md`, `review-repair.md`)
+- [P-20261013-09] Pre-existing: at startup a non-script `${PORT}` command gets the port flag twice (`serve --port ${PORT}` -> `serve --port N --port N`, `serve -p ${PORT}` -> `serve -p N --port N`) because `_resolve_ports` fills the port before `rewrite_command` appends `--port`; after a reload the same entry runs with one flag (see `artifacts/P-20261013-07/reviewer-fix-01-port-probe.txt`)
+- [P-20261013-08] Pre-existing: a command whose first token is an absolute path to a binary crashes startup with `UnicodeDecodeError` (script detection reads the file as text); see `artifacts/P-20261013-07/review.md`
 - [P-20261013-05] SIGHUP is not handled, so it terminates the switcher: `kill -HUP` (or a systemd `ExecReload=` that sends it, so `systemctl reload`) would stop it instead of reloading. Config reload exists only through `POST /api/v1/control/reload` and the panel (P-20261013-04); optional future: handle SIGHUP as a reload trigger (see `artifacts/P-20261013-04/plan.md`)
-- [P-20261013-03] Model variants review minors (P-20261013-01): an entry with `default` but no `variants` is silently a plain entry; YAML numeric model names are not rejected (pre-existing; since P-20261013-04 adding one makes a reload return 500 from the log join or temp script name, see `artifacts/P-20261013-04/review-repair.md`); `tests/test_port_rewrite.py:314` traversal assert cannot fail; no regression tests for `?model=name@variant` 404 or switching with `automatic_switch=false`; README repeats the Loaded badge wording and has awkward "without aliases as separate entries" phrasing (see `artifacts/P-20261013-01/review.md`)
 - [P-20261013-02] Persist the chosen model variant across restarts (P-20261013-01 keeps it in memory and starts on `default`; user undecided): decide where to store it (state file vs. YAML) and how a removed variant falls back (see `artifacts/P-20261013-01/plan.md`)
 - [P-20261006-02] TensorFold review nits (P-20261005-04, P-20261006-01): README/DECISIONS say `exec` lets SIGTERM reach TensorFold "directly" (it goes to the group anyway; the gain is that the tracked pid is TensorFold); `src/process_manager.py:46` is 80 chars; DECISIONS cites TensorFold `server/http.py:433` without commit 609ca419; no tests for `stream errors:` / `streamerror:` near misses (see `artifacts/P-20261005-04/review.md`, `artifacts/P-20261006-01/plan.md`)
 - [P-20261005-05] TensorFold support not yet checked on real TensorFold/Apple Silicon or CUDA (README § TensorFold manual check); CUDA `tensorfold` stats keys only partly known; the switcher's 3 s SIGTERM grace may SIGKILL TensorFold while MLX saves conversation checkpoints (up to 120 s); per-model stop grace shared with P-20261005-02 (see `artifacts/P-20261005-04/plan.md`)
@@ -33,6 +33,8 @@
 
 ## Done
 
+- [P-20261013-06] Close config reload review minors: idle-unload test, counter moves on success only, script edits count as changes, fixed-port test — DONE 2026-10-13 04:29 UTC
+- [P-20261013-03] Close model variants review minors: `default` needs `variants`, names must be strings, regression tests, README wording — DONE 2026-10-13 04:29 UTC
 - [P-20261013-04] Reload the config without restart (POST /api/v1/control/reload, Reload button on /control) — DONE 2026-10-13 03:13 UTC
 - [P-20261013-01] Add model variants: several launch commands under one public model name, switched from /control or the API — DONE 2026-10-13 02:28 UTC
 - [P-20261006-01] Log `[tensorfold] stream error:` lines as errors (user directive) — DONE 2026-10-05 15:12 UTC
