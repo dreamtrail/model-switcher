@@ -26,6 +26,7 @@ def rewrite_command(
     *,
     temp_dir: Path | None = None,
     model_id: str | None = None,
+    generation: int = 0,
 ) -> tuple[str, Path | None]:
     """Rewrite a command to use the given port.
 
@@ -43,6 +44,9 @@ def rewrite_command(
             ``--port`` appended instead of being rewritten.
         model_id: Model id put in the temp script name, so entries that
             share one script file get separate copies.
+        generation: Config reload count put in the temp script name when
+            positive, so a reload never overwrites a copy that a running
+            process may still read.
 
     Returns:
         A tuple of (rewritten_command, temp_path_or_None).
@@ -61,7 +65,7 @@ def rewrite_command(
     script_path = Path(first_token)
     if script_path.is_file() and temp_dir is not None:
         return _rewrite_script(
-            script_path, cmd, port_str, temp_dir, model_id
+            script_path, cmd, port_str, temp_dir, model_id, generation
         )
 
     # Direct command (or script without temp_dir) — replace port flags
@@ -83,6 +87,7 @@ def _rewrite_script(
     port_str: str,
     temp_dir: Path,
     model_id: str | None = None,
+    generation: int = 0,
 ) -> tuple[str, Path]:
     """Copy a script to temp_dir, replace port flags, return temp path.
 
@@ -92,6 +97,7 @@ def _rewrite_script(
         port_str: The port number as a string.
         temp_dir: Directory to place the temp script copy.
         model_id: Optional model id added to the temp file name.
+        generation: Config reload count added to the name when positive.
 
     Returns:
         A tuple of (full_command_with_temp_path, temp_path).
@@ -106,7 +112,9 @@ def _rewrite_script(
     )
 
     # Create temp file with unique name (per model id when given)
-    temp_path = temp_dir / _temp_script_name(script_path.name, model_id)
+    temp_path = temp_dir / _temp_script_name(
+        script_path.name, model_id, generation
+    )
     temp_path.write_text(rewritten_content, encoding="utf-8")
     _copy_executable_permission(script_path, temp_path)
 
@@ -132,17 +140,21 @@ def _rewrite_script(
     return full_cmd, temp_path
 
 
-def _temp_script_name(script_name: str, model_id: str | None) -> str:
-    """Name of a script's temp copy; unique per model id and process.
+def _temp_script_name(
+    script_name: str, model_id: str | None, generation: int = 0
+) -> str:
+    """Name of a script's temp copy; unique per model id, reload, process.
 
     The id is sanitized for use in a file name; a short hash of the raw id
-    keeps ids that sanitize to the same text apart.
+    keeps ids that sanitize to the same text apart. A positive reload
+    generation adds an ``r<N>`` part; generation 0 (startup) adds none.
     """
+    suffix = f"-r{generation}" if generation > 0 else ""
     if model_id is None:
-        return f"{script_name}-{os.getpid()}"
+        return f"{script_name}{suffix}-{os.getpid()}"
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", model_id)[:64]
     digest = hashlib.sha256(model_id.encode("utf-8")).hexdigest()[:8]
-    return f"{script_name}-{safe}-{digest}-{os.getpid()}"
+    return f"{script_name}-{safe}-{digest}{suffix}-{os.getpid()}"
 
 
 def _replace_port_in_match(match_text: str, port_str: str) -> str:

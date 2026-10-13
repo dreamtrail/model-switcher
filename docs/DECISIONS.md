@@ -555,3 +555,27 @@ chunk detection, and page layout from that section still apply.
 
 ### Verification Trade-off
 - **Fake and real local servers, no real backends** — routing, control API, atomicity, and stats are tested through the real Swapper with in-process upstreams and faked process start/stop (`tests/test_variants_routing.py`); one test runs real processes from a shared script with per-variant hooks through the real config, port rewrite, process, health, proxy, and control paths (`tests/test_variants_e2e.py`). Real model servers were not run.
+
+## P-20261013-04 — Reload config without restart
+
+### Trigger
+- **Control API and panel button only** — user decision 2026-10-13: `POST /api/v1/control/reload` (no body, needs `X-Model-Switcher-Control: 1`) and a Reload config button on `/control`. No SIGHUP handler and no file watching. SIGHUP is still unhandled, so `kill -HUP` stops the switcher (TODO P-20261013-05).
+- **Same file as startup** — the CLI keeps the absolute `--config` path on the swapper (set after construction so test fakes keep their constructor). A swapper without a path answers `config_invalid`.
+
+### What Changes
+- **Compare raw specs, keep unchanged entries** — `ModelConfig.spec` (new last field) holds the config text of `cmd`, `shutdown_cmd`, and `shutdown_timeout` before port rewriting. An entry whose spec is the same keeps its old `ModelConfig` object: same port, rewritten command, and temp script. Entries built in code have no spec and always count as changed. Script file contents are not compared, so a script edit without a config edit needs a restart.
+- **New and changed entries get fresh ports and temp copies** — ports are picked clear of kept entries, of each other, and of the running process (and their adjacent ports). Temp copies made by a reload carry an `r<N>` generation in the name, so a copy that a running process may still read is never overwritten. Old copies stay until shutdown removes the temp dir.
+- **Variant choice carried over** — the active variant stays if it still exists, else the entry's `default`. The switcher does not record whether the active variant was picked or only the default, so a changed `default:` does not move it (review m2; kept as is, documented in README). Runtime settings are not in the YAML and are not touched.
+- **One synchronous swap** — the reload is a sync method: parse, build, then assign `self.config` with no await in between. It is refused with 409 `control_busy` while `_swapping` or a stop-only operation (unload, idle) is in progress, and with 503 `shutting_down` during shutdown. A missing or invalid file (including YAML syntax errors, non-string `cmd` values, and unreadable scripts) keeps the old config and returns 400 `config_invalid` with a one-line message of at most 300 characters.
+- **Error messages hide paths and file text** — the panel must not show the config path or model commands, so reload errors name only the config file's base name, and YAML errors keep the problem and line/column but drop PyYAML's quoted source snippet (review m3). Startup errors on the console keep the full text.
+- **`cmd` must be a string** — `load_config` now rejects a non-string `cmd` (for example `cmd: 123` or a list) with a `ValueError`; before, it raised `TypeError`/`AttributeError`, which gave HTTP 500 on reload and a traceback at startup (review M1). A blank `cmd:` is still "empty command".
+
+### Running Model
+- **Keep it running unchanged** — user decision 2026-10-13. The process uses its handle (port, hook copied at spawn), not the config, so a changed entry keeps its old settings until its next start; a removed entry keeps serving model-less and in-flight requests until a switch, unload, or idle release, while named requests get 404. The summary flag `running_changed` tells the panel to show a note.
+- **No config lookups after awaits** — `_ensure_model` resolves the `ModelConfig` once and passes it to `_start_tracked`, which no longer looks it up again after the previous model's stop. A reload cannot run during a swap today, so this is a defensive fix: before it, a lookup that failed after an await would raise outside `_acquire_model`'s handled exceptions and leave `_swapping` stuck.
+
+### Stats and Persistence
+- **Stats untouched** — removed models keep their history rows. The YAML file is only read, never written.
+
+### Verification Trade-off
+- **Fake and real local servers** — refusals, change detection, ports, temp copies, variants, and the API are tested with faked process start/stop (`tests/test_config_reload.py`); one test runs real servers from a shared script through add, change, remove, and invalid reloads (`tests/test_config_reload_e2e.py`). The panel script is run in Node with a fake DOM. Real model servers and a real browser were not used.

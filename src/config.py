@@ -22,6 +22,10 @@ class ModelConfig:
     port: int = 0  # resolved port
     shutdown_cmd: str | None = field(default=None, repr=False)
     shutdown_timeout: float = 30
+    # Raw launch spec from the file (cmd before port rewriting, hook,
+    # hook timeout). A config reload compares it to spot changed entries;
+    # None means unknown (built in code), which always counts as changed.
+    spec: tuple | None = field(default=None, repr=False, compare=False)
 
 
 VARIANT_SEPARATOR = "@"
@@ -101,6 +105,20 @@ def _find_free_port() -> int:
                 return port
 
 
+def find_free_port(reserved: set[int] = frozenset()) -> int:
+    """Find a free base port that also stays clear of ``reserved`` ports.
+
+    ``reserved`` holds ports already given to models. A candidate is
+    skipped when it or its adjacent port collides with a reserved port or
+    a reserved port's adjacent port.
+    """
+    taken = set(reserved) | {port + 1 for port in reserved}
+    while True:
+        port = _find_free_port()
+        if port not in taken and port + 1 not in taken:
+            return port
+
+
 def _resolve_ports(models: dict[str, ModelConfig]) -> None:
     """Auto-assign a free port for each model.
 
@@ -162,6 +180,7 @@ def load_config(path: str | Path) -> Config:
         models[name] = ModelConfig(
             name=name, cmd=cmd, shutdown_cmd=shutdown_cmd,
             shutdown_timeout=shutdown_timeout,
+            spec=(cmd, shutdown_cmd, shutdown_timeout),
         )
 
     if not models:
@@ -180,6 +199,11 @@ def _parse_launch(
 ) -> tuple[str, str | None, float]:
     """Validate one launch spec (string or mapping); return its parts."""
     cmd = value if isinstance(value, str) else value.get("cmd", "")
+    # A blank ``cmd:`` (None) stays an "empty command" error, as before.
+    if cmd is not None and not isinstance(cmd, str):
+        raise ValueError(
+            f"{label} 'cmd' must be a string, got {type(cmd).__name__}"
+        )
     if not cmd:
         raise ValueError(f"{label} has an empty command")
 
@@ -266,6 +290,7 @@ def _parse_variant_entry(
         models[model_id] = ModelConfig(
             name=model_id, cmd=cmd, shutdown_cmd=shutdown_cmd,
             shutdown_timeout=shutdown_timeout,
+            spec=(cmd, shutdown_cmd, shutdown_timeout),
         )
         names.append(variant)
 

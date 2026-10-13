@@ -5,10 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
 
-from src.config import ModelConfig
+import yaml
+
+from src.config import Config, ModelConfig, find_free_port, load_config
 from src.port_rewrite import cleanup_temp_dir, rewrite_command
 from src.process_manager import ProcessHandle, ProcessStopError, is_running
 from src.shutdown_hook import run_shutdown_hook
@@ -137,9 +141,13 @@ class _SwapperLifecycleMixin:
         generation: int,
         *,
         managed: bool,
+        mc: ModelConfig,
     ) -> ProcessHandle:
-        """Start a process without allowing owner cancellation to orphan it."""
-        mc = self.config.models[model_name]
+        """Start a process without allowing owner cancellation to orphan it.
+
+        ``mc`` is the entry resolved before any await, so a config reload
+        during the stop of the previous model cannot change what starts.
+        """
         shutdown_cmd, shutdown_timeout = mc.shutdown_cmd, mc.shutdown_timeout
 
         async def spawn() -> ProcessHandle:
@@ -243,6 +251,8 @@ class _SwapperLifecycleMixin:
         ):
             return self._current
 
+        # Resolve the entry once; everything after the awaits below uses
+        # this object, never a fresh lookup in a possibly reloaded config.
         mc = self.config.models.get(model_name)
         if mc is None:
             raise ValueError(f"Unknown model: {model_name}")
@@ -332,6 +342,7 @@ class _SwapperLifecycleMixin:
             mc.port,
             generation,
             managed=managed,
+            mc=mc,
         )
 
         try:
@@ -609,16 +620,168 @@ class _SwapperLifecycleMixin:
         if stop_error is not None:
             raise stop_error
 
-    def _rewrite_commands(self) -> None:
-        """Rewrite all model commands to use auto-assigned ports.
+    def _rewrite_commands(
+        self,
+        config: Config,
+        model_ids: Iterable[str] | None = None,
+        *,
+        generation: int = 0,
+    ) -> None:
+        """Rewrite model commands of ``config`` to use their assigned ports.
 
         For script files, copies to temp dir and rewrites port flags.
         For direct commands, replaces port flags in the command string.
+        ``model_ids`` limits the rewrite (default: every model);
+        ``generation`` keeps reload copies apart from earlier ones.
         """
         if self._temp_dir is None:
             return
-        for model_id, mc in self.config.models.items():
+        ids = config.models if model_ids is None else model_ids
+        for model_id in ids:
+            mc = config.models[model_id]
             rewritten_cmd, _temp_path = rewrite_command(
-                mc.cmd, mc.port, temp_dir=self._temp_dir, model_id=model_id
+                mc.cmd,
+                mc.port,
+                temp_dir=self._temp_dir,
+                model_id=model_id,
+                generation=generation,
             )
             mc.cmd = rewritten_cmd
+
+    def control_reload_config(self) -> tuple[str, dict | str | None]:
+        """Re-read the config file and swap in the result in one step.
+
+        Returns ``(kind, detail)``. On ``"success"`` detail is the summary
+        ``{added, removed, changed, running_changed}``; on
+        ``"config_invalid"`` it is a short error message and the old config
+        stays in use. ``"shutting_down"`` and ``"control_busy"`` carry None.
+
+        Unchanged entries keep their ModelConfig (port, rewritten command,
+        temp script). New and changed entries get fresh ports and fresh
+        temp script names. The running process is never touched: it keeps
+        the settings it was started with until its next start.
+        """
+        if self._shutting_down:
+            return "shutting_down", None
+        if self._swapping or self._stop_only_operation is not None:
+            return "control_busy", None
+        path = self.config_path
+        if path is None:
+            return "config_invalid", "Config file path is not known"
+
+        try:
+            new_config = load_config(path)
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            message = _reload_error(exc, path)
+            logger.error("Config reload failed: %s", message)
+            return "config_invalid", message
+
+        old_config = self.config
+        added: list[str] = []
+        changed: list[str] = []
+        for model_id, mc in new_config.models.items():
+            old = old_config.models.get(model_id)
+            if old is None:
+                added.append(model_id)
+            elif old.spec is None or old.spec != mc.spec:
+                changed.append(model_id)
+            else:
+                new_config.models[model_id] = old
+        removed = [
+            model_id for model_id in old_config.models
+            if model_id not in new_config.models
+        ]
+
+        # Fresh ports must not collide with kept entries, with each other,
+        # or with the process that is running now.
+        fresh = added + changed
+        reserved = {
+            mc.port for model_id, mc in new_config.models.items()
+            if model_id not in fresh
+        }
+        if self._current is not None:
+            reserved.add(self._current.port)
+        for model_id in fresh:
+            mc = new_config.models[model_id]
+            mc.port = find_free_port(reserved)
+            reserved.add(mc.port)
+            mc.cmd = mc.spec[0]
+
+        self._config_generation += 1
+        try:
+            self._rewrite_commands(
+                new_config, fresh, generation=self._config_generation
+            )
+        except (OSError, ValueError) as exc:
+            message = _reload_error(exc, path)
+            logger.error("Config reload failed: %s", message)
+            return "config_invalid", message
+
+        for name, group in new_config.variants.items():
+            old_group = old_config.variants.get(name)
+            if old_group is not None and old_group.active in group.variants:
+                group.active = old_group.active
+
+        running = self._current_model if self._current is not None else None
+        running_changed = running is not None and (
+            running in changed or running in removed
+        )
+        # One synchronous assignment: no await between check and swap.
+        self.config = new_config
+        logger.info(
+            "Config reloaded: added %s, removed %s, changed %s%s",
+            ", ".join(added) or "none",
+            ", ".join(removed) or "none",
+            ", ".join(changed) or "none",
+            (
+                f"; running model {running} keeps its old settings "
+                "until it stops"
+                if running_changed else ""
+            ),
+        )
+        return "success", {
+            "added": added,
+            "removed": removed,
+            "changed": changed,
+            "running_changed": running_changed,
+        }
+
+
+_MAX_ERROR_LENGTH = 300
+
+
+def _reload_error(exc: BaseException, config_path: Path) -> str:
+    """Reload error text that shows no paths and no file contents.
+
+    The control panel must not display model commands or the config path
+    (README), so only the config file's base name appears, and YAML errors
+    keep the problem and line/column but drop the quoted source snippet.
+    """
+    name = Path(config_path).name
+    if isinstance(exc, yaml.MarkedYAMLError):
+        text = f"Invalid YAML in {name}: {exc.problem or 'syntax error'}"
+        mark = exc.problem_mark
+        if mark is not None:
+            text += f" (line {mark.line + 1}, column {mark.column + 1})"
+    elif isinstance(exc, yaml.YAMLError):
+        text = f"Invalid YAML in {name}"
+    elif isinstance(exc, FileNotFoundError) and exc.filename is None:
+        # load_config's own "not found" error carries the full path.
+        text = f"Config file not found: {name}"
+    elif isinstance(exc, OSError):
+        reason = exc.strerror or type(exc).__name__
+        target = Path(exc.filename).name if exc.filename else name
+        text = f"{reason}: {target}"
+    else:
+        text = str(exc)
+    # Belt and braces: never leak the absolute path in any other message.
+    text = text.replace(str(config_path), name)
+    return _short_error(text)
+
+
+def _short_error(text: str) -> str:
+    """One-line, bounded error text for the control API and logs."""
+    text = " ".join(text.split()) or "unknown error"
+    if len(text) > _MAX_ERROR_LENGTH:
+        text = text[: _MAX_ERROR_LENGTH - 3] + "..."
+    return text

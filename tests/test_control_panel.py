@@ -51,6 +51,7 @@ class TestPanelHttpAndStaticSafety:
             'id="inflight"',
             'id="models"',
             'id="unload"',
+            'id="reload"',
             'id="automatic-switch"',
             'id="quick-switch"',
             'id="idle-timeout"',
@@ -129,12 +130,12 @@ class Element {
 }
 const ids = [
   "lifecycle", "active-model", "pending-model", "inflight", "models",
-  "unload", "automatic-switch", "quick-switch", "idle-timeout",
+  "unload", "reload", "automatic-switch", "quick-switch", "idle-timeout",
   "save-settings", "message"
 ];
 const elements = new Map(ids.map((id) => [id, new Element("div", id)]));
 const fixedControls = [
-  elements.get("unload"), elements.get("automatic-switch"),
+  elements.get("unload"), elements.get("reload"), elements.get("automatic-switch"),
   elements.get("quick-switch"), elements.get("idle-timeout"),
   elements.get("save-settings")
 ];
@@ -344,6 +345,114 @@ async function flush() {
                 "/api/v1/control/state",
             ],
             "remaining": 0,
+        }
+
+    def test_actual_script_reloads_config_and_shows_summary(self):
+        """P-20261013-04: Reload button posts with header, no body."""
+        reloaded = {
+            **FRESH,
+            "models": ["a", "new"],
+            "active_model": "a",
+            "lifecycle": "ready",
+            "reload": {
+                "added": ["new"], "removed": ["old"], "changed": ["a"],
+                "running_changed": True,
+            },
+        }
+        removed = {
+            **FRESH,
+            "models": ["b"],
+            "active_model": "a",
+            "lifecycle": "ready",
+            "reload": {
+                "added": [], "removed": ["a"], "changed": [],
+                "running_changed": True,
+            },
+        }
+        plain = {
+            **FRESH,
+            "reload": {
+                "added": [], "removed": [], "changed": [],
+                "running_changed": False,
+            },
+        }
+        responses = [
+            {"ok": True, "status": 200, "data": FRESH},
+            {"ok": True, "status": 200, "data": reloaded},
+            {"ok": True, "status": 200, "data": reloaded},
+            {"ok": True, "status": 200, "data": removed},
+            {"ok": True, "status": 200, "data": removed},
+            {"ok": True, "status": 200, "data": plain},
+            {"ok": True, "status": 200, "data": FRESH},
+        ]
+        output = self._execute(r'''
+(async () => {
+  await flush();
+  const messages = [];
+  await byId("reload").click();
+  messages.push(byId("message").textContent);
+  const models = byId("models").children.map((child) => child.textContent);
+  await reloadConfig();
+  messages.push(byId("message").textContent);
+  await reloadConfig();
+  messages.push(byId("message").textContent);
+  console.log(JSON.stringify({
+    calls: fetchCalls, messages, models,
+    className: byId("message").className,
+    remaining: responseQueue.length,
+  }));
+})();
+''', responses)
+        calls = output["calls"]
+        assert [call["url"] for call in calls] == [
+            "/api/v1/control/state",
+            "/api/v1/control/reload",
+            "/api/v1/control/state",
+            "/api/v1/control/reload",
+            "/api/v1/control/state",
+            "/api/v1/control/reload",
+            "/api/v1/control/state",
+        ]
+        assert calls[1]["options"] == {
+            "method": "POST",
+            "headers": {"X-Model-Switcher-Control": "1"},
+        }
+        assert output["models"] == ["aLoaded", "new"]
+        assert output["messages"] == [
+            "Config reloaded.\nAdded: new\nRemoved: old\nChanged: a\n"
+            "The running model keeps its old settings until its next start.",
+            "Config reloaded.\nAdded: none\nRemoved: a\nChanged: none\n"
+            "The running model was removed from the config; it keeps "
+            "serving until you switch or unload it.",
+            "Config reloaded.\nAdded: none\nRemoved: none\nChanged: none",
+        ]
+        assert output["className"] == ""
+        assert output["remaining"] == 0
+
+    def test_actual_script_shows_reload_error_as_text(self):
+        message = "Config not reloaded: <b>bad</b> yaml"
+        responses = [
+            {"ok": True, "status": 200, "data": FRESH},
+            {
+                "ok": False,
+                "status": 400,
+                "data": {"error": {"message": message, "code": "config_invalid"}},
+            },
+            {"ok": True, "status": 200, "data": FRESH},
+        ]
+        output = self._execute(r'''
+(async () => {
+  await flush();
+  await reloadConfig();
+  console.log(JSON.stringify({
+    message: byId("message").textContent,
+    className: byId("message").className,
+    remaining: responseQueue.length,
+  }));
+})();
+''', responses)
+        assert output == {
+            "message": message, "className": "error", "remaining": 0,
         }
 
 

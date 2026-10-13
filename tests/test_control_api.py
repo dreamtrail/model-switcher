@@ -91,6 +91,7 @@ class TestStateAndReservedRoutes:
             ("/api/v1/control/state", "PUT", "GET"),
             ("/api/v1/control/settings", "GET", "PUT"),
             ("/api/v1/control/model", "POST", "PUT, DELETE"),
+            ("/api/v1/control/reload", "GET", "POST"),
         ],
     )
     async def test_recognized_route_unsupported_method_has_exact_local_405(
@@ -398,6 +399,7 @@ class TestMutationBoundaryAndAutomaticPolicy:
             ("PUT", "/api/v1/control/settings", {"json": {"automatic_switch": False, "quick_switch": True, "idle_timeout_seconds": 0}}),
             ("PUT", "/api/v1/control/model", {"json": {"model": "a"}}),
             ("DELETE", "/api/v1/control/model", {}),
+            ("POST", "/api/v1/control/reload", {}),
         ],
     )
     @pytest.mark.parametrize("header_value", [None, "0", "true"])

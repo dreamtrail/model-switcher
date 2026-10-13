@@ -8,6 +8,7 @@ import logging
 import re
 import signal
 import sys
+from pathlib import Path
 
 import aiohttp
 from aiohttp import web
@@ -170,6 +171,9 @@ async def _main(argv: list[str] | None = None) -> None:
         quick_switch=args.quick_switch,
         client=client,
     )
+    # Kept for control API config reload (absolute, so a later chdir
+    # cannot change which file is read).
+    swapper.config_path = Path(args.config).resolve()
 
     # Shutdown coordination
     shutdown_event = asyncio.Event()

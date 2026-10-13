@@ -99,11 +99,16 @@ class Swapper(_SwapperLifecycleMixin):
         # model-load wait (utilized time); "Active now" stays separate.
         self._busy_requests = 0
         self._temp_dir: Path | None = None
+        # Config file to re-read on control reload; the CLI sets it after
+        # construction. None means reload is unavailable.
+        self.config_path: Path | None = None
+        # Reload count; names temp script copies made by each reload.
+        self._config_generation = 0
 
         # Create temp dir for rewritten script copies
         self._temp_dir = create_temp_dir()
         # Rewrite all model commands to use auto-assigned ports
-        self._rewrite_commands()
+        self._rewrite_commands(self.config)
 
     @property
     def active_model(self) -> str | None:

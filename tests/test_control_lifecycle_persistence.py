@@ -117,3 +117,68 @@ class TestControlPersistenceBoundary:
             # temporary directory; it is not a control-triggered write.
             recording = False
             await swapper.shutdown()
+
+
+class TestReloadPersistenceBoundary:
+    async def test_reload_never_writes_the_config_file(
+        self, tmp_path, monkeypatch
+    ):
+        """P-20261013-04: reload reads the YAML file and never writes it."""
+        from src.config import load_config
+
+        path = tmp_path / "config.yaml"
+        path.write_text("a: serve-a\nb: serve-b\n")
+        swapper = Swapper(load_config(path), idle_timeout=0)
+        swapper.config_path = path
+        path.write_text("a: serve-a --ctx 8\nc: serve-c\n")
+        # Push the mtime into the past so any later write would show.
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+        before = (path.read_bytes(), path.stat().st_mtime_ns)
+        writes = []
+        original_open = builtins.open
+
+        def audited_open(file, mode="r", *args, **kwargs):
+            if any(flag in mode for flag in "wax+"):
+                writes.append(("builtins.open", file, mode))
+            return original_open(file, mode, *args, **kwargs)
+
+        original_os_open = os.open
+        write_flags = (
+            os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+        )
+
+        def audited_os_open(file, flags, *args, **kwargs):
+            if flags & write_flags:
+                writes.append(("os.open", file, flags))
+            return original_os_open(file, flags, *args, **kwargs)
+
+        for name in ("write_text", "write_bytes", "touch", "replace", "rename"):
+            original = getattr(Path, name)
+
+            def audited(self, *args, _name=name, _original=original, **kw):
+                writes.append((f"Path.{_name}", self))
+                return _original(self, *args, **kw)
+
+            monkeypatch.setattr(Path, name, audited)
+        monkeypatch.setattr(builtins, "open", audited_open)
+        monkeypatch.setattr(os, "open", audited_os_open)
+        try:
+            kind, summary = swapper.control_reload_config()
+            assert kind == "success"
+            assert summary["added"] == ["c"]
+            # A failed reload does not write either.
+            original_read = Path.read_text
+            monkeypatch.setattr(
+                Path, "read_text",
+                lambda self, *a, **k: (
+                    "a: [broken\n" if self == path
+                    else original_read(self, *a, **k)
+                ),
+            )
+            assert swapper.control_reload_config()[0] == "config_invalid"
+        finally:
+            monkeypatch.undo()
+            await swapper.shutdown()
+
+        assert writes == []
+        assert (path.read_bytes(), path.stat().st_mtime_ns) == before

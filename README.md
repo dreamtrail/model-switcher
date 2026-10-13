@@ -42,6 +42,7 @@ mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port ${PORT}"
 - `${PORT}` — replaced at runtime with a free port.
 - Commands run in the foreground; the switcher manages their lifecycle.
 - One name can have several launch commands (for example text and vision): see [Model variants](#model-variants).
+- After editing the file, apply it without a restart: see [Reloading the config](#reloading-the-config).
 
 ### Optional shutdown hooks
 
@@ -114,8 +115,9 @@ qwen3.8-27b:
 - The request body is forwarded unchanged, so every variant's server must
   accept the public name (`-a`, `--served-model-name`, or the like).
 - `GET /v1/models` lists `qwen3.8-27b` once, not the variants.
-- The chosen variant is kept in memory only; a restart starts each entry on its
-  `default`.
+- The chosen variant is kept in memory only. A [config reload](#reloading-the-config)
+  keeps it (unless that variant was removed), even if you changed `default`;
+  a restart starts each entry on its `default`.
 
 ## Quick Switching
 
@@ -133,7 +135,7 @@ Process creation failures return HTTP 500 with `error.code: "model_start_failed"
 
 ## Control Panel and Runtime API
 
-Open `http://localhost:8080/control` to use the dependency-free control panel on the existing listener. It shows configured, active, and pending models, lifecycle state, in-flight request count, and the three runtime settings. It can load or switch to a model, unload the active model, and update settings. A [variant model](#model-variants) shows its name with one button per variant: the loaded variant has a "Loaded" badge, and the active variant (where requests go) has an "Active" badge when it is not loaded; clicking a variant makes it active and loads it. It uses the same look as the statistics dashboard (light and dark theme, status tiles, cards); the loaded model's button carries a "Loaded" badge, and the header links to `/stats` (the dashboard links back to `/control`). It never displays or edits model commands, assigned ports, process IDs, environment values, or the config path.
+Open `http://localhost:8080/control` to use the dependency-free control panel on the existing listener. It shows configured, active, and pending models, lifecycle state, in-flight request count, and the three runtime settings. It can load or switch to a model, unload the active model, update settings, and [reload the config file](#reloading-the-config). A [variant model](#model-variants) shows its name with one button per variant: the loaded variant has a "Loaded" badge, and the active variant (where requests go) has an "Active" badge when it is not loaded; clicking a variant makes it active and loads it. It uses the same look as the statistics dashboard (light and dark theme, status tiles, cards); the loaded model's button carries a "Loaded" badge, and the header links to `/stats` (the dashboard links back to `/control`). It never displays or edits model commands, assigned ports, process IDs, environment values, or the config path.
 
 > **Network trust warning:** the control API has no authentication or authorization. `X-Model-Switcher-Control: 1` protects browsers against cross-site request forgery; it does **not** prove who the caller is. Binding model-switcher to `0.0.0.0` or another shared interface grants every network-reachable client process-control authority. Use this only on a trusted local network. If the listener is exposed beyond that boundary, put an authenticated service in front of it or do not expose it.
 
@@ -146,8 +148,9 @@ The switcher-local routes are:
 | `PUT` | `/api/v1/control/settings` | Replace all three runtime settings |
 | `PUT` | `/api/v1/control/model` | Load or switch to one configured model (or variant) |
 | `DELETE` | `/api/v1/control/model` | Unload the tracked model |
+| `POST` | `/api/v1/control/reload` | Re-read the config file ([details](#reloading-the-config)) |
 
-`/control` and every path at or below `/api/v1/control` are reserved and intentionally shadow matching upstream routes. State responses use `Cache-Control: no-store`. Every mutation requires `X-Model-Switcher-Control: 1`; PUT requests also require `Content-Type: application/json` and a body no larger than 4 KiB. DELETE is bodyless. The service emits no CORS permission headers.
+`/control` and every path at or below `/api/v1/control` are reserved and intentionally shadow matching upstream routes. State responses use `Cache-Control: no-store`. Every mutation requires `X-Model-Switcher-Control: 1`; PUT requests also require `Content-Type: application/json` and a body no larger than 4 KiB. DELETE and POST are bodyless. The service emits no CORS permission headers.
 
 Example state:
 
@@ -201,7 +204,34 @@ The model body is `{"model": name}` or, for a variant model, `{"model": name, "v
 
 Changing a positive idle timeout restarts the countdown from the update time when a healthy model is idle; zero disables idle unload. Cleanup already in progress still finishes. Manual switches and unloads preserve the existing model-change behavior and may interrupt in-flight requests using the previous process; the panel shows the in-flight count but does not drain requests.
 
-All control settings are process-local. Restart restores `automatic_switch=true`, the command-line `--quick-switch` value, the command-line `--idle-timeout` value, and each variant model's `default` variant; no YAML is changed.
+All control settings are process-local; a [config reload](#reloading-the-config) does not change them. Restart restores `automatic_switch=true`, the command-line `--quick-switch` value, the command-line `--idle-timeout` value, and each variant model's `default` variant; no YAML is changed.
+
+### Reloading the config
+
+Edit the config file, then click **Reload config** on `/control` or call:
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/control/reload \
+  -H 'X-Model-Switcher-Control: 1'
+```
+
+The switcher re-reads the file it was started with (`--config`) and applies models, variants, commands, and shutdown hooks without a restart. The reply is the full state document plus a `reload` summary of model ids:
+
+```json
+"reload": {"added": ["gamma"], "removed": ["beta"], "changed": ["alpha"], "running_changed": true}
+```
+
+- **New models** are listed in `/v1/models` and can be requested right away.
+- **Removed models** get 404 for named requests at once.
+- **Changed models** are entries whose `cmd`, `shutdown_cmd`, or `shutdown_timeout` text changed. They get a new port and, for scripts, a new temp copy; the old copy is never overwritten.
+- **Unchanged models** keep their port, command, and temp copy. Only the config text is compared: if you edit a startup script but not its config line, the entry counts as unchanged and keeps its old copy until a restart.
+- **The running model is not touched** (`running_changed: true` when it was changed or removed). It keeps its old command, port, and hook until it stops; its next start uses the new settings. A removed running model keeps serving model-less requests until you switch or unload it, or the idle timeout stops it. The panel shows a note in both cases.
+- **Variants:** the active variant stays active if it still exists, otherwise the entry's `default`. A changed `default:` alone does not switch the active variant, even if that variant was only active because it was the old default; pick the variant on `/control` (or restart) to use the new default.
+- **Not reloaded:** command-line flags and the [runtime settings](#control-panel-and-runtime-api) above. The YAML file is only read, never written.
+
+If the file is missing or invalid, nothing changes and the old config keeps working; the reply is 400 `config_invalid` with the error, for example `Config not reloaded: Model 'a' has an empty command` or `Config not reloaded: Invalid YAML in config.yaml: mapping values are not allowed here (line 2, column 4)`. The message names only the config file (not its full path) and never quotes source lines. A reload while a model is loading or unloading returns 409 `control_busy` (try again after it finishes); during shutdown it returns 503 `shutting_down`.
+
+There is no signal or file-watch trigger. SIGHUP is not handled, so `kill -HUP` stops the switcher instead of reloading it; do not add a systemd `ExecReload=` that sends it.
 
 ## SGLang
 
@@ -614,7 +644,7 @@ For positive `--timeout` values, model swaps and non-streaming requests must fin
 
 ## API Endpoints
 
-- `GET /v1/models` — list available models (static from config; a [variant model](#model-variants) appears once under its public name)
+- `GET /v1/models` — list available models (from the config, updated by a [reload](#reloading-the-config); a [variant model](#model-variants) appears once under its public name)
 - `GET /models` — alias for `/v1/models`
 - `* /{path:.*}` — proxied to the active upstream model
 

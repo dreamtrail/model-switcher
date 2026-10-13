@@ -316,6 +316,35 @@ class TestTempScriptPerModel:
         finally:
             cleanup_temp_dir(temp_dir)
 
+    def test_reload_generation_gives_a_new_name_and_keeps_old_copy(
+        self, tmp_path: Path
+    ):
+        """P-20261013-04: a reload never overwrites an existing copy."""
+        script = tmp_path / "start.sh"
+        script.write_text("#!/bin/sh\nserve --port 8000\n")
+        temp_dir = create_temp_dir()
+        try:
+            _, first = rewrite_command(
+                str(script), 1111, temp_dir=temp_dir, model_id="a"
+            )
+            _, second = rewrite_command(
+                str(script), 2222, temp_dir=temp_dir, model_id="a",
+                generation=1,
+            )
+            _, third = rewrite_command(
+                str(script), 3333, temp_dir=temp_dir, model_id="a",
+                generation=2,
+            )
+            assert len({first, second, third}) == 3
+            assert "-r" not in first.name.removeprefix("start.sh-a-")
+            assert second.name.endswith(f"-r1-{os.getpid()}")
+            assert third.name.endswith(f"-r2-{os.getpid()}")
+            assert "--port 1111" in first.read_text()
+            assert "--port 2222" in second.read_text()
+            assert "--port 3333" in third.read_text()
+        finally:
+            cleanup_temp_dir(temp_dir)
+
     def test_without_model_id_keeps_old_name(self, tmp_path: Path):
         script = tmp_path / "start.sh"
         script.write_text("#!/bin/sh\nserve --port 8000\n")

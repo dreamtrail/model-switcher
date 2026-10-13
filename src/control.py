@@ -39,12 +39,20 @@ class ControlController(Protocol):
     async def control_unload_model(self) -> str:
         """Unload the tracked model and return a lifecycle outcome kind."""
 
+    def control_reload_config(self) -> tuple[str, dict | str | None]:
+        """Re-read the config file; return (outcome kind, detail).
+
+        Detail is the reload summary on success and a short error message
+        for ``config_invalid``.
+        """
+
 
 _METHODS = {
     "/control": ("GET",),
     "/api/v1/control/state": ("GET",),
     "/api/v1/control/settings": ("PUT",),
     "/api/v1/control/model": ("PUT", "DELETE"),
+    "/api/v1/control/reload": ("POST",),
 }
 
 _OUTCOME_ERRORS = {
@@ -297,6 +305,30 @@ async def _delete_model(
     return _state_response(controller)
 
 
+async def _post_reload(
+    request: web.Request, controller: ControlController
+) -> web.Response:
+    forbidden = _mutation_forbidden(request)
+    if forbidden is not None:
+        return forbidden
+    body = await _read_limited(request, 0)
+    if body is None or body:
+        return _error(
+            400, "Invalid control request", "invalid_control_request"
+        )
+    outcome, detail = controller.control_reload_config()
+    if outcome == "config_invalid":
+        return _error(
+            400, f"Config not reloaded: {detail}", "config_invalid"
+        )
+    if outcome != "success":
+        return _outcome_error(outcome)
+    return web.json_response(
+        {**controller.control_state(), "reload": detail},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 async def dispatch_control(
     request: web.Request, controller: ControlController
 ) -> web.Response | None:
@@ -328,6 +360,8 @@ async def dispatch_control(
         return _state_response(controller)
     if path == "/api/v1/control/settings":
         return await _put_settings(request, controller)
+    if path == "/api/v1/control/reload":
+        return await _post_reload(request, controller)
     if request.method == "PUT":
         return await _put_model(request, controller)
     return await _delete_model(request, controller)
@@ -518,6 +552,7 @@ CONTROL_HTML = """<!DOCTYPE html>
   <div class="body">
     <div id="models" class="models"></div>
     <button id="unload" type="button">Unload active model</button>
+    <button id="reload" type="button">Reload config</button>
   </div>
 </section>
 <section class="card section">
@@ -658,7 +693,7 @@ async function refresh() {
     setMessage(error instanceof Error ? error.message : String(error), true);
   }
 }
-async function mutate(path, method, body) {
+async function mutate(path, method, body, describe) {
   if (mutating) return;
   mutating = true;
   setDisabled(true);
@@ -673,8 +708,9 @@ async function mutate(path, method, body) {
   }
   try {
     const response = await fetch(API + path, options);
-    render(await decode(response));
-    setMessage("Updated", false);
+    const data = await decode(response);
+    render(data);
+    setMessage(describe ? describe(data) : "Updated", false);
   } catch (error) {
     setMessage(error instanceof Error ? error.message : String(error), true);
   } finally {
@@ -688,6 +724,29 @@ function loadVariant(name, variant) {
   return mutate("/model", "PUT", {model: name, variant: variant});
 }
 function unloadModel() { return mutate("/model", "DELETE"); }
+function listOrNone(values) {
+  return Array.isArray(values) && values.length ? values.map(String).join(", ") : "none";
+}
+// Plain-text summary of a reload response (shown in #message).
+function reloadSummary(data) {
+  const summary = data && data.reload && typeof data.reload === "object" ? data.reload : {};
+  const lines = [
+    "Config reloaded.",
+    "Added: " + listOrNone(summary.added),
+    "Removed: " + listOrNone(summary.removed),
+    "Changed: " + listOrNone(summary.changed),
+  ];
+  if (summary.running_changed === true) {
+    const removed = Array.isArray(summary.removed) ? summary.removed : [];
+    if (data.active_model != null && removed.includes(data.active_model)) {
+      lines.push("The running model was removed from the config; it keeps serving until you switch or unload it.");
+    } else {
+      lines.push("The running model keeps its old settings until its next start.");
+    }
+  }
+  return lines.join("\\n");
+}
+function reloadConfig() { return mutate("/reload", "POST", undefined, reloadSummary); }
 function saveSettings() {
   if (!latestState) return;
   const timeout = Number(byId("idle-timeout").value);
@@ -698,6 +757,7 @@ function saveSettings() {
   });
 }
 byId("unload").addEventListener("click", unloadModel);
+byId("reload").addEventListener("click", reloadConfig);
 byId("save-settings").addEventListener("click", saveSettings);
 refresh();
 setInterval(refresh, 3000);

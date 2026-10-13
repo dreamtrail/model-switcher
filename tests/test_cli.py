@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -189,6 +190,9 @@ class TestMainRuntime:
 
         assert len(created_swappers) == 1
         assert created_swappers[0].config is config
+        # P-20261013-04: absolute config path kept for control reload.
+        assert created_swappers[0].config_path == Path("config.yaml").resolve()
+        assert created_swappers[0].config_path.is_absolute()
         assert created_swappers[0].timeout == 60
         assert created_swappers[0].idle_timeout == expected_idle_timeout
         assert created_swappers[0].quick_switch is False

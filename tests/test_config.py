@@ -351,3 +351,60 @@ def test_commented_variants_example_in_config_example_loads(tmp_path):
     assert config.models["qwen3.8-27b@vision"].shutdown_cmd == (
         "/path/to/stop-other-server"
     )
+
+
+class TestReloadSupport:
+    """P-20261013-04: raw spec kept for change detection; port picking."""
+
+    def test_raw_spec_is_kept_before_port_substitution(self, tmp_config):
+        path = tmp_config({
+            "a": "serve --port ${PORT}",
+            "b": {"cmd": "serve-b", "shutdown_cmd": "stop-b",
+                  "shutdown_timeout": 5},
+            "q": {"variants": {"t": "serve-t"}},
+        })
+        config = load_config(path)
+        assert config.models["a"].spec == ("serve --port ${PORT}", None, 30)
+        assert "${PORT}" not in config.models["a"].cmd
+        assert config.models["b"].spec == ("serve-b", "stop-b", 5)
+        assert config.models["q@t"].spec == ("serve-t", None, 30)
+        # Code-built entries have no spec; spec does not affect equality.
+        assert ModelConfig("a", "x", 1).spec is None
+        assert ModelConfig("a", "x", 1) == ModelConfig("a", "x", 1, spec=(1,))
+
+    def test_find_free_port_skips_reserved_and_adjacent_ports(
+        self, monkeypatch
+    ):
+        candidates = iter([5000, 5001, 4999, 6000])
+        monkeypatch.setattr(
+            config_module, "_find_free_port", lambda: next(candidates)
+        )
+        assert config_module.find_free_port({5000}) == 6000
+
+    def test_find_free_port_without_reserved_takes_first(self, monkeypatch):
+        monkeypatch.setattr(config_module, "_find_free_port", lambda: 7000)
+        assert config_module.find_free_port() == 7000
+
+
+@pytest.mark.parametrize(
+    ("data", "message"),
+    [
+        ({"a": {"cmd": 123}}, "Model 'a' 'cmd' must be a string, got int"),
+        ({"a": {"cmd": ["x", "y"]}}, "Model 'a' 'cmd' must be a string, got list"),
+        ({"a": {"cmd": None}}, "Model 'a' has an empty command"),
+        ({"a": {"cmd": True}}, "Model 'a' 'cmd' must be a string, got bool"),
+        (
+            {"q": {"variants": {"t": {"cmd": 5}}}},
+            "Model 'q' variant 't' 'cmd' must be a string, got int",
+        ),
+        ({"a": {"cmd": "x", "shutdown_cmd": 5}}, "Model 'a' has an invalid shutdown_cmd"),
+        ({"a": {"cmd": "x", "shutdown_cmd": ["x"]}}, "Model 'a' has an invalid shutdown_cmd"),
+    ],
+)
+def test_non_string_commands_are_rejected_with_value_error(
+    tmp_config, data, message
+):
+    """P-20261013-04 review M1: wrong-typed commands are config errors."""
+    with pytest.raises(ValueError) as caught:
+        load_config(tmp_config(data))
+    assert str(caught.value) == message
