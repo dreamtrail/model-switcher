@@ -600,3 +600,20 @@ User approved the plan 2026-10-13 (IDs P-20261013-03, -06, -05, in that order).
 
 ### Verification Trade-off
 - **Real process for SIGHUP** — `tests/test_cli_sighup_e2e.py` starts `python -m src` with a real shell-script model server, edits the config, sends SIGHUP (valid, invalid, valid again), and ends with SIGTERM. Unit tests in `tests/test_cli.py` cover the handler wiring with a fake swapper. No systemd run was done.
+
+## P-20261013-10 — Programs given by path
+
+User approved the plan 2026-10-13. Fixes TODO P-20261013-08.
+
+### Script Detection
+- **Script mode needs a text file** — a command whose first word is an existing file used to count as a script, so `/opt/llama/llama-server --model m.gguf` made startup crash with `UnicodeDecodeError` (and a reload answer `config_invalid`). `port_rewrite._is_text_script` is now the one check behind `rewrite_command`, `is_script_command`, and `script_fingerprint`. Text means valid UTF-8 with no NUL bytes. Any other file is a program: its port flags are replaced or `--port <N>` is appended, with no temp copy, and its fingerprint is None. Commands on `PATH` were never affected.
+- **Chunked read, early exit** — the file is read in 64 KiB chunks and the check stops at the first NUL byte or bad UTF-8, so a large binary is not read in full. An empty file counts as text.
+- **Unreadable stays a script** — a file that cannot be opened (permissions) still counts as a script, so the copy step reports `Permission denied` as before (`config_invalid` on reload).
+- **Edits that change the kind** — turning a script into a binary (or back) changes its fingerprint, so a reload marks the entry `changed`. Editing a binary alone is not tracked, like any program on `PATH`.
+- **Existing tests changed** — three reload tests used a non-UTF-8 file as the "unreadable script" or "unreadable content"; that file is now a program, so they use a mode 0 text file instead (skipped when the user can still read it, such as root).
+
+### Out of Scope
+- **Doubled port flag** — a `${PORT}` command with a `--port` flag still gets the flag twice at startup (P-20261013-09); not changed here.
+
+### Verification Trade-off
+- **Real interpreter as the binary** — `tests/test_config_reload_e2e.py` starts a real HTTP server with `sys.executable` given by absolute path, calls it, and reloads. The unit tests use small fake binaries (NUL bytes, invalid UTF-8, bad bytes after the first chunk). Real model servers such as `llama-server` were not run.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import os
 import re
@@ -30,11 +31,13 @@ def rewrite_command(
 ) -> tuple[str, Path | None]:
     """Rewrite a command to use the given port.
 
-    For script files (first token is an existing file), copies the script
+    For script files (first token is an existing text file; see
+    ``is_script_command``), copies the script
     to ``temp_dir``, replaces port flags in the content, and returns the
     temp path. If ``temp_dir`` is None, appends ``--port <N>`` instead.
 
-    For direct commands, replaces port flags in the command string.
+    For direct commands (including a binary given by path), replaces port
+    flags in the command string.
     If no port flag is found, appends ``--port <N>``.
 
     Args:
@@ -60,10 +63,10 @@ def rewrite_command(
         rewritten = re.sub(r"\$\{PORT\}", port_str, cmd)
         return rewritten, None
 
-    # Check if first token is an existing script file
+    # Check if first token is an existing text script file
     first_token = cmd.split()[0] if cmd.split() else cmd
     script_path = Path(first_token)
-    if script_path.is_file() and temp_dir is not None:
+    if _is_text_script(script_path) and temp_dir is not None:
         return _rewrite_script(
             script_path, cmd, port_str, temp_dir, model_id, generation
         )
@@ -82,15 +85,47 @@ def rewrite_command(
 
 
 def is_script_command(cmd: str) -> bool:
-    """True when the first token of ``cmd`` is an existing file."""
+    """True when the first token of ``cmd`` is an existing text file.
+
+    A binary or other non-text file given by path (``/opt/llama/llama-server``)
+    is a direct command, like a program found on PATH.
+    """
     tokens = cmd.split()
-    return bool(tokens) and Path(tokens[0]).is_file()
+    return bool(tokens) and _is_text_script(Path(tokens[0]))
+
+
+_TEXT_CHUNK = 64 * 1024
+
+
+def _is_text_script(path: Path) -> bool:
+    """True when ``path`` is an existing file with text content.
+
+    Text means valid UTF-8 without NUL bytes. The file is read in chunks and
+    the check stops at the first NUL byte or invalid UTF-8, so a large binary
+    is not read in full. A file that cannot be opened or read (permissions)
+    counts as a script, so the copy step reports the real error.
+    """
+    if not path.is_file():
+        return False
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    try:
+        with path.open("rb") as handle:
+            while chunk := handle.read(_TEXT_CHUNK):
+                if b"\0" in chunk:
+                    return False
+                decoder.decode(chunk)
+            decoder.decode(b"", final=True)
+    except UnicodeDecodeError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def script_fingerprint(cmd: str) -> str | None:
     """Hash of the script file ``cmd`` runs in script mode, else None.
 
-    Script mode is when the first token is an existing file (see
+    Script mode is when the first token is an existing text file (see
     ``is_script_command``). The config loader fills in ``${PORT}`` before
     the startup copy step, so a placeholder in the command does not change
     this; a reload does the same for script entries (see

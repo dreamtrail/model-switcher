@@ -7,6 +7,7 @@ Processes are faked here; tests/test_config_reload_e2e.py runs real ones.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 import shlex
 import sys
@@ -68,6 +69,15 @@ def make_swapper(path: Path) -> Swapper:
     swapper = Swapper(load_config(path), idle_timeout=0)
     swapper.config_path = path
     return swapper
+
+
+def unreadable_script(path: Path) -> Path:
+    """A text script the switcher cannot read (the copy step must fail)."""
+    path.write_text("#!/bin/sh\necho hi\n")
+    path.chmod(0)
+    if os.access(path, os.R_OK):
+        pytest.skip("file permissions do not stop this user from reading")
+    return path
 
 
 @pytest.fixture
@@ -459,14 +469,13 @@ class TestRefusals:
         swapper = make_swapper(path)
         cleanup.append(swapper)
         old = swapper.config
-        script = tmp_path / "bad.sh"
-        script.write_bytes(b"\xff\xfe not utf-8")
+        script = unreadable_script(tmp_path / "bad.sh")
         write(path, {"a": "serve-a", "b": f"{script}"})
 
         kind, message = swapper.control_reload_config()
 
         assert kind == "config_invalid"
-        assert "utf-8" in message
+        assert "Permission denied" in message
         assert swapper.config is old
 
     async def test_reload_without_known_path_is_config_invalid(
@@ -708,8 +717,7 @@ class TestTempScripts:
         # Invalid file, then a script that cannot be copied.
         path.write_text("a: [unclosed\n")
         assert swapper.control_reload_config()[0] == "config_invalid"
-        bad = tmp_path / "bad.sh"
-        bad.write_bytes(b"\xff\xfe not utf-8")
+        bad = unreadable_script(tmp_path / "bad.sh")
         write(path, {"a": f"{script} --name a", "b": f"{bad}"})
         assert swapper.control_reload_config()[0] == "config_invalid"
         # Refused reloads do not count either.
@@ -798,14 +806,34 @@ class TestTempScripts:
         swapper = make_swapper(path)
         cleanup.append(swapper)
         old = swapper.config
-        script.write_bytes(b"\xff\xfe not utf-8")
+        unreadable_script(script)
 
         kind, message = swapper.control_reload_config()
 
         assert kind == "config_invalid"
-        assert "utf-8" in message
+        assert "Permission denied" in message
         assert swapper.config is old
         assert swapper._config_generation == 0
+
+    async def test_script_replaced_by_binary_becomes_direct_command(
+        self, tmp_path, fakes, cleanup
+    ):
+        script = tmp_path / "run.sh"
+        script.write_text(SCRIPT.format(python=shlex.quote(sys.executable)))
+        path = tmp_path / "config.yaml"
+        write(path, {"a": f"{script} --name a"})
+        swapper = make_swapper(path)
+        cleanup.append(swapper)
+        assert swapper.config.models["a"].spec[3] is not None
+        script.write_bytes(b"\x7fELF\x00 binary")
+
+        kind, summary = swapper.control_reload_config()
+
+        assert kind == "success", summary
+        assert summary["changed"] == ["a"]
+        new = swapper.config.models["a"]
+        assert new.cmd == f"{script} --name a --port {new.port}"
+        assert new.spec[3] is None
 
     async def test_changed_port_placeholder_script_runs_a_temp_copy_after_reload(
         self, tmp_path, fakes, cleanup
@@ -850,3 +878,88 @@ class TestTempScripts:
         assert swapper.config.models["b"] is old_b
         assert await swapper.control_load_model("a") == "success"
         assert fakes.started[-1] == ("a", new.cmd, new.port)
+
+
+class TestBinaryGivenByPath:
+    """A program given by absolute path is a direct command (P-20261013-10)."""
+
+    @staticmethod
+    def _nul_binary(path: Path) -> Path:
+        path.write_bytes(b"\x7fELF\x00\x01 not text \xff\xfe")
+        path.chmod(0o755)
+        return path
+
+    async def test_startup_runs_binary_directly(
+        self, tmp_path, fakes, cleanup
+    ):
+        binary = self._nul_binary(tmp_path / "server-bin")
+        config_path = tmp_path / "config.yaml"
+        write(config_path, {
+            "nul": f"{binary} --model m --port 8000",
+            "exe": f"{sys.executable} -m srv --port 8000",
+            "bare": f"{binary}",
+        })
+        swapper = make_swapper(config_path)
+        cleanup.append(swapper)
+
+        for name, tail in (
+            ("nul", "--model m"), ("exe", "-m srv"), ("bare", ""),
+        ):
+            mc = swapper.config.models[name]
+            exe = sys.executable if name == "exe" else binary
+            assert mc.cmd == f"{exe} {tail} --port {mc.port}".replace(
+                "  ", " "
+            )
+            assert mc.spec[3] is None
+        assert list(swapper._temp_dir.iterdir()) == []
+        assert await swapper.control_load_model("nul") == "success"
+        nul = swapper.config.models["nul"]
+        assert fakes.started == [("nul", nul.cmd, nul.port)]
+
+    async def test_reload_with_binary_entries_succeeds(
+        self, tmp_path, fakes, cleanup
+    ):
+        binary = self._nul_binary(tmp_path / "server-bin")
+        config_path = tmp_path / "config.yaml"
+        write(config_path, {"a": f"{binary} --port 8000"})
+        swapper = make_swapper(config_path)
+        cleanup.append(swapper)
+        write(config_path, {
+            "a": f"{binary} --port 8000",
+            "b": f"{binary} --port 8000 --name b",
+            "c": f"{sys.executable} -m srv --port ${{PORT}}",
+        })
+
+        kind, summary = swapper.control_reload_config()
+
+        assert kind == "success", summary
+        assert summary["added"] == ["b", "c"] and summary["changed"] == []
+        b = swapper.config.models["b"]
+        assert b.cmd == f"{binary} --port {b.port} --name b"
+        c = swapper.config.models["c"]
+        assert c.cmd == f"{sys.executable} -m srv --port {c.port}"
+        assert list(swapper._temp_dir.iterdir()) == []
+
+        # Editing the binary does not make the entry changed (not a script).
+        binary.write_bytes(b"\x00other")
+        kind, summary = swapper.control_reload_config()
+        assert kind == "success"
+        assert summary["changed"] == []
+
+    async def test_reload_over_http_with_binary_entry(
+        self, tmp_path, fakes, cleanup
+    ):
+        binary = self._nul_binary(tmp_path / "server-bin")
+        config_path = tmp_path / "config.yaml"
+        write(config_path, {"a": "serve-a"})
+        swapper = make_swapper(config_path)
+        cleanup.append(swapper)
+        server = await make_server(swapper)
+        async with TestClient(server) as client:
+            write(config_path, {"a": "serve-a", "b": f"{binary} --port 1"})
+            response = await client.post(
+                "/api/v1/control/reload", headers=HEADERS
+            )
+            data = await response.json()
+            assert response.status == 200, data
+            assert data["reload"]["added"] == ["b"]

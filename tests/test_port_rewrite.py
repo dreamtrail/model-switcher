@@ -13,15 +13,19 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
 
 from src.port_rewrite import (
     _PORT_FLAGS_RE,
+    _TEXT_CHUNK,
     cleanup_temp_dir,
     create_temp_dir,
+    is_script_command,
     rewrite_command,
+    script_fingerprint,
 )
 
 
@@ -209,6 +213,120 @@ class TestRewriteCommandScriptFile:
         assert temp is None  # fast path, no temp file
         assert "${PORT}" not in cmd
         assert "--port 9999" in cmd
+
+
+class TestBinaryGivenByPath:
+    """A non-text file given by path is a direct command (P-20261013-10)."""
+
+    @pytest.fixture(params=["nul", "invalid-utf8", "late-invalid"])
+    def binary(self, request, tmp_path: Path) -> Path:
+        path = tmp_path / "server-bin"
+        if request.param == "nul":
+            path.write_bytes(b"\x7fELF\x00\x01\x02 --port 1")
+        elif request.param == "invalid-utf8":
+            path.write_bytes(b"\xff\xfe not utf-8")
+        else:
+            # No NUL, valid text for the first chunk, bad bytes after it.
+            path.write_bytes(b"#!/bin/sh\n" + b"x" * 200_000 + b"\xff\xfe")
+        path.chmod(0o755)
+        return path
+
+    def test_flag_replaced_without_temp_copy(self, binary: Path, tmp_path):
+        temp_dir = create_temp_dir()
+        try:
+            cmd, temp = rewrite_command(
+                f"{binary} --model m --port 8000", 9999, temp_dir=temp_dir
+            )
+            assert (cmd, temp) == (f"{binary} --model m --port 9999", None)
+            assert list(temp_dir.iterdir()) == []
+        finally:
+            cleanup_temp_dir(temp_dir)
+
+    def test_port_appended_when_no_flag(self, binary: Path):
+        temp_dir = create_temp_dir()
+        try:
+            cmd, temp = rewrite_command(f"{binary}", 9999, temp_dir=temp_dir)
+            assert (cmd, temp) == (f"{binary} --port 9999", None)
+        finally:
+            cleanup_temp_dir(temp_dir)
+
+    def test_not_script_command_and_no_fingerprint(self, binary: Path):
+        assert not is_script_command(f"{binary} --port 1")
+        assert script_fingerprint(f"{binary} --port 1") is None
+
+    def test_interpreter_by_absolute_path(self):
+        temp_dir = create_temp_dir()
+        try:
+            cmd, temp = rewrite_command(
+                f"{sys.executable} -m srv --port 8000", 9999,
+                temp_dir=temp_dir,
+            )
+            assert (cmd, temp) == (
+                f"{sys.executable} -m srv --port 9999", None,
+            )
+            assert not is_script_command(f"{sys.executable} -m srv")
+        finally:
+            cleanup_temp_dir(temp_dir)
+
+    def test_text_file_is_still_a_script(self, tmp_path: Path):
+        script = tmp_path / "run.sh"
+        script.write_text("#!/bin/sh\necho h\u00e9llo --port 8000\n")
+        assert is_script_command(f"{script} --x")
+        assert script_fingerprint(f"{script}") is not None
+
+    @pytest.mark.parametrize(
+        "char, head_bytes",
+        [
+            ("\u20ac", 1),      # 3-byte char, split 1 + 2
+            ("\u20ac", 2),      # 3-byte char, split 2 + 1
+            ("\U0001F600", 1),  # 4-byte char, split 1 + 3
+            ("\U0001F600", 2),  # 4-byte char, split 2 + 2
+            ("\U0001F600", 3),  # 4-byte char, split 3 + 1
+        ],
+    )
+    def test_multibyte_char_across_chunk_boundary_is_text(
+        self, tmp_path: Path, char: str, head_bytes: int
+    ):
+        encoded = char.encode("utf-8")
+        data = b"#" * (_TEXT_CHUNK - head_bytes) + encoded + b"\n"
+        # The character straddles the end of the first chunk.
+        assert data[:_TEXT_CHUNK].endswith(encoded[:head_bytes])
+        script = tmp_path / "wide.sh"
+        script.write_bytes(data)
+        assert is_script_command(f"{script}")
+
+    def test_truncated_multibyte_char_at_eof_is_a_program(
+        self, tmp_path: Path
+    ):
+        short = tmp_path / "short.bin"
+        short.write_bytes(b"#!/bin/sh\n\xe2\x82")  # 3-byte char cut off
+        assert not is_script_command(f"{short}")
+        # Same cut exactly at the end of a full first chunk.
+        edge = tmp_path / "edge.bin"
+        edge.write_bytes(b"#" * (_TEXT_CHUNK - 1) + "\U0001F600".encode()[:3])
+        assert not is_script_command(f"{edge}")
+
+    def test_empty_file_is_a_script(self, tmp_path: Path):
+        empty = tmp_path / "empty.sh"
+        empty.write_text("")
+        assert is_script_command(f"{empty}")
+
+    def test_unreadable_file_stays_in_script_mode(self, tmp_path: Path):
+        script = tmp_path / "locked.sh"
+        script.write_text("#!/bin/sh\n")
+        script.chmod(0)
+        if os.access(script, os.R_OK):
+            pytest.skip("this user can read a mode 0 file")
+        assert is_script_command(f"{script}")
+        assert script_fingerprint(f"{script}") == (
+            "unreadable:PermissionError"
+        )
+        temp_dir = create_temp_dir()
+        try:
+            with pytest.raises(PermissionError):
+                rewrite_command(f"{script}", 9999, temp_dir=temp_dir)
+        finally:
+            cleanup_temp_dir(temp_dir)
 
 
 class TestRegexEdgeCases:

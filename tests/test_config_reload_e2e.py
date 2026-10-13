@@ -170,3 +170,81 @@ async def test_reload_with_real_processes(tmp_path, monkeypatch):
         "launch beta",
         "stop beta",
     ]
+
+
+async def test_real_process_started_from_binary_given_by_path(
+    tmp_path, monkeypatch
+):
+    """P-20261013-10: the interpreter's absolute path is a direct command.
+
+    The model's command starts with ``sys.executable`` (a binary) and a
+    stale ``--port 8000``. It must start without a temp copy, get the
+    assigned port, serve requests, and survive a reload.
+    """
+    monkeypatch.delenv("PYTHONUNBUFFERED", raising=False)
+    events = tmp_path / "events"
+    server_py = tmp_path / "server.py"
+    server_py.write_text(SERVER)
+    config_path = tmp_path / "config.yaml"
+
+    def write(data: dict) -> None:
+        config_path.write_text(yaml.safe_dump(data, sort_keys=False))
+
+    def entry(name: str) -> str:
+        return (
+            f"{sys.executable} {server_py} --port 8000 --name {name} "
+            f"--events {events}"
+        )
+
+    write({"binary": entry("binary")})
+    swapper = Swapper(load_config(config_path), timeout=30, idle_timeout=0)
+    swapper.config_path = config_path
+    model = swapper.config.models["binary"]
+    assert model.cmd == entry("binary").replace(
+        "--port 8000", f"--port {model.port}"
+    )
+    assert list(swapper._temp_dir.iterdir()) == []
+
+    app = web.Application()
+
+    async def handler(request):
+        return await swapper.handle_request(request)
+
+    app.router.add_route("*", "/{path:.*}", handler)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        async with TestClient(server) as client:
+            response = await client.post(
+                "/v1/chat/completions",
+                json={"model": "binary", "messages": []},
+            )
+            body = await response.json()
+            assert (response.status, body["served_by"]) == (200, "binary")
+            assert body["port"] == model.port
+
+            write({"binary": entry("binary"), "other": entry("other")})
+            response = await client.post(
+                "/api/v1/control/reload", headers=HEADERS
+            )
+            data = await response.json()
+            assert response.status == 200, data
+            assert data["reload"]["added"] == ["other"]
+            assert data["reload"]["changed"] == []
+
+            response = await client.post(
+                "/v1/chat/completions",
+                json={"model": "other", "messages": []},
+            )
+            body = await response.json()
+            other = swapper.config.models["other"]
+            assert (response.status, body["served_by"]) == (200, "other")
+            assert body["port"] == other.port
+            assert list(swapper._temp_dir.iterdir()) == []
+    finally:
+        await server.close()
+        await swapper.shutdown()
+
+    assert events.read_text().splitlines() == [
+        "launch binary", "stop binary", "launch other", "stop other",
+    ]
