@@ -33,3 +33,4 @@
 - [P-20260929-05] Split decision history into an index and docs/decisions/archive.md, stats.md, and runtime.md; preserve all 27 records verbatim — DONE 2026-10-26 12:50 +0900
 - [P-20260925-05] Split stats into collector, pure support and page modules; share exact stats/control CSS while preserving behavior — DONE 2026-10-26 13:19 +0900
 - [P-20260913-04] Split proxy tests into HTTP/buffered, stream-options and SSE modules; preserve all cases and repair the moved-test reference — DONE 2026-10-26 13:52 +0900
+- [P-20260826-03] Confirm the blank line before handle.stopped in stop_process is already absent; close stale cleanup record — DONE 2026-10-26 14:21 +0900
