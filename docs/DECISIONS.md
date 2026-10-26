@@ -561,7 +561,7 @@ chunk detection, and page layout from that section still apply.
 - **Stats untouched** — removed models keep their history rows. The YAML file is only read, never written.
 
 ### Verification Trade-off
-- **Fake and real local servers** — refusals, change detection, ports, temp copies, variants, and the API are tested with faked process start/stop (`tests/test_config_reload.py`); one test runs real servers from a shared script through add, change, remove, and invalid reloads (`tests/test_config_reload_e2e.py`). The panel script is run in Node with a fake DOM. Real model servers and a real browser were not used.
+- **Fake and real local servers** — refusals, change detection, ports, temp copies, variants, and the API are tested with faked process start/stop (`tests/test_config_reload.py`, `tests/test_config_reload_scripts.py`); one test runs real servers from a shared script through add, change, remove, and invalid reloads (`tests/test_config_reload_e2e.py`). The panel script is run in Node with a fake DOM. Real model servers and a real browser were not used.
 
 ## P-20261013-07 — Variant and reload minors, SIGHUP reload
 

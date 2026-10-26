@@ -2,7 +2,6 @@
 
 ## Next
 
-- [P-20261013-12] Split `tests/test_config_reload.py` (965 LOC, 38 KB) into focused test modules
 - [P-20261013-13] Move the oldest ~50% of TODO Done entries (53 now) to `docs/TODO_ARCHIVE.md` and link it
 - [P-20260930-04] Split `tests/test_stats_page.py` (1056 LOC, 44 KB) into focused test modules
 - [P-20260929-05] Split `docs/DECISIONS.md` (619 lines, 90 KB): move older sections (before P-20260925) to `docs/DECISIONS_ARCHIVE.md` and link it
