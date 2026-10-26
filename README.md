@@ -19,6 +19,8 @@ cp config.example.yaml config.yaml
 
 To run it as a background systemd service instead, see [docs/SETUP.md](docs/SETUP.md) — including the **linger** requirement that keeps user units alive across SSH disconnects.
 
+Completed work is recorded in [the task log](docs/TASKLOG.md).
+
 Point your client at `http://localhost:8080` and use model names from your config:
 
 ```bash
