@@ -408,7 +408,7 @@ def test_readme_documents_sglang_operational_and_api_boundaries():
 
 def test_decision_records_no_adapter_readiness_and_test_tradeoff():
     section = _document_section(
-        "docs/DECISIONS.md", "## P-20260916-01 — SGLang Compatibility"
+        "docs/decisions/archive.md", "## P-20260916-01 — SGLang Compatibility"
     )
 
     for token in (

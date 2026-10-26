@@ -550,7 +550,7 @@ def test_readme_mentions_host_rewrite_for_all_backends():
 
 def test_decision_records_host_rewrite_and_readiness():
     section = _document_section(
-        "docs/DECISIONS.md", "## P-20261005-01 — Strata Compatibility"
+        "docs/decisions/runtime.md", "## P-20261005-01 — Strata Compatibility"
     )
 
     for token in (

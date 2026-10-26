@@ -2,7 +2,6 @@
 
 ## Next
 
-- [P-20260929-05] Split `docs/DECISIONS.md` (619 lines, 90 KB): move older sections (before P-20260925) to `docs/DECISIONS_ARCHIVE.md` and link it
 - [P-20260925-05] Split `src/stats.py` (1874 LOC, 67 KB): move the embedded `STATS_HTML` page into its own module; also share the page CSS that `/control` copies from `/stats` (P-20260926-02)
 - [P-20260913-04] Split `tests/test_proxy.py` (1376 LOC, 51 KB) into focused test modules
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)

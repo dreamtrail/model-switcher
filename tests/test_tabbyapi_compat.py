@@ -727,7 +727,7 @@ def test_readme_documents_tabbyapi_launch_auth_and_limits():
 
 def test_decision_records_generic_contract_changes_and_auth_choice():
     section = _document_section(
-        "docs/DECISIONS.md", "## P-20260927-01 — TabbyAPI Compatibility"
+        "docs/decisions/runtime.md", "## P-20260927-01 — TabbyAPI Compatibility"
     )
 
     for token in (

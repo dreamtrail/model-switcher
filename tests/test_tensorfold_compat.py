@@ -528,7 +528,7 @@ def test_readme_speed_tables_list_tensorfold():
 
 def test_decision_records_tensorfold_choices():
     section = _document_section(
-        "docs/DECISIONS.md", "## P-20261005-04 — TensorFold Compatibility"
+        "docs/decisions/runtime.md", "## P-20261005-04 — TensorFold Compatibility"
     )
 
     for token in (
