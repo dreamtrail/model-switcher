@@ -62,7 +62,6 @@
 - [P-20260913-03] Split statistics test coverage into focused modules — DONE 2026-09-23 01:13 UTC
 - [P-20260918-04] Split `tests/test_swapper_quick_switch.py` into focused test modules — DONE 2026-09-23 00:41 UTC
 - [P-20260918-03] Split `src/swapper.py` into focused modules — DONE 2026-09-23 00:14 UTC
-- [P-20260920-01] Add FlashML FreeToken server compatibility — DONE 2026-09-20 05:36 UTC
 - [P-20260918-05] Add per-model maximum aggregate generation throughput metric — DONE 2026-09-18 06:59 UTC
 - [P-20260918-02] Add configurable quick switching for pending model loads — DONE 2026-09-18 06:00 UTC
 - [P-20260916-01] Add SGLang backend compatibility — DONE 2026-09-16 02:03 UTC

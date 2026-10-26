@@ -27,10 +27,6 @@ qwen3.8-27b: "/path/to/ninfer/build/apps/ninfer-serve /path/to/models/qwen3_8_27
 # sglang runs in the foreground; /health reports ready after warm-up.
 qwen2.5-7b-sglang: "sglang serve --model-path /path/to/Qwen2.5-7B-Instruct --served-model-name qwen2.5-7b-sglang --host 127.0.0.1 --port ${PORT}"
 
-# --- FreeToken v0.1.3: match the config key to --served-model-name ---
-# FreeToken uses the selected port and the adjacent port while running.
-freetoken-model: "ft serve --model /path/to/model --served-model-name freetoken-model --host 127.0.0.1 --port ${PORT}"
-
 # --- TabbyAPI: match the config key to the --model-name folder ---
 # Runs main.py from the TabbyAPI folder (config.yml, api_tokens.yml are relative).
 # Auth is disabled: anyone who can reach the switcher is a TabbyAPI admin.

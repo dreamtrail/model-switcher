@@ -14,7 +14,7 @@ DEFAULT_TIMEOUT = 120         # total timeout in seconds
 
 
 async def _health_200_is_ready(response: aiohttp.ClientResponse) -> bool:
-    """Interpret known lifecycle states without narrowing generic health checks."""
+    """Keep unloaded models pending without narrowing generic health checks."""
     try:
         payload = await response.json(content_type=None)
     except (aiohttp.ClientError, UnicodeError, ValueError):
@@ -28,11 +28,6 @@ async def _health_200_is_ready(response: aiohttp.ClientResponse) -> bool:
     if payload.get("loaded") is False:
         return False
 
-    status = payload.get("status")
-    if status == "ok":
-        return True
-    if status in ("loading", "error"):
-        return False
     return True
 
 

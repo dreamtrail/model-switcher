@@ -19,7 +19,7 @@ from src.config import Config, ModelConfig, load_config
 
 
 class _ProbeSocket:
-    """Deterministic socket probe used to observe pair lifetime and retries."""
+    """Deterministic probe for exact port, bind and closure checks."""
 
     def __init__(self, factory):
         self.factory = factory
@@ -36,17 +36,10 @@ class _ProbeSocket:
     def bind(self, address):
         host, port = address
         self.factory.binds.append(address)
-        if port == 0:
-            self.candidate = self.factory.candidates.pop(0)
-            self.factory.active_base = self
-            return
-
-        self.factory.simultaneous_checks.append(
-            self.factory.active_base is not None
-            and not self.factory.active_base.closed
-        )
         if port in self.factory.occupied:
             raise OSError("address already in use")
+        if port == 0:
+            self.candidate = self.factory.candidates.pop(0)
 
     def getsockname(self):
         return ("127.0.0.1", self.candidate)
@@ -61,51 +54,31 @@ class _ProbeSocketFactory:
         self.occupied = set(occupied)
         self.sockets = []
         self.binds = []
-        self.simultaneous_checks = []
-        self.active_base = None
+        self.calls = []
 
     def __call__(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
         return _ProbeSocket(self)
 
 
 class TestFindFreePort:
 
-    def test_retries_occupied_adjacent_port_and_closes_simultaneous_probes(
-        self, monkeypatch
-    ):
-        factory = _ProbeSocketFactory([41000, 42000], occupied={41001})
+    @pytest.mark.parametrize("candidate", (41000, 65535))
+    def test_probes_only_base_port_and_closes_socket(self, monkeypatch, candidate):
+        # Exact ephemeral ports (especially 65535) cannot be forced on the OS.
+        factory = _ProbeSocketFactory([candidate], occupied={41001})
         monkeypatch.setattr(config_module.socket, "socket", factory)
 
         port = config_module._find_free_port()
 
-        assert port == 42000
-        assert 1 <= port <= 65534
-        assert factory.binds == [
-            ("127.0.0.1", 0),
-            ("127.0.0.1", 41001),
-            ("127.0.0.1", 0),
-            ("127.0.0.1", 42001),
+        assert port == candidate
+        assert 1 <= port <= 65535
+        assert factory.calls == [
+            ((config_module.socket.AF_INET, config_module.socket.SOCK_STREAM), {}),
         ]
-        assert factory.simultaneous_checks == [True, True]
-        assert all(probe.closed for probe in factory.sockets)
-
-    def test_retries_base_65535_without_probing_out_of_range_adjacent(
-        self, monkeypatch
-    ):
-        factory = _ProbeSocketFactory([65535, 43000])
-        monkeypatch.setattr(config_module.socket, "socket", factory)
-
-        port = config_module._find_free_port()
-
-        assert port == 43000
-        assert ("127.0.0.1", 65536) not in factory.binds
-        assert factory.binds == [
-            ("127.0.0.1", 0),
-            ("127.0.0.1", 0),
-            ("127.0.0.1", 43001),
-        ]
-        assert factory.simultaneous_checks == [True]
-        assert all(probe.closed for probe in factory.sockets)
+        assert factory.binds == [("127.0.0.1", 0)]
+        assert len(factory.sockets) == 1
+        assert factory.sockets[0].closed
 
 
 class TestLoadConfig:
@@ -141,7 +114,7 @@ class TestLoadConfig:
     def test_ports_are_valid_range(self, simple_config: Config):
         """Assigned ports are in valid range."""
         for mc in simple_config.models.values():
-            assert 1 <= mc.port <= 65534
+            assert 1 <= mc.port <= 65535
 
     def test_natural_command_port_assigned(self, tmp_config):
         """Commands without ${PORT} still get a port assigned."""
@@ -406,14 +379,13 @@ class TestReloadSupport:
         second = load_config(path).models["a"].spec
         assert second[:3] == first[:3] and second[3] != first[3]
 
-    def test_find_free_port_skips_reserved_and_adjacent_ports(
-        self, monkeypatch
-    ):
-        candidates = iter([5000, 5001, 4999, 6000])
+    @pytest.mark.parametrize("adjacent", (4999, 5001))
+    def test_find_free_port_skips_only_reserved_ports(self, monkeypatch, adjacent):
+        candidates = iter([5000, 6000, adjacent])
         monkeypatch.setattr(
             config_module, "_find_free_port", lambda: next(candidates)
         )
-        assert config_module.find_free_port({5000}) == 6000
+        assert config_module.find_free_port({5000, 6000}) == adjacent
 
     def test_find_free_port_without_reserved_takes_first(self, monkeypatch):
         monkeypatch.setattr(config_module, "_find_free_port", lambda: 7000)

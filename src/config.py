@@ -104,33 +104,17 @@ class Config:
 
 
 def _find_free_port() -> int:
-    """Find a base TCP port whose adjacent port is also bindable."""
-    while True:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as base_socket:
-            base_socket.bind(("127.0.0.1", 0))
-            port = base_socket.getsockname()[1]
-            if port == 65535:
-                continue
-
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as adjacent_socket:
-                try:
-                    adjacent_socket.bind(("127.0.0.1", port + 1))
-                except OSError:
-                    continue
-                return port
+    """Find a free TCP port on loopback."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as base_socket:
+        base_socket.bind(("127.0.0.1", 0))
+        return base_socket.getsockname()[1]
 
 
 def find_free_port(reserved: set[int] = frozenset()) -> int:
-    """Find a free base port that also stays clear of ``reserved`` ports.
-
-    ``reserved`` holds ports already given to models. A candidate is
-    skipped when it or its adjacent port collides with a reserved port or
-    a reserved port's adjacent port.
-    """
-    taken = set(reserved) | {port + 1 for port in reserved}
+    """Find a free port not already given to models in ``reserved``."""
     while True:
         port = _find_free_port()
-        if port not in taken and port + 1 not in taken:
+        if port not in reserved:
             return port
 
 

@@ -161,23 +161,6 @@ This proposal made pending-load supersession unconditional. It was superseded be
 ### Accepted Exactness Trade-off
 - **Preserve exact maximal cohorts rather than cap or approximate them** — the L4 interview outcome accepted delayed publication and potentially growing interval state while a continuously overlapping cohort remains unresolved. A cap, rolling window, average-times-concurrency estimate, or chunk/token estimate was rejected because it would change the requested metric's meaning. Once the overlap closes, temporary cohort state is finalized and only the per-model maximum remains.
 
-## P-20260920-01 — FreeToken v0.1.3 Compatibility
-
-### Generic Backend Integration
-- **Reuse the generic foreground-command contract** — FreeToken v0.1.3 at release commit `cac247a860e316e06580d05aeb05f2e647bde214` accepts `ft serve`, an assigned loopback host/port, a public `--served-model-name`, HTTP/SSE requests, and process-group termination. The config key, served model name, and request `model` remain identical; no backend registry, command detection, dependency, config field, alias, or request-body rewrite is needed.
-- **Keep lifecycle management generic** — `ft` must be available in the switcher's execution environment and run in the foreground. Existing SIGTERM, grace-period, and forced-stop process-group handling owns swaps and shutdown; FreeToken's shell, desktop, and control-plane workflows are outside this integration.
-
-### Readiness and Port Selection
-- **Interpret only the pinned lifecycle values** — an HTTP 200 `/health` body with exact JSON status `ok` is ready, while `loading` or `error` remains pending without `/v1/models` fallback. Unknown, missing, malformed, and non-object 200 bodies preserve the generic ready behavior; non-200 handling and 404/405-only fallback remain unchanged. Fatal FreeToken health therefore uses the existing timeout and cleanup path instead of a new error contract.
-- **Probe the adjacent port for every model** — FreeToken derives its internal distributed address from API port + 1, so automatic selection holds successful loopback binds for base and base + 1 simultaneously and rejects base 65535. Both probes close before startup, retaining the accepted race in dynamic assignment. Applying this generic two-port probe avoids backend inference or schema expansion.
-
-### Certified Transport Boundary
-- **Certify a representative four-route matrix, not protocol conformance** — `/v1/chat/completions` and `/v1/completions` cover JSON plus `data:` SSE, injected `stream_options.include_usage`, a usage chunk, and terminal `[DONE]`; `/v1/messages` covers Anthropic JSON plus named SSE through `message_stop` without `[DONE]`; `/v1/responses` covers Responses JSON plus named SSE through representative `response.completed` without `[DONE]`. Statuses and headers remain transparent, with no FreeToken-specific wire transformation.
-- **Keep upstream limitations explicit** — the v0.1.3 OpenAI implementation rejects some optional fields and constrained response formats, while its Responses API is stateless and does not support background mode, prior-response continuation, retrieval, or cancellation. Compatibility does not imply support for every optional OpenAI, Anthropic, or Responses parameter.
-
-### Verification Trade-off
-- **Use pinned deterministic loopback fixtures in automation** — tests derive representative payloads from the immutable v0.1.3 sources and exercise the real config, health, switcher, and proxy paths without importing FreeToken. A live gate would require Linux x86_64, Python 3.10+, an NVIDIA GPU with driver r580+, CUDA 13 and `nvcc`, compatible model weights, substantial memory, and first-use compilation, so README documents an optional non-gating hardware smoke procedure instead.
-
 ## P-20260923-01 — Same-Listener Control Panel and Runtime API
 
 ### State and Interface Ownership
@@ -265,7 +248,7 @@ This proposal made pending-load supersession unconditional. It was superseded be
 - **Wiring** — `proxy.py` reports units through an optional `Outcome.gen_chunk_observer`, like `first_token_observer`, and never touches the collector. The swapper wires it to `StatsCollector.record_gen_chunks`, which keeps a per-model deque pruned to the live window (60 s originally, 15 s since § P-20260926-04). An observer failure is caught in the proxy so it cannot break a stream.
 
 ### Limits
-- **OpenAI `data:` streams only** — FreeToken/Anthropic `/v1/messages` and `/v1/responses` named-event streams are not counted, and non-streaming requests never are.
+- **OpenAI `data:` streams only** — Anthropic `/v1/messages` and `/v1/responses` named-event streams are not counted, and non-streaming requests never are.
 - **One chunk is not always one token** — superseded by § P-20260926-04: chunks are now scaled by a per-model tokens-per-chunk ratio calibrated from finished streams. The ratio can still lag when chunk packing changes.
 - **Lag** — superseded by § P-20260926-04: the rate now divides by busy time over a 15 s window and reads `0` when nothing is generating. The page still polls every 5 s.
 
@@ -509,7 +492,7 @@ chunk detection, and page layout from that section still apply.
 - **Impact** — backends no longer see the client's host name. No switcher code used the forwarded `Host`; other request headers (auth, content type, custom) are still forwarded unchanged.
 
 ### Readiness and Output
-- **`"loaded": false` is still loading** — a 200 `/health` JSON object with `"loaded": false` keeps the poll going; `true`, an absent key, or a non-boolean value keeps the earlier rules. It is checked before the `status` rule because Strata sends `"status": "ok"` with it. The FreeToken `status` `loading`/`error` rule is unchanged.
+- **`"loaded": false` is still loading** — a 200 `/health` JSON object with `"loaded": false` keeps the poll going regardless of `status`; `true`, an absent key, or a non-boolean value keeps the generic HTTP 200 readiness behavior.
 - **Stream and stats need no change** — Strata ignores `stream_options` and always puts usage (with `cached_tokens`) and llama.cpp-style `timings` on the final chunk that also has `finish_reason`; the existing parsers read both, and `null` `*_per_second` values are ignored.
 - **Log levels** — Strata prints plain lines starting `[strata] ` with no level field. For those lines only, an upper-case `WARNING`/`WARN` word means warning and `ERROR`/`FATAL`/`CRITICAL` means error (error wins if both appear); the rest is info. Lower-case "error" in message text stays info. Other lines keep the existing NInfer, TabbyAPI, and generic rules.
 - **Stop grace not changed** — Strata may need more than the 3 s grace to free memory cleanly before SIGKILL. A per-model grace period is out of scope; the `shutdown_cmd` hook can stop it more slowly.
@@ -564,7 +547,7 @@ chunk detection, and page layout from that section still apply.
 
 ### What Changes
 - **Compare raw specs, keep unchanged entries** — `ModelConfig.spec` (new last field) holds the config text of `cmd`, `shutdown_cmd`, and `shutdown_timeout` before port rewriting. An entry whose spec is the same keeps its old `ModelConfig` object: same port, rewritten command, and temp script. Entries built in code have no spec and always count as changed. Script file contents are added to the comparison by P-20261013-07.
-- **New and changed entries get fresh ports and temp copies** — ports are picked clear of kept entries, of each other, and of the running process (and their adjacent ports). Temp copies made by a reload carry an `r<N>` generation in the name, so a copy that a running process may still read is never overwritten. Old copies stay until shutdown removes the temp dir.
+- **New and changed entries get fresh ports and temp copies** — ports are picked clear of kept entries, of each other, and of the running process. Temp copies made by a reload carry an `r<N>` generation in the name, so a copy that a running process may still read is never overwritten. Old copies stay until shutdown removes the temp dir.
 - **Variant choice carried over** — the active variant stays if it still exists, else the entry's `default`. The switcher does not record whether the active variant was picked or only the default, so a changed `default:` does not move it (review m2; kept as is, documented in README). Runtime settings are not in the YAML and are not touched.
 - **One synchronous swap** — the reload is a sync method: parse, build, then assign `self.config` with no await in between. It is refused with 409 `control_busy` while `_swapping` or a stop-only operation (unload, idle) is in progress, and with 503 `shutting_down` during shutdown. A missing or invalid file (including YAML syntax errors, non-string `cmd` values, and unreadable scripts) keeps the old config and returns 400 `config_invalid` with a one-line message of at most 300 characters.
 - **Error messages hide paths and file text** — the panel must not show the config path or model commands, so reload errors name only the config file's base name, and YAML errors keep the problem and line/column but drop PyYAML's quoted source snippet (review m3). Startup errors on the console keep the full text.

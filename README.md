@@ -272,68 +272,6 @@ curl -N http://127.0.0.1:8080/v1/chat/completions \
 
 On a swap or shutdown, model-switcher sends SIGTERM to SGLang's process group, waits for the existing grace period, and uses its forced-stop fallback if needed.
 
-## FreeToken
-
-[FreeToken](https://github.com/FlashML-org/FreeToken) works through the generic foreground-process interface. This integration targets [FreeToken v0.1.3](https://github.com/FlashML-org/FreeToken/releases/tag/v0.1.3), at release commit `cac247a860e316e06580d05aeb05f2e647bde214`. Follow that release's [installation guidance](https://github.com/FlashML-org/FreeToken/blob/cac247a860e316e06580d05aeb05f2e647bde214/docs/install.md): the v0.1.3 CLI requires Linux x86_64, Python 3.10 or newer, an NVIDIA GPU with driver r580 or newer, and a CUDA 13 toolkit with `nvcc` for first-use kernel compilation. Install FreeToken and choose compatible model weights that fit the available GPU and host memory; it is not a model-switcher dependency.
-
-Launch `ft serve` directly in the foreground, bind it to loopback, and make the config key, `--served-model-name`, and API request `model` identical:
-
-```yaml
-freetoken-model: "ft serve --model /path/to/model --served-model-name freetoken-model --host 127.0.0.1 --port ${PORT}"
-```
-
-Model-switcher executes commands directly rather than through a shell, so the `ft` executable must be available in the environment that runs model-switcher. Shell activation, pipes, and inline environment assignments are not interpreted.
-
-FreeToken consumes both the selected API port and the adjacent port for its internal distributed address. Automatic selection therefore probes the base and base + 1 simultaneously and never selects 65535. The probes close before lazy startup, preserving the switcher's existing best-effort port-selection race; another process can still claim either port before `ft serve` starts.
-
-FreeToken's `/health` returns HTTP 200 throughout its `loading`, `ok`, and `error` lifecycle. Model-switcher waits until the JSON status is exactly `ok`; `loading` and `error` remain pending and never trigger `/v1/models` fallback. A persistent error follows the normal readiness timeout and process cleanup path. Generic backends retain the existing behavior for other HTTP 200 bodies, and `/v1/models` fallback remains limited to `/health` returning 404 or 405.
-
-The v0.1.3 compatibility boundary is representative transparent transport, not exhaustive OpenAI, Anthropic, or Responses API conformance:
-
-| Route | JSON certification | Streaming certification |
-|---|---|---|
-| `/v1/chat/completions` | OpenAI-shaped JSON passes through unchanged | `data:` JSON passes through; model-switcher injects `stream_options.include_usage` when absent; a usage chunk and terminal `data: [DONE]` are preserved |
-| `/v1/completions` | OpenAI-shaped JSON passes through unchanged | `data:` JSON passes through; model-switcher injects `stream_options.include_usage` when absent; a usage chunk and terminal `data: [DONE]` are preserved |
-| `/v1/messages` | Anthropic-shaped JSON passes through unchanged | Named Anthropic SSE events pass through `message_stop`, with no `[DONE]` |
-| `/v1/responses` | Responses-shaped JSON passes through unchanged | Named Responses SSE events pass through representative `response.completed`, with no `[DONE]` |
-
-Upstream status codes, bodies, and headers are forwarded without FreeToken-specific wire transformations. The matrix certifies these representative JSON and stream shapes only; it does not certify every optional request parameter or upstream feature. In v0.1.3, for example, OpenAI `n > 1`, `logit_bias`, and constrained JSON response formats are rejected, and the Responses API is a stateless subset: background mode and `previous_response_id` are unsupported, while stored-response retrieval and cancellation are not available. Check the pinned [CLI](https://github.com/FlashML-org/FreeToken/blob/cac247a860e316e06580d05aeb05f2e647bde214/docs/cli.md) and API sources for the complete upstream boundary.
-
-On a swap or shutdown, model-switcher terminates the foreground FreeToken process group using its normal SIGTERM grace period and forced-stop fallback. It does not manage FreeToken's separate shell, desktop, control, cache, or stats workflows.
-
-A real-hardware smoke check is optional and non-gating. On a supported host, install v0.1.3, verify `ft --version`, configure the recipe above, and start model-switcher. The first request starts FreeToken lazily and can take longer while model weights load and CUDA kernels compile:
-
-```bash
-ft --version
-./run.sh --config config.yaml --host 127.0.0.1 --port 8080
-
-curl http://127.0.0.1:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"freetoken-model","messages":[{"role":"user","content":"Reply with hello"}]}'
-```
-
-After startup, use the assigned port shown in model-switcher's log to confirm the lifecycle status and served model, then exercise each stream terminal convention through the switcher:
-
-```bash
-curl http://127.0.0.1:<assigned-port>/health
-curl http://127.0.0.1:<assigned-port>/v1/models
-
-curl -N http://127.0.0.1:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"freetoken-model","messages":[{"role":"user","content":"Reply with hello"}],"stream":true}'
-curl -N http://127.0.0.1:8080/v1/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"freetoken-model","prompt":"Reply with hello","stream":true}'
-curl -N http://127.0.0.1:8080/v1/messages \
-  -H 'Content-Type: application/json' -H 'anthropic-version: 2023-06-01' \
-  -d '{"model":"freetoken-model","max_tokens":32,"messages":[{"role":"user","content":"Reply with hello"}],"stream":true}'
-curl -N http://127.0.0.1:8080/v1/responses \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"freetoken-model","input":"Reply with hello","stream":true}'
-```
-
-Confirm the two OpenAI-style streams end in `data: [DONE]`, the Messages stream reaches `message_stop` without `[DONE]`, and the Responses stream reaches `response.completed` without `[DONE]`. This manual procedure validates the local FreeToken/CUDA/model combination; automated compatibility checks intentionally require no FreeToken installation, model download, or GPU.
-
 ## NInfer
 
 [NInfer](https://github.com/Neroued/ninfer) works through the same foreground-process interface. At the time this support was added, NInfer required 64-bit Linux, an RTX 5090 (SM120a), CUDA Toolkit 13.1 or newer, and a supported `.ninfer` artifact; check its upstream documentation for current requirements and build instructions.
@@ -385,7 +323,7 @@ Clients then send `x-api-key: <key>` or `Authorization: Bearer <key>`; model-swi
 
 **Readiness and output.** TabbyAPI opens its port only after the startup model has loaded, then `GET /health` returns 200 with `{"status":"healthy"}`. Chat and text completion streams use `\r\n` line endings, `: ping` keep-alive comments, and end with `data: [DONE]`; model-switcher passes them through unchanged. TabbyAPI honours the switcher's automatic `stream_options: {"include_usage": true}` and sends usage (including `prompt_tokens_details.cached_tokens`) in a final chunk, so token statistics are recorded. If a client asks for `return_progress`, the prefill progress chunks do not count as the first token; time to first token starts at the first generated text.
 
-**Ports.** If the assigned port is busy, TabbyAPI binds port + 1 instead and logs `WARNING: Port X is currently in use. Switching to X+1`, which model-switcher shows as a warning. Model-switcher already picks a port whose next port is also free, but another program can still take the port in between. Readiness then times out on the assigned port, unless that program answers `GET /health` with 200; in that case model-switcher treats it as ready and sends requests to the wrong server.
+**Ports.** If the assigned port is busy, TabbyAPI binds port + 1 instead and logs `WARNING: Port X is currently in use. Switching to X+1`, which model-switcher shows as a warning. Model-switcher probes only the assigned port, and another program can claim it before TabbyAPI starts. The switcher keeps checking and routing to that assigned port; it does not follow TabbyAPI to port + 1. Readiness then times out on the assigned port, unless that program answers `GET /health` with 200; in that case model-switcher treats it as ready and sends requests to the wrong server.
 
 **Stopping.** On a swap or shutdown, model-switcher sends SIGTERM to the process group, waits for the existing grace period, and uses its forced-stop fallback if needed. Tensor-parallel workers run in the same process group. After a forced stop (SIGKILL), tensor-parallel runs may leave shared-memory segments in `/dev/shm`; check for and remove stale ones if memory runs short.
 

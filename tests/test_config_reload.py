@@ -208,11 +208,9 @@ class TestReloadModels:
         # is missing.
         running_port, kept_port, clear = 41000, 42000, 43000
         startup = iter([running_port, kept_port])
-        # The reload's candidates: the running port, its adjacent port,
-        # the kept port, its adjacent port, then a clear one.
-        candidates = iter([
-            running_port, running_port + 1, kept_port, kept_port + 1, clear,
-        ])
+        # The reload's candidates: the running port, the kept port,
+        # then a clear one. Only actual reserved bases must be skipped.
+        candidates = iter([running_port, kept_port, clear])
         real_find_free_port = config_module._find_free_port
         picking = False
         picks: list[set[int]] = []
