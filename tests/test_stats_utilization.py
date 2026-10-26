@@ -13,7 +13,7 @@ from aiohttp import web
 import pytest
 
 from src.process_manager import ProcessHandle
-from src.stats import StatsCollector
+from src.stats import STATS_HTML, StatsCollector
 from src.swapper import MAX_QUEUE, Swapper
 from tests.quick_switch_helpers import (
     FakeProcess,
@@ -21,10 +21,9 @@ from tests.quick_switch_helpers import (
     eventually,
     make_config,
 )
-from tests.test_stats_page import (
+from tests.stats_page_helpers import (
     FULL,
     FRESH,
-    STATS_HTML,
     _execute,
     _lines,
     _render,
