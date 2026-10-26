@@ -173,27 +173,32 @@ class TestArchitectureBoundaries:
                 roots.update(
                     alias.name for alias in node.names
                 )
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                roots.add(node.module)
+            elif isinstance(node, ast.ImportFrom):
+                assert node.level == 0, "Use explicit absolute module imports"
+                if node.module:
+                    roots.add(node.module)
         return {
             root if root.startswith("src.") else root.split(".")[0]
             for root in roots
         }
 
     def test_stats_module_imports_stdlib_only(self):
-        """AC10: stats.py imports stdlib only — no new dependencies.
+        """AC10: stats and its explicit internal closure use stdlib only.
 
-        P-20260929-01/-03: it may also import src.prefill and src.decode,
-        themselves stdlib-only (decode only adds src.prefill).
+        Decode may use prefill; stats_page may use page_css. Support and
+        shared CSS have no internal runtime dependencies.
         """
         stdlib = {"__future__", "math", "time", "collections", "dataclasses"}
         assert self._import_roots("stats.py") <= stdlib | {
-            "src.prefill", "src.decode",
+            "src.prefill", "src.decode", "src.stats_support", "src.stats_page",
         }
         assert self._import_roots("prefill.py") <= stdlib | {"typing"}
         assert self._import_roots("decode.py") <= stdlib | {
             "typing", "src.prefill",
         }
+        assert self._import_roots("stats_support.py") <= stdlib
+        assert self._import_roots("stats_page.py") <= stdlib | {"src.page_css"}
+        assert self._import_roots("page_css.py") <= stdlib
 
     def test_proxy_does_not_touch_stats_collector(self):
         """AC11: proxy.py communicates only via the Outcome object."""

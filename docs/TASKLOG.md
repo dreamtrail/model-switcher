@@ -31,3 +31,4 @@
 - [P-20261013-13] Move the oldest 26 legacy Done records from TODO to TASKLOG; preserve text and chronology — DONE 2026-10-26 11:01 +0900
 - [P-20260930-04] Split stats-page tests into static/rendering and live-behavior modules with shared helpers; preserve all cases — DONE 2026-10-26 12:01 +0900
 - [P-20260929-05] Split decision history into an index and docs/decisions/archive.md, stats.md, and runtime.md; preserve all 27 records verbatim — DONE 2026-10-26 12:50 +0900
+- [P-20260925-05] Split stats into collector, pure support and page modules; share exact stats/control CSS while preserving behavior — DONE 2026-10-26 13:19 +0900

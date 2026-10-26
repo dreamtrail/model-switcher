@@ -77,17 +77,29 @@ class TestPanelHttpAndStaticSafety:
         assert "{{" not in CONTROL_HTML and "${" not in CONTROL_HTML
 
     def test_control_module_does_not_import_config_process_or_new_dependencies(self):
-        source = (Path(__file__).resolve().parents[1] / "src" / "control.py").read_text()
-        tree = ast.parse(source)
-        roots = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                roots.update(alias.name.split(".")[0] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                roots.add(node.module.split(".")[0])
-        assert roots <= {"__future__", "json", "math", "typing", "aiohttp"}
-        for forbidden in ("process_manager", "src.config", "subprocess"):
-            assert forbidden not in source
+        stdlib = {"__future__", "json", "math", "typing"}
+        allowed = {
+            "control.py": stdlib | {"aiohttp", "src.page_css"},
+            "page_css.py": stdlib,
+        }
+        for name, permitted in allowed.items():
+            source = (Path(__file__).resolve().parents[1] / "src" / name).read_text()
+            tree = ast.parse(source)
+            modules = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    modules.update(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    assert node.level == 0, "Use explicit absolute module imports"
+                    if node.module:
+                        modules.add(node.module)
+            roots = {
+                module if module.startswith("src.") else module.split(".")[0]
+                for module in modules
+            }
+            assert roots <= permitted
+            for forbidden in ("process_manager", "src.config", "subprocess"):
+                assert forbidden not in source
 
 
 class TestExecutablePanelJavaScript:
