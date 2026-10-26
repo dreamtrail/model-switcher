@@ -2,7 +2,6 @@
 
 ## Next
 
-- [P-20260913-04] Split `tests/test_proxy.py` (1376 LOC, 51 KB) into focused test modules
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to README
 - [P-20260826-03] Remove stray blank line before `handle.stopped` in `stop_process` (deferred P2 from P-20260826-01 audit)

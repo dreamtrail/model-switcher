@@ -133,7 +133,7 @@ class TestProxiedRequestStats:
         """AC4: upstream crashes mid-stream after prepare() -> "stream_error".
 
         Uses the established pattern from
-        tests/test_proxy.py::test_mid_stream_error_injects_sse_error.
+        tests/test_proxy_sse.py::TestStreamProxy::test_mid_stream_error_injects_sse_error.
         """
         async def crashing_chat(request):
             resp = web.StreamResponse(
