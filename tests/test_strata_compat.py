@@ -305,13 +305,18 @@ async def _model_requests(swapper: Swapper, total: int) -> dict:
 def test_example_recipe_runs_strata_server_from_repo_root(tmp_path):
     raw_config = yaml.safe_load(Path("config.example.yaml").read_text())
     recipes = {
-        model_id: command
-        for model_id, command in raw_config.items()
-        if isinstance(command, str) and "serve/server.py" in command
+        model_id: entry
+        for model_id, entry in raw_config.items()
+        if isinstance(entry, dict)
+        and "serve/server.py" in str(entry.get("cmd", ""))
     }
 
     assert len(recipes) == 1
-    model_id, command = next(iter(recipes.items()))
+    model_id, entry = next(iter(recipes.items()))
+    # Strata waits up to 20 s for its engine to quit; the grace covers it.
+    assert set(entry) == {"cmd", "stop_grace"}
+    assert entry["stop_grace"] == 25
+    command = entry["cmd"]
     tokens = shlex.split(command)
     # No shell: env -C sets the working directory (the Strata repo root).
     assert tokens[:2] == ["env", "-C"] and tokens[2]
@@ -322,8 +327,9 @@ def test_example_recipe_runs_strata_server_from_repo_root(tmp_path):
     assert "--lazy" not in tokens and "--idle-unload" not in tokens
 
     isolated_path = tmp_path / "strata.yaml"
-    isolated_path.write_text(yaml.safe_dump({model_id: command}))
+    isolated_path.write_text(yaml.safe_dump({model_id: entry}))
     loaded = load_config(isolated_path).models[model_id]
+    assert loaded.stop_grace == 25
     assert "${PORT}" not in loaded.cmd
     assert loaded.cmd.endswith(f"--port {loaded.port}")
 
@@ -537,7 +543,9 @@ def test_readme_documents_strata_launch_and_limits():
         "cached_tokens",
         "SIGTERM",
         "SIGKILL",
-        "shutdown_cmd",
+        "up to 20 s",
+        "stop_grace: 25",
+        "(#stop-grace-period)",
         "smoke check",
     ):
         assert token in section, token

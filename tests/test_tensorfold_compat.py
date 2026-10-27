@@ -250,12 +250,13 @@ with open(os.path.join(STATE_DIR, "stopped"), "w") as out:
 '''
 
 
-def _example_recipe() -> tuple[str, str]:
+def _example_recipe() -> tuple[str, dict]:
     raw_config = yaml.safe_load(Path("config.example.yaml").read_text())
     recipes = {
-        model_id: command
-        for model_id, command in raw_config.items()
-        if isinstance(command, str) and "tensorfold serve" in command
+        model_id: entry
+        for model_id, entry in raw_config.items()
+        if isinstance(entry, dict)
+        and "tensorfold serve" in str(entry.get("cmd", ""))
     }
     assert len(recipes) == 1
     return next(iter(recipes.items()))
@@ -328,8 +329,11 @@ async def _wait_for_log(caplog, text: str) -> bool:
 
 
 def test_example_recipe_runs_tensorfold_serve(tmp_path):
-    model_id, command = _example_recipe()
-    outer = shlex.split(command)
+    model_id, entry = _example_recipe()
+    # MLX may save checkpoints for up to 120 s after SIGTERM.
+    assert set(entry) == {"cmd", "stop_grace"}
+    assert entry["stop_grace"] == 130
+    outer = shlex.split(entry["cmd"])
     # bash -c only to set PYTHONUNBUFFERED; exec keeps one process.
     assert outer[:2] == ["bash", "-c"] and len(outer) == 3
     tokens = shlex.split(outer[2])
@@ -342,8 +346,9 @@ def test_example_recipe_runs_tensorfold_serve(tmp_path):
     assert "--tp" not in tokens
 
     isolated_path = tmp_path / "tensorfold.yaml"
-    isolated_path.write_text(yaml.safe_dump({model_id: command}))
+    isolated_path.write_text(yaml.safe_dump({model_id: entry}))
     loaded = load_config(isolated_path).models[model_id]
+    assert loaded.stop_grace == 130
     assert "${PORT}" not in loaded.cmd
     assert f"--port {loaded.port} " in loaded.cmd
 
@@ -357,11 +362,11 @@ async def test_recipe_launched_fake_serves_json_sse_stats_logs_and_stops(
     tmp_path, monkeypatch, caplog
 ):
     caplog.set_level(logging.INFO, logger="src.process_manager")
-    model_id, command = _example_recipe()
+    model_id, entry = _example_recipe()
     state = _install_fake(tmp_path, monkeypatch, load_delay=0.5,
                           model=model_id)
     config_path = tmp_path / "tensorfold.yaml"
-    config_path.write_text(yaml.safe_dump({model_id: command}))
+    config_path.write_text(yaml.safe_dump({model_id: entry}))
     swapper = Swapper(load_config(config_path), timeout=30, idle_timeout=0)
     messages = [{"role": "user", "content": "Hello"}]
 
@@ -514,6 +519,9 @@ def test_readme_documents_tensorfold_launch_and_limits():
         "SIGTERM",
         "SIGKILL",
         "3 s",
+        "120 s",
+        "stop_grace: 130",
+        "(#stop-grace-period)",
         "--tp 2",
         "real hardware",
     ):

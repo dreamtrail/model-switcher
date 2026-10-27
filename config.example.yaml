@@ -39,14 +39,23 @@ qwen3-8b-exl3: 'bash -c "cd /path/to/tabbyAPI && TABBY_LOG_CONSOLE_WIDTH=1000 ex
 # The port opens only after the model loads; raise --timeout for slow loads.
 # env -C needs GNU coreutils 8.28+. Use the Python Strata was installed with
 # (python3 or its venv's python if there is no "python" command).
-qwen3.8-flash-next: "env -C /path/to/Strata python serve/server.py --engine strata --config strata-qwen3.8-flash-next.json --port ${PORT}"
+# stop_grace: Strata waits up to 20 s after SIGTERM for its engine to quit
+# and free memory (default wait is 3 s).
+qwen3.8-flash-next:
+  cmd: "env -C /path/to/Strata python serve/server.py --engine strata --config strata-qwen3.8-flash-next.json --port ${PORT}"
+  stop_grace: 25
 
 # --- TensorFold: tensorfold serve (MLX on Apple Silicon, or CUDA) ---
 # The port opens only after the model loads; the first launch also downloads
 # it. Pre-pull with "tensorfold pull MODEL" or raise --timeout.
 # PYTHONUNBUFFERED=1 keeps TensorFold's request log lines from waiting in a
 # pipe buffer. Use the full path to tensorfold if it is not on PATH.
-qwen3.8-27b-tensorfold: 'bash -c "PYTHONUNBUFFERED=1 exec tensorfold serve TensorFold/Qwen3.8-27B-MLX-4bit --host 127.0.0.1 --port ${PORT} --name qwen3.8-27b-tensorfold --no-update-check"'
+# stop_grace: on MLX, TensorFold may save conversation checkpoints for up to
+# 120 s after SIGTERM (default wait is 3 s). Lower it to stop faster; a
+# SIGKILL loses only that cache.
+qwen3.8-27b-tensorfold:
+  cmd: 'bash -c "PYTHONUNBUFFERED=1 exec tensorfold serve TensorFold/Qwen3.8-27B-MLX-4bit --host 127.0.0.1 --port ${PORT} --name qwen3.8-27b-tensorfold --no-update-check"'
+  stop_grace: 130
 
 # --- Splash: splash serve (Apple silicon M3 or newer, macOS 26.4+ only) ---
 # Splash answers only to its --model name and --served-model-name aliases, so

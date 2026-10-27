@@ -106,8 +106,9 @@ to `variants`. The wait ends as soon as the process group is gone, so a large
 value costs time only when the server is slow to exit. It runs after the
 optional shutdown hook, so include it in any service stop timeout. A running
 model keeps the value it started with; a [reload](#reloading-the-config)
-applies a new value at its next start. [Splash](#splash) needs
-`stop_grace: 20`.
+applies a new value at its next start. The recipes for [Strata](#strata)
+(`stop_grace: 25`), [TensorFold](#tensorfold) on MLX (`stop_grace: 130`), and
+[Splash](#splash) (`stop_grace: 20`) set it; each section explains its value.
 
 ### Model variants
 
@@ -377,7 +378,9 @@ The first request waits while TabbyAPI loads the model. Confirm both streams end
 Run `serve/server.py` from the Strata repo root and pass `--engine strata`:
 
 ```yaml
-qwen3.8-flash-next: "env -C /path/to/Strata python serve/server.py --engine strata --config strata-qwen3.8-flash-next.json --port ${PORT}"
+qwen3.8-flash-next:
+  cmd: "env -C /path/to/Strata python serve/server.py --engine strata --config strata-qwen3.8-flash-next.json --port ${PORT}"
+  stop_grace: 25
 ```
 
 Why the recipe looks like this:
@@ -386,6 +389,7 @@ Why the recipe looks like this:
 - **`env -C`** — model-switcher executes commands directly rather than through a shell, and Strata expects to start from its repo root (its own `run-<model>.sh` does the same; the `--config` path is relative to it). `env -C <dir>` sets that folder without a shell; it needs GNU coreutils 8.28 or newer (macOS and BusyBox `env` lack `-C`).
 - **`python`** — must be the Python that Strata was installed with. Debian and Ubuntu may have no `python` command, so write `python3` or the full path to Strata's venv Python (for example `/path/to/Strata/<venv>/bin/python`).
 - **`--port ${PORT}`** — the switcher assigns the port. Strata already binds `127.0.0.1` by default; the model path lives in the JSON config, not on the command line.
+- **`stop_grace: 25`** — gives Strata time to stop its engine cleanly; see **Stopping** below.
 
 **Model name.** Strata serves one model and accepts any `model` name in a request, so the switcher's routing decides which model runs. Use the same name for the config key and the request `model`; it does not have to match Strata's own `model_name`.
 
@@ -399,7 +403,7 @@ Strata's source (commit `6f32ec0`, not tested here) has two more guards for `/v1
 
 **Logs.** Strata prints plain lines that start with `[strata] `. Lines with the word `WARNING` or `WARN` are logged as warnings, lines with `ERROR`, `FATAL`, or `CRITICAL` as errors, and the rest as info. Only upper-case words count, so a line such as `[strata] the engine reported an error: ...` stays info.
 
-**Stopping.** On a swap or shutdown, model-switcher sends SIGTERM to the process group (the Python server and the engine), waits 3 s, then sends SIGKILL. Strata may need longer to free tens of GB of memory cleanly; after a SIGKILL the operating system should still free it when the processes exit (expected, not tested). If you need a longer clean stop, add a `shutdown_cmd` hook that stops Strata and waits for it ([shutdown hooks](#optional-shutdown-hooks)).
+**Stopping.** On a swap or shutdown, model-switcher sends SIGTERM to the process group (the Python server and the engine). Strata's server then stops HTTP, tells the engine to quit, and waits up to 20 s for it to free tens of GB of memory before forcing it. With the default 3 s wait, the switcher would send SIGKILL partway through; `stop_grace: 25` covers that clean step ([stop grace period](#stop-grace-period)). The wait ends as soon as Strata exits, so a quick stop costs no extra time. Whether the engine itself exits at once on the group's SIGTERM is not known (its signal handling was not read). After a SIGKILL the operating system should still free the memory when the processes exit (expected, not tested).
 
 For a manual smoke check on real hardware, start model-switcher with the recipe above and a long `--timeout`, then:
 
@@ -419,7 +423,9 @@ The first request waits while Strata loads the model. Confirm the reply is real 
 [TensorFold](https://github.com/ashhart/TensorFold) (an OpenAI-compatible server for Apple Silicon through MLX, and for NVIDIA GPUs through CUDA) works through the same foreground-process interface. This integration targets TensorFold at commit `609ca419` (release 0.6.5, 2026-10-03); newer releases may differ. Install it with its own instructions (for example `pip install` into its own venv, or Homebrew on macOS); TensorFold is not a model-switcher dependency.
 
 ```yaml
-qwen3.8-27b-tensorfold: 'bash -c "PYTHONUNBUFFERED=1 exec tensorfold serve TensorFold/Qwen3.8-27B-MLX-4bit --host 127.0.0.1 --port ${PORT} --name qwen3.8-27b-tensorfold --no-update-check"'
+qwen3.8-27b-tensorfold:
+  cmd: 'bash -c "PYTHONUNBUFFERED=1 exec tensorfold serve TensorFold/Qwen3.8-27B-MLX-4bit --host 127.0.0.1 --port ${PORT} --name qwen3.8-27b-tensorfold --no-update-check"'
+  stop_grace: 130
 ```
 
 Why the recipe looks like this:
@@ -430,6 +436,7 @@ Why the recipe looks like this:
 - **`--host 127.0.0.1 --port ${PORT}`** — the switcher assigns the port; TensorFold's default port is 8080, which would clash with the switcher.
 - **`--name ID`** — the model name TensorFold reports in `/v1/models` and replies. Use the config key.
 - **`--no-update-check`** — skips TensorFold's network release check at startup.
+- **`stop_grace: 130`** — gives TensorFold on MLX time to save its checkpoints; see **Stopping** below.
 
 **Model name.** TensorFold serves one model, and the request `model` is not enforced: any name works. The switcher's routing decides which model runs.
 
@@ -444,7 +451,7 @@ Why the recipe looks like this:
 
 **Logs.** TensorFold prints plain lines that start with `[tensorfold] `. A message that starts with `warning:` is logged as a warning, one that starts with `error:`, `request error:`, or `stream error:` as an error (any letter case), and the rest as info. The words must come first: `[tensorfold] snapshot save failed: ...` stays info. Python tracebacks after a `request error:` line go to stderr without the prefix and are logged as info.
 
-**Stopping.** On a swap or shutdown, model-switcher sends SIGTERM to the process group, waits 3 s, then sends SIGKILL. TensorFold stops cleanly on SIGTERM, but on MLX it first saves recent conversation checkpoints to disk, which may take longer than 3 s (TensorFold allows up to 120 s; real times not measured). A SIGKILL then loses only those saved checkpoints, which are a cache; replies already sent are not affected. If you need a longer clean stop, add a `shutdown_cmd` hook that stops TensorFold and waits for it ([shutdown hooks](#optional-shutdown-hooks)).
+**Stopping.** On a swap or shutdown, model-switcher sends SIGTERM to the process group. TensorFold stops cleanly on SIGTERM, but on MLX it first saves recent conversation checkpoints to disk, which may take longer than the default 3 s wait (TensorFold allows up to 120 s; real times not measured). `stop_grace: 130` lets it finish ([stop grace period](#stop-grace-period)); the wait ends as soon as TensorFold exits, so a quick stop costs no extra time. A slow save delays the next model's start by that long, so you may prefer a lower value or none: a SIGKILL loses only those checkpoints, which are a cache, and replies already sent are not affected. The value is for MLX; how long a CUDA stop takes was not checked. Under systemd, 130 s is longer than the default 90 s stop timeout, so raise `TimeoutStopSec` to cover it (see [SETUP](docs/SETUP.md)).
 
 **Multi-GPU.** Only single-process serving fits the switcher. TensorFold's `--tp 2` runs one process per machine (rank 0 serves HTTP, rank 1 follows); the switcher can start only rank 0 on its own machine, so `--tp 2` is not supported.
 

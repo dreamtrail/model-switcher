@@ -2,7 +2,7 @@
 
 ## Next
 
-- [P-20261027-02] Point Strata and TensorFold docs to per-model `stop_grace` for slow stops (plan: artifacts/P-20261027-02/plan.md)
+- [P-20261027-03] Hygiene(refactor): Split tests/test_process_manager.py (902 lines) into focused test modules; keep all cases
 - [P-20261026-02] Hygiene(refactor): Split README.md (635 lines, 65,313 bytes) into focused usage/backend docs; preserve guidance and repair links
 - [P-20261026-03] Hygiene(reformat): Normalize TODO sections and overlong entries; move the remaining 27 legacy Done records to TASKLOG, preserving IDs, dates and chronology
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
@@ -10,12 +10,13 @@
 
 ## Discovered
 
+- [P-20261027-04] Splash (P-20261027-01) not checked on a real Apple silicon Mac (README § Splash manual check); review minors: SIGKILL warning `%ds` truncates fractional `stop_grace`; `Template error ·` lines log as INFO; TensorFold e2e doesn't exercise the long `stop_grace` (see `artifacts/P-20261027-01/plan.md`, `artifacts/P-20261027-02/plan.md`)
 - [P-20261013-09] Pre-existing: at startup a non-script `${PORT}` command gets the port flag twice (`serve --port ${PORT}` -> `serve --port N --port N`, `serve -p ${PORT}` -> `serve -p N --port N`) because `_resolve_ports` fills the port before `rewrite_command` appends `--port`; after a reload the same entry runs with one flag (see `artifacts/P-20261013-07/reviewer-fix-01-port-probe.txt`)
 - [P-20261013-02] Persist the chosen model variant across restarts (P-20261013-01 keeps it in memory and starts on `default`; user undecided): decide where to store it (state file vs. YAML) and how a removed variant falls back (see `artifacts/P-20261013-01/plan.md`)
 - [P-20261006-02] TensorFold review nits (P-20261005-04, P-20261006-01): README/DECISIONS say `exec` lets SIGTERM reach TensorFold "directly" (it goes to the group anyway; the gain is that the tracked pid is TensorFold); `src/process_manager.py:46` is 80 chars; DECISIONS cites TensorFold `server/http.py:433` without commit 609ca419; no tests for `stream errors:` / `streamerror:` near misses (see `artifacts/P-20261005-04/review.md`, `artifacts/P-20261006-01/plan.md`)
-- [P-20261005-05] TensorFold support not yet checked on real TensorFold/Apple Silicon or CUDA (README § TensorFold manual check); CUDA `tensorfold` stats keys only partly known; the switcher's 3 s SIGTERM grace may SIGKILL TensorFold while MLX saves conversation checkpoints (up to 120 s); per-model stop grace shared with P-20261005-02 (see `artifacts/P-20261005-04/plan.md`)
+- [P-20261005-05] TensorFold support not yet checked on real TensorFold/Apple Silicon or CUDA (README § TensorFold manual check); CUDA `tensorfold` stats keys only partly known; recipe `stop_grace: 130` (MLX checkpoint saves up to 120 s) not measured on real hardware (see `artifacts/P-20261005-04/plan.md`)
 - [P-20261005-03] Strata review minors (P-20261005-01): `[strata] the engine reported an error: ...` logs as info because only upper-case level words count (user decision pending); recipe shows bare `python` (README notes `python3`/venv); "or another setup" in README § Strata Origin note is vague (see `artifacts/P-20261005-01/review.md`, `review-repair.md`)
-- [P-20261005-02] Strata support not yet smoke-tested on real Strata/GPU (README § Strata manual check); the switcher's 3 s SIGTERM grace may SIGKILL Strata before it frees memory cleanly (Strata waits up to 20 s per stop step); consider a per-model stop grace (see `artifacts/P-20261005-01/plan.md`)
+- [P-20261005-02] Strata support not yet smoke-tested on real Strata/GPU (README § Strata manual check); recipe `stop_grace: 25` (Strata waits up to 20 s for its engine) and engine SIGTERM handling unchecked (see `artifacts/P-20261005-01/plan.md`)
 - [P-20260930-05] Stats tiles review minors (P-20260930-02/-03): hovering the Loads number shows the count title, not the tile explanation; no automated re-render test for the Loads tile; "100% of uptime" truncates at 1152–1199px; Loads/busy/time split not checked against real model servers (see `artifacts/P-20260930-02/plan.md`, `artifacts/P-20260930-03/plan.md`)
 - [P-20260929-07] Client disconnect before `prepare()` (while waiting for upstream headers) is still recorded as `502` with the "(pre-prepare)" label, not `client_disconnect`; also no switcher-side stall detection for relayed clients (see `artifacts/P-20260929-06/plan.md`)
 - [P-20260929-04] Generation speed (P-20260929-03) review minors: server time longer than wall time clamps the aggregate interval; a later 0/0 `timings.predicted_*` pair overwrites an earlier one; completion_time/generation_time may pair with usage from another event; n>1 buffered streams pass the 2-chunk guard; not checked on real servers (see `artifacts/P-20260929-03/plan.md`)
