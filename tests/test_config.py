@@ -349,15 +349,17 @@ class TestReloadSupport:
             "a": "serve --port ${PORT}",
             "b": {"cmd": "serve-b", "shutdown_cmd": "stop-b",
                   "shutdown_timeout": 5},
+            "g": {"cmd": "serve-g", "stop_grace": 20},
             "q": {"variants": {"t": "serve-t"}},
         })
         config = load_config(path)
         assert config.models["a"].spec == (
-            "serve --port ${PORT}", None, 30, None
+            "serve --port ${PORT}", None, 30, None, None
         )
         assert "${PORT}" not in config.models["a"].cmd
-        assert config.models["b"].spec == ("serve-b", "stop-b", 5, None)
-        assert config.models["q@t"].spec == ("serve-t", None, 30, None)
+        assert config.models["b"].spec == ("serve-b", "stop-b", 5, None, None)
+        assert config.models["g"].spec == ("serve-g", None, 30, None, 20)
+        assert config.models["q@t"].spec == ("serve-t", None, 30, None, None)
         # Code-built entries have no spec; spec does not affect equality.
         assert ModelConfig("a", "x", 1).spec is None
         assert ModelConfig("a", "x", 1) == ModelConfig("a", "x", 1, spec=(1,))
@@ -414,3 +416,70 @@ def test_non_string_commands_are_rejected_with_value_error(
     with pytest.raises(ValueError) as caught:
         load_config(tmp_config(data))
     assert str(caught.value) == message
+
+
+# ---------------------------------------------------------------------------
+# P-20261027-01: per-model stop_grace (seconds between SIGTERM and SIGKILL)
+# ---------------------------------------------------------------------------
+
+
+class TestStopGrace:
+    def test_unset_means_the_process_manager_default(self, tmp_config):
+        config = load_config(tmp_config({
+            "a": "x", "b": {"cmd": "y"}, "q": {"variants": {"t": "z"}},
+        }))
+        for mc in config.models.values():
+            assert mc.stop_grace is None
+        assert ModelConfig("a", "x", 1).stop_grace is None
+
+    @pytest.mark.parametrize("value", [20, 0.5, 3, 600.25])
+    def test_positive_numbers_are_kept(self, tmp_config, value):
+        config = load_config(tmp_config({
+            "a": {"cmd": "x", "stop_grace": value},
+        }))
+        assert config.models["a"].stop_grace == value
+
+    def test_needs_no_shutdown_hook_and_is_set_per_variant(self, tmp_config):
+        config = load_config(tmp_config({
+            "q": {"variants": {
+                "fast": "x --port ${PORT}",
+                "slow": {"cmd": "y --port ${PORT}", "stop_grace": 20,
+                         "shutdown_cmd": "stop-y", "shutdown_timeout": 5},
+            }},
+        }))
+        assert config.models["q@fast"].stop_grace is None
+        slow = config.models["q@slow"]
+        assert slow.stop_grace == 20
+        assert (slow.shutdown_cmd, slow.shutdown_timeout) == ("stop-y", 5)
+
+    @pytest.mark.parametrize(
+        "value",
+        [0, -1, -0.5, 0.0, float("inf"), float("-inf"), float("nan"),
+         True, False, None, "20", "20s", [20], {"s": 20}, 10**400],
+    )
+    def test_invalid_values_are_rejected(self, tmp_config, value):
+        with pytest.raises(ValueError) as caught:
+            load_config(tmp_config({"a": {"cmd": "x", "stop_grace": value}}))
+        assert str(caught.value) == (
+            "Model 'a' has an invalid stop_grace: "
+            "use a positive number of seconds"
+        )
+
+    def test_invalid_variant_value_names_the_variant(self, tmp_config):
+        with pytest.raises(ValueError) as caught:
+            load_config(tmp_config({
+                "q": {"variants": {"t": {"cmd": "x", "stop_grace": 0}}},
+            }))
+        assert str(caught.value).startswith(
+            "Model 'q' variant 't' has an invalid stop_grace"
+        )
+
+    def test_not_allowed_next_to_variants(self, tmp_config):
+        with pytest.raises(ValueError) as caught:
+            load_config(tmp_config({
+                "q": {"variants": {"t": "x"}, "stop_grace": 20},
+            }))
+        assert str(caught.value) == (
+            "Model 'q' cannot set 'stop_grace' next to 'variants'; "
+            "set it inside each variant"
+        )

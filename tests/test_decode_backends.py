@@ -12,6 +12,11 @@ Response shapes follow the upstream sources pinned in the plan record:
 - Strata 6f32ec0 (P-20261005-01): llama.cpp-style ``timings`` with usage on
   the final chunk that also carries ``finish_reason`` (and on the non-stream
   body); ``*_per_second`` is ``null`` when its count is 0.
+- Splash 39a9738 (P-20261027-01): llama.cpp-style ``timings`` on the
+  stream's finish chunk, but ``predicted_ms`` starts after the first
+  emission while ``predicted_n`` counts it; ``metrics.decode.tokens``
+  leaves it out and comes with usage in the later ``include_usage`` chunk
+  (``server/metrics.py``, ``server/server.py``).
 
 Upstreams are loopback fakes; delays make the proxy's own decode time
 clearly different from the server's so the two sources are distinguishable.
@@ -417,6 +422,112 @@ async def test_strata_zero_output_null_rates_are_not_a_sample(monkeypatch):
         assert gen["avg"] is None
         assert gen["avg_aggregate"] is None
         assert block["rates"]["prompt_tps"]["avg"] == pytest.approx(2000.0)
+
+
+# ---------------------------------------------------------------------------
+# Splash
+# ---------------------------------------------------------------------------
+
+SPLASH_USAGE = {
+    "prompt_tokens": 300, "completion_tokens": 10, "total_tokens": 310,
+    "prompt_tokens_details": {"cached_tokens": 256},
+    "completion_tokens_details": {"reasoning_tokens": 0},
+}
+# predicted_n counts all 10 tokens; predicted_ms starts after the first
+# emission (here a speculative block of 2), so Splash's own rate is 8 / 40 ms.
+SPLASH_TIMINGS = {
+    "prompt_n": 300, "prompt_ms": 88.0, "prompt_per_second": 500.0,
+    "predicted_n": 10, "predicted_ms": 40.0, "predicted_per_second": 200.0,
+    "cache_n": 256,
+}
+SPLASH_METRICS = {
+    "prefill": {"tokens": 44},
+    "decode": {"tokens": 8},
+    "request_latency": {
+        "start_to_first_token_ms": 88.0, "first_token_to_done_ms": 40.0,
+        "wall_ms": 130.0, "ttft_ms": 90.0, "queue_to_start_ms": 2.0,
+        "stream_tokens_per_second": 200.0,
+    },
+    "cache": {"status": "hit", "matched_tokens": 256,
+              "deduplicated_tokens": 0, "lane": 0},
+}
+
+
+async def test_splash_stream_uses_decode_tokens(monkeypatch):
+    app = _router(stream_handler=_stream_app([
+        (0, _chunk({"role": "assistant", "content": ""})),
+        (0, _chunk({"content": "Hi"})),
+        (DELAY_S, _chunk({"content": " there"})),
+        (0, _chunk({}, finish_reason="stop", timings=SPLASH_TIMINGS)),
+        (0, _chunk(choices=False, usage=SPLASH_USAGE,
+                   metrics=SPLASH_METRICS)),
+    ]))
+    data, _ = await _run(monkeypatch, app, [True])
+    for block in _blocks(data):
+        gen = block["rates"]["generation_tps"]
+        # 8 decode tokens / 40 ms, not 10 / 40 ms or the proxy's ~200 ms.
+        assert gen["avg"] == pytest.approx(200.0)
+        assert gen["server_timed_share"] == 1.0
+        assert block["tokens"]["completion"] == 10
+
+
+async def test_splash_non_stream_body_uses_decode_tokens(monkeypatch):
+    app = _router(json_handler=_json_app(_completion(
+        SPLASH_USAGE, timings=SPLASH_TIMINGS, metrics=SPLASH_METRICS,
+    ), delay=0.01))
+    data, _ = await _run(monkeypatch, app, [False])
+    for block in _blocks(data):
+        gen = block["rates"]["generation_tps"]
+        assert gen["avg"] == pytest.approx(200.0)
+        assert block["tokens"]["completion"] == 10
+
+
+def test_splash_decode_tokens_combine_across_events():
+    from src.decode import ServerDecode, apply_server_decode, select_decode
+
+    server = ServerDecode()
+    apply_server_decode({"timings": SPLASH_TIMINGS}, server)
+    assert select_decode(10, server, None).sample.tokens == 10
+    apply_server_decode({"metrics": SPLASH_METRICS}, server)
+    sample = select_decode(10, server, None).sample
+    assert (sample.tokens, sample.seconds, sample.server_timed) == (
+        8, 0.04, True
+    )
+
+
+@pytest.mark.parametrize("tokens", [None, -1, 2.5, True, "8"])
+def test_splash_invalid_decode_tokens_are_ignored(tokens):
+    from src.decode import ServerDecode, apply_server_decode, select_decode
+
+    server = ServerDecode()
+    apply_server_decode({"timings": SPLASH_TIMINGS,
+                         "metrics": {"decode": {"tokens": tokens}}}, server)
+    assert server.decode_tokens is None
+    assert select_decode(10, server, None).sample.tokens == 10
+
+
+def test_decode_tokens_without_timings_leave_vllm_rule():
+    from src.decode import ServerDecode, apply_server_decode, select_decode
+
+    server = ServerDecode()
+    apply_server_decode({"metrics": {"generation_time_ms": 100.0,
+                                     "decode": {"tokens": 3}}}, server)
+    sample = select_decode(20, server, None).sample
+    # vLLM rule: completion tokens over generation_time_ms.
+    assert (sample.tokens, sample.seconds) == (20, 0.1)
+
+
+def test_splash_single_emission_falls_through_to_proxy_rule():
+    from src.decode import ServerDecode, apply_server_decode, select_decode
+
+    # The whole reply came in the first emission: no decode interval.
+    server = ServerDecode()
+    apply_server_decode({
+        "timings": {"predicted_n": 2, "predicted_ms": 0.0},
+        "metrics": {"decode": {"tokens": 0}},
+    }, server)
+    decision = select_decode(2, server, 0.001, gen_chunks=1)
+    assert decision.sample is None and decision.skipped_buffered
 
 
 # ---------------------------------------------------------------------------

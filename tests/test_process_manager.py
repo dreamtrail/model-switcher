@@ -705,6 +705,171 @@ class TestUpstreamLogLevel:
         assert error.levelno == logging.ERROR
         assert getattr(error, "plain_upstream", False) is False
 
+    # --- Splash format (P-20261027-01) ---
+
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            # Shapes from Splash server/*.py and runtime/*.mm @ 39a9738:
+            # print_status / logLine write "HH:MM:SS <event> · <details>".
+            ("12:34:56 Loading · owner/model-4bit", logging.INFO),
+            ("12:34:56 Chat template · model's own", logging.INFO),
+            ("12:34:56 Ready · owner/model-4bit · context 32,768 · "
+             "http://127.0.0.1:8000", logging.INFO),
+            ("12:34:56 Started · input 1,200 · cached 1,024", logging.INFO),
+            ("12:34:56 Done · input 1,200 · cached 1,024", logging.INFO),
+            ("12:34:56 Cancelled · input 10 · cached 0", logging.INFO),
+            ("12:34:56 Stopping · releasing engine resources", logging.INFO),
+            ("12:34:56 Engine restarted", logging.INFO),
+            ("12:34:56 Persistent cache: stopping before every newest "
+             "restore point reached the disk.", logging.INFO),
+            ("12:34:56 Error · 404 · GET /v1/nope", logging.ERROR),
+            ("12:34:56 Error · internal_server_error · KeyError · "
+             "server/server.py:123", logging.ERROR),
+            ("12:34:56 Error · unable to start HTTP server: [Errno 48] "
+             "Address already in use", logging.ERROR),
+            ("12:34:56 Engine failed · native runtime exited", logging.ERROR),
+            ("12:34:56 Engine restart failed · no memory", logging.ERROR),
+            ("12:34:56 Engine stopped · the inference engine failed 3 times "
+             "in a row", logging.ERROR),
+            ("12:34:56 Warning · --allowed-origin '*' without --api-key "
+             "lets every web page use this server", logging.WARNING),
+            ("12:34:56 Refused · Origin https://example.com · restart with "
+             "--allowed-origin", logging.WARNING),
+            ("12:34:56 Refused · further Origins are not logged",
+             logging.WARNING),
+            ("--:--:-- Warning · Metal command buffer retried",
+             logging.WARNING),
+            ("12:34:56 Error ·", logging.ERROR),
+            # Native runtime exit lines (runtime main.mm) are plain
+            # "error: ..." and already match the generic rule.
+            ("error: native transport stopped after a protocol failure",
+             logging.ERROR),
+            ("error: the Metal backend is unhealthy; exiting without "
+             "teardown", logging.ERROR),
+        ],
+    )
+    def test_splash_line_levels(self, line, expected):
+        assert _upstream_log_level(line) == expected
+
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            # Only the event right after the time counts, exactly.
+            ("12:34:56 Done · input 3 · Error · late", logging.INFO),
+            ("12:34:56 Errors · 3", logging.INFO),
+            ("12:34:56 error · lower case", logging.INFO),
+            ("12:34:56 Error: no middle dot", logging.INFO),
+            ("12:34:56 Error ·no space", logging.INFO),
+            ("12:34:56 Warning: no middle dot", logging.INFO),
+            (" 12:34:56 Error · indented", logging.INFO),
+            ("12:34:56.789 Error · millisecond time", logging.INFO),
+            # Other lines keep the existing rules (a leading "Error" word
+            # was already an error by the generic rule).
+            ("Error · no time", logging.ERROR),
+            ("12:34:56.789 ERROR:    boom", logging.ERROR),
+            ("12:34:56.789 WARNING:  careful", logging.WARNING),
+            ("12:34:56.789 INFO:     Started server", logging.INFO),
+            ("13.31.779.183 W warmup slow", logging.WARNING),
+            ("[tensorfold] warning: x", logging.WARNING),
+            ("[strata] ERROR: x", logging.ERROR),
+        ],
+    )
+    def test_splash_rule_needs_exact_shape(self, line, expected):
+        assert _upstream_log_level(line) == expected
+
+    def test_splash_info_lines_stay_plain_upstream(self, caplog):
+        caplog.set_level(logging.INFO, logger="src.process_manager")
+        _log_upstream_line("12:34:56 Done · input 3 · cached 0")
+        _log_upstream_line("12:34:56 Refused · Origin https://a.example")
+        info, warning = caplog.records[-2:]
+        assert info.levelno == logging.INFO
+        assert getattr(info, "plain_upstream", False) is True
+        assert warning.levelno == logging.WARNING
+        assert getattr(warning, "plain_upstream", False) is False
+
+
+class TestStopGrace:
+    """P-20261027-01: per-handle wait between SIGTERM and SIGKILL."""
+
+    @staticmethod
+    async def _start(tmp_path, body: str):
+        ready = tmp_path / "ready"
+        script = tmp_path / "server.py"
+        script.write_text(
+            "import signal, sys, time\n"
+            "from pathlib import Path\n"
+            f"{body}\n"
+            f"Path({str(ready)!r}).touch()\n"
+            "time.sleep(60)\n"
+        )
+        handle = await start_process(
+            "grace-model", f"{sys.executable} {script}", 0
+        )
+        await _wait_for_path(ready)
+        return handle
+
+    async def test_shorter_stop_grace_kills_sooner(self, tmp_path):
+        handle = await self._start(
+            tmp_path, "signal.signal(signal.SIGTERM, signal.SIG_IGN)"
+        )
+        handle.stop_grace = 0.3
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        await stop_process(handle)
+        elapsed = loop.time() - started
+        assert 0.3 <= elapsed < GRACE_PERIOD
+        assert handle.process.returncode == -signal.SIGKILL
+
+    async def test_longer_stop_grace_lets_a_slow_stop_finish(
+        self, tmp_path, monkeypatch
+    ):
+        import src.process_manager as pm
+
+        monkeypatch.setattr(pm, "GRACE_PERIOD", 0.2)
+        marker = tmp_path / "clean"
+        handle = await self._start(tmp_path, (
+            "def stop(signum, frame):\n"
+            "    time.sleep(0.8)\n"
+            f"    Path({str(marker)!r}).write_text('clean')\n"
+            "    sys.exit(0)\n"
+            "signal.signal(signal.SIGTERM, stop)"
+        ))
+        handle.stop_grace = 10
+        await stop_process(handle)
+        assert handle.process.returncode == 0
+        assert marker.read_text() == "clean"
+
+    async def test_unset_stop_grace_uses_grace_period(
+        self, tmp_path, monkeypatch
+    ):
+        import src.process_manager as pm
+
+        monkeypatch.setattr(pm, "GRACE_PERIOD", 0.2)
+        marker = tmp_path / "clean"
+        handle = await self._start(tmp_path, (
+            "def stop(signum, frame):\n"
+            "    time.sleep(0.8)\n"
+            f"    Path({str(marker)!r}).write_text('clean')\n"
+            "    sys.exit(0)\n"
+            "signal.signal(signal.SIGTERM, stop)"
+        ))
+        assert handle.stop_grace is None
+        await stop_process(handle)
+        assert handle.process.returncode == -signal.SIGKILL
+        assert not marker.exists()
+
+
+async def _wait_for_path(path, timeout: float = 5) -> None:
+    """Wait for a test process to create a marker file."""
+    loop = asyncio.get_running_loop()
+    end_time = loop.time() + timeout
+    while loop.time() < end_time:
+        if path.exists():
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"marker was not written: {path}")
+
 
 async def _wait_for_pid_file(path, timeout: float = 3) -> int:
     """Wait for a test process to write a child PID file."""

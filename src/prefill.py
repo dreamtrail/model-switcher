@@ -10,6 +10,11 @@ Backends report their own prompt (prefill) work in different places:
   stream's finish chunk. Read into the same slot as ``usage.prompt_time``.
 - vLLM (``--enable-per-request-metrics``): top-level
   ``metrics.time_to_first_token_ms``.
+- Splash: llama.cpp-style ``timings`` on the stream's finish chunk, but its
+  ``prompt_n`` counts cached tokens too. The new (prefilled) count is
+  ``metrics.prefill.tokens``, in the later ``include_usage`` chunk (both on
+  a non-stream body); when seen, it replaces ``prompt_n`` as the token
+  count for ``prompt_ms``.
 
 This module parses those fields and picks one prefill sample per request.
 It never raises on malformed input; invalid values are ignored.
@@ -31,6 +36,9 @@ class ServerPrefill:
     cache_n: int | None = None
     prompt_time_s: float | None = None
     ttft_ms: float | None = None
+    # Splash ``metrics.prefill.tokens``; may come from a later event than
+    # the ``timings`` pair it corrects.
+    prefill_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +116,11 @@ def apply_server_prefill(data: Any, server: ServerPrefill) -> None:
         ttft_ms = parse_duration(metrics.get("time_to_first_token_ms"))
         if ttft_ms is not None:
             server.ttft_ms = ttft_ms
+        prefill = metrics.get("prefill")
+        if isinstance(prefill, dict):
+            prefill_tokens = parse_count(prefill.get("tokens"))
+            if prefill_tokens is not None:
+                server.prefill_tokens = prefill_tokens
 
 
 def effective_cached(
@@ -132,8 +145,10 @@ def select_prefill(
 ) -> PrefillDecision:
     """Pick the prefill sample for one request.
 
-    Priority: ``timings.prompt_n / prompt_ms`` > ``usage.prompt_time`` or
-    TensorFold ``tensorfold.prefill_seconds`` / ``prefill_s`` (one slot) >
+    Priority: ``timings.prompt_n / prompt_ms`` (Splash: with
+    ``metrics.prefill.tokens`` in place of ``prompt_n``) >
+    ``usage.prompt_time`` or TensorFold ``tensorfold.prefill_seconds`` /
+    ``prefill_s`` (one slot) >
     vLLM ``metrics.time_to_first_token_ms`` > proxy TTFT. For all but the
     first, tokens are prompt − cached; an unknown cached count counts as 0
     when the model has reported one before (``cache_learned``), otherwise
@@ -141,12 +156,15 @@ def select_prefill(
     :func:`effective_cached`.
     """
     if server is not None:
+        prompt_n = server.prompt_n
+        if prompt_n is not None and server.prefill_tokens is not None:
+            prompt_n = server.prefill_tokens
         if (
-            server.prompt_n is not None and server.prompt_n >= 1
+            prompt_n is not None and prompt_n >= 1
             and server.prompt_ms is not None and server.prompt_ms > 0
         ):
             return PrefillDecision(PrefillSample(
-                tokens=server.prompt_n,
+                tokens=prompt_n,
                 seconds=server.prompt_ms / 1000.0,
                 server_timed=True,
             ))

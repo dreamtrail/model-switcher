@@ -48,6 +48,7 @@ mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port ${PORT}"
 - A command whose first word is a path to a **text file** is a script: the switcher runs a temp copy with the port rewritten. A path to a program (`/opt/llama/llama-server --model m.gguf`) is a direct command, the same as one found on `PATH`: its `--port` flag is replaced, or `--port <N>` is added. Text means UTF-8 without NUL bytes; anything else counts as a program.
 - Model and variant names must be strings. Quote a name that YAML reads as a number, a boolean, null, or a date, such as `"70"`, `"yes"`, `"null"`, or `"2024-01-01"`; otherwise the switcher refuses the config (at startup and on reload) and names the value, for example `Model name 70 (int) must be a string`.
 - One name can have several launch commands (for example text and vision): see [Model variants](#model-variants).
+- A slow server can get more time to stop cleanly before SIGKILL: see [Stop grace period](#stop-grace-period).
 - After editing the file, apply it without a restart: see [Reloading the config](#reloading-the-config).
 
 ### Optional shutdown hooks
@@ -86,6 +87,28 @@ is the script's confirmation, **not independent verification of remote state**.
 No remote scripts or SSH integration are included. See
 [service stop budgets and limitations](docs/SETUP.md#shutdown-hook-stop-budgets).
 
+### Stop grace period
+
+When a model stops (swap, unload, idle unload, or switcher shutdown), the
+switcher sends SIGTERM to its process group, waits, then sends SIGKILL to
+whatever is left. The wait is 3 seconds unless the entry sets `stop_grace`
+(seconds):
+
+```yaml
+my-model:
+  cmd: "my-model-server --port ${PORT}"
+  stop_grace: 20
+```
+
+`stop_grace` must be a positive finite number (not a boolean) and does not
+need `shutdown_cmd`. Set it on a mapping entry or inside a variant, not next
+to `variants`. The wait ends as soon as the process group is gone, so a large
+value costs time only when the server is slow to exit. It runs after the
+optional shutdown hook, so include it in any service stop timeout. A running
+model keeps the value it started with; a [reload](#reloading-the-config)
+applies a new value at its next start. [Splash](#splash) needs
+`stop_grace: 20`.
+
 ### Model variants
 
 A variant entry gives one model name several launch commands. Clients (for
@@ -105,7 +128,7 @@ qwen3.8-27b:
 ```
 
 - Each variant is a command string or a mapping with `cmd` and optional
-  `shutdown_cmd` / `shutdown_timeout`, with the same rules as a plain entry.
+  `shutdown_cmd` / `shutdown_timeout` / `stop_grace`, with the same rules as a plain entry.
   Each variant gets its own port and its own [shutdown hook](#optional-shutdown-hooks).
 - Only `variants` and `default` may sit beside each other at the top of the
   entry; `cmd`, `shutdown_cmd`, `shutdown_timeout`, or any other key there is a
@@ -230,7 +253,7 @@ The switcher re-reads the file it was started with (`--config`) and applies mode
 
 - **New models** are listed in `/v1/models` and can be requested right away.
 - **Removed models** get 404 for named requests at once.
-- **Changed models** are entries whose `cmd`, `shutdown_cmd`, or `shutdown_timeout` text changed. They get a new port and, for scripts, a new temp copy; the old copy is never overwritten. If the command starts with a script file, the script's contents count too: editing the script changes the entry even when its config line stays the same.
+- **Changed models** are entries whose `cmd`, `shutdown_cmd`, `shutdown_timeout`, or `stop_grace` changed. They get a new port and, for scripts, a new temp copy; the old copy is never overwritten. If the command starts with a script file, the script's contents count too: editing the script changes the entry even when its config line stays the same.
 - **Unchanged models** keep their port, command, and temp copy. The config text and a hash of the script file (when the command starts with one) are compared.
 - **The running model is not touched** (`running_changed: true` when it was changed or removed). It keeps its old command, port, and hook until it stops; its next start uses the new settings. A removed running model keeps serving model-less requests until you switch or unload it, or the idle timeout stops it. The panel shows a note in both cases.
 - **Variants:** the active variant stays active if it still exists, otherwise the entry's `default`. A changed `default:` alone does not switch the active variant, even if that variant was only active because it was the old default; pick the variant on `/control` (or restart) to use the new default.
@@ -438,6 +461,54 @@ curl -N http://127.0.0.1:8080/v1/chat/completions \
 
 The first request waits while TensorFold loads (and maybe downloads) the model. Confirm the stream ends with `data: [DONE]`, `/stats` shows prompt and generation speed for the model, and `[tensorfold] ` request lines appear in the switcher log while the server runs. Automated tests use a local fake server and do not run TensorFold, download models, or need a GPU; this support has not yet been tried on real hardware.
 
+## Splash
+
+[Splash](https://github.com/incoai/splash) (an OpenAI- and Anthropic-compatible inference server for Apple silicon) works through the same foreground-process interface. It runs only on Apple M3 or newer with macOS 26.4 or later, so the switcher must run on that Mac. This integration targets Splash at commit `39a9738` (release 1.4.1); newer releases may differ. Install it with its own instructions (for example `brew install incoai/tap/splash`); Splash is not a model-switcher dependency.
+
+```yaml
+qwen3.8-27b-splash:
+  cmd: "splash serve --model local/qwen3.8-27b --model-dir /path/to/Qwen3.8-27B-UD-Q4_K_M.gguf --served-model-name qwen3.8-27b-splash --port ${PORT}"
+  stop_grace: 20
+```
+
+Why the recipe looks like this:
+
+- **`splash serve --model OWNER/REPO`** — with `--model-dir`, `--model` is only the name Splash reports. Without `--model-dir`, it is the Hugging Face model (`OWNER/REPO[:VARIANT]`) that Splash downloads on first start. Write the full path to `splash` (for example `/opt/homebrew/bin/splash`) if it is not on the switcher's `PATH`.
+- **`--model-dir PATH`** — serves a local GGUF file or GGUF/MLX folder without contacting the Hub, so a start does not wait for a download. Splash still takes the family's draft model from the Hub cache unless you pass `--draft-model`.
+- **`--served-model-name KEY`** — Splash refuses (404 `model_not_found`) a request whose `model` is neither its `--model` name nor an alias. The switcher forwards the request body unchanged, so add the config key as an alias. Replies still report the `--model` name (Splash's `--announce-served-name` changes that).
+- **`--port ${PORT}`** — the switcher assigns the port; Splash's default is 8000 (or `SPLASH_PORT`). Splash binds `127.0.0.1` by default.
+- **`stop_grace: 20`** — gives Splash time to close its engine; see **Stopping** below.
+
+**Readiness.** Splash binds its port early but accepts connections only after the engine has loaded, then prints `Ready · ...`. `GET /health` then returns 200 `{"status": "ok"}`, so the existing readiness check works unchanged. Loading a large model can take minutes, and a first start without `--model-dir` also downloads it. Raise the switcher's `--timeout` (default 60 s) above that time, for example `--timeout 600`.
+
+**Idle memory.** Splash has its own idle release: after `--idle-release` (default `10m`) without a request, it frees the model weights but keeps running, and the next request loads them back first, so that request waits longer. `/health` stays 200 the whole time, so the switcher still sees the model as loaded. The switcher's own idle unload (`--idle-timeout`, default 30m) stops the whole process instead. Keep Splash's release if you want memory back sooner, or add `--idle-release off` to the recipe and let `--idle-timeout` alone decide. Neither choice was tried on real hardware.
+
+**Output and stats.** Chat completions JSON and SSE pass through unchanged, including `: splash-keepalive` comments, `prompt_progress` chunks, and the final `data: [DONE]`. Splash supports the switcher's automatic `stream_options.include_usage`: the finish chunk carries llama.cpp-style `timings`, then usage (with `prompt_tokens_details.cached_tokens`) and a `metrics` object come in their own chunk. Non-streaming replies carry all three on the body. Splash's `timings` counts differ from llama.cpp's, so:
+
+- **Prompt speed** is `metrics.prefill.tokens` ÷ `timings.prompt_ms`. Splash's `timings.prompt_n` counts cached prompt tokens too, so on a cache hit it would make prompt speed look many times higher.
+- **Generation speed** is `metrics.decode.tokens` ÷ `timings.predicted_ms`. `predicted_ms` starts after Splash's first output, which can hold several tokens at once (speculative decoding); `metrics.decode.tokens` leaves those tokens out, and `timings.predicted_n` does not.
+
+Without `metrics` (for example a stream on a path where the switcher does not add `include_usage`), the `timings` counts are used as they are. `/v1/completions`, `/v1/messages`, and `/v1/responses` are passed through but not covered by the tests here.
+
+**Request guards.** Splash refuses (403) a request whose `Host` is not its bind address, `localhost`, `127.0.0.1`, or `::1`. The switcher sends `127.0.0.1:<port>` as `Host` ([How It Works](#how-it-works)), so clients on the LAN can use the switcher's network name (for example `http://mac:8080`). A browser `Origin` header from a site Splash does not allow also gets 403. The switcher passes `Origin` through unchanged, so a web page on another site needs Splash's `--allowed-origin`.
+
+**Logs.** Splash prints `HH:MM:SS <event> · <details>` lines. The events `Error ·`, `Engine failed ·`, `Engine restart failed ·`, and `Engine stopped ·` are logged as errors, `Warning ·` and `Refused ·` as warnings, and the rest (`Loading`, `Ready`, `Started`, `Done`, ...) as info. The event must come right after the time, with that exact case. The native engine's `error: ...` lines, printed before it exits, are logged as errors too.
+
+**Stopping.** On a swap or shutdown, model-switcher sends SIGTERM to the process group. Splash then closes its engine and waits up to 15 s for the native runtime, whose cache flush alone may take up to 6 s. With the default 3 s wait, the switcher would send SIGKILL partway through; `stop_grace: 20` lets Splash finish ([stop grace period](#stop-grace-period)). The wait ends as soon as Splash exits, so a quick stop costs no extra time.
+
+For a manual check on a Mac, start model-switcher with the recipe above and a long `--timeout`, then:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3.8-27b-splash","messages":[{"role":"user","content":"Hello"}]}'
+curl -N http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3.8-27b-splash","messages":[{"role":"user","content":"Hello"}],"stream":true}'
+```
+
+The first request waits while Splash loads the model. Confirm the reply is real text, the stream ends with `data: [DONE]`, and `/stats` shows prompt and generation speed for the model. Send the same request again: prompt speed should not jump on the cache hit. Check that `Ready ·` and `Done ·` lines appear in the switcher log, and that a swap to another model stops Splash without a `did not exit in 20s, sending SIGKILL` warning. Automated tests use a local fake server and do not run Splash, download models, or need a Mac; this support has not yet been tried on real hardware.
+
 ## Statistics
 
 Model-switcher tracks runtime statistics in memory (reset on restart) and serves them at two switcher-local endpoints:
@@ -536,7 +607,7 @@ Token metrics (when the upstream reports an OpenAI `usage` field):
 
 **Prompt t/s** (`rates.prompt_tps`) uses the best prefill time each response offers, in this order (P-20260929-01):
 
-1. `timings.prompt_n` ÷ `timings.prompt_ms` (llama.cpp, TabbyAPI, Strata) — the server's own count of new prompt tokens and prefill time.
+1. `timings.prompt_n` ÷ `timings.prompt_ms` (llama.cpp, TabbyAPI, Strata) — the server's own count of new prompt tokens and prefill time. Splash's `prompt_n` includes cached tokens, so for Splash the count is `metrics.prefill.tokens` (from the later usage chunk) instead.
 2. `prompt − cached` ÷ `usage.prompt_time` (TabbyAPI), or ÷ `tensorfold.prefill_seconds` / `tensorfold.prefill_s` (TensorFold MLX / CUDA).
 3. `prompt − cached` ÷ `metrics.time_to_first_token_ms` (vLLM).
 4. `prompt − cached` ÷ the switcher's time to first token (streaming only). This also includes queueing, tokenization, the first decode step, and network time, so it reads lower than the server's own number.
@@ -551,10 +622,11 @@ Token metrics (when the upstream reports an OpenAI `usage` field):
 | SGLang | `--enable-cache-report` (SGLang reports no prefill time, so the rate uses time to first token) |
 | Strata | none |
 | TensorFold | none |
+| Splash | none |
 
 **Gen t/s** (`rates.generation_tps.avg`, plus `tpot_ms`, **Gen total**, and `max_aggregate`) likewise uses the server's own decode time first, for streaming and non-streaming requests alike (P-20260929-03):
 
-1. `timings.predicted_n` ÷ `timings.predicted_ms` (llama.cpp, TabbyAPI, Strata).
+1. `timings.predicted_n` ÷ `timings.predicted_ms` (llama.cpp, TabbyAPI, Strata). For Splash the count is `metrics.decode.tokens` instead, which leaves out the first output that `predicted_ms` does not cover.
 2. `completion_tokens` ÷ `usage.completion_time` (TabbyAPI).
 3. `completion_tokens` ÷ `metrics.generation_time_ms` (vLLM).
 4. `completion_tokens` ÷ the switcher's time from the first output chunk to the stream end (streaming only), used only when the output arrived in at least two chunks. A stream whose whole output came in one chunk — for example a TabbyAPI tool call, which is held back and sent in the final chunk — would otherwise look impossibly fast, so it is left out and counted in `rates.generation_tps.skipped_buffered`.
@@ -569,6 +641,7 @@ Speed is tokens ÷ time (N tokens, not N − 1). Flags for exact generation spee
 | SGLang | none available: streaming uses the switcher's own timing; non-streaming generation is not timed |
 | Strata | none |
 | TensorFold | none available: streaming uses the switcher's own timing; non-streaming generation is not timed |
+| Splash | none |
 
 Known limitations: these paths shadow upstreams serving the same paths (like `/v1/models`); latency samples are unbounded in memory (fine for a local dev tool); requests naming unknown models each create a per-model stats row keyed by the client-supplied name (a client-sent variant id such as `name@variant` is counted only in the global errors, not in that variant's row); the pending SSE line buffer is capped (~64 KiB) — once the cap is hit, non-line-shaped content (e.g. a binary audio stream without newlines) is discarded, so token metrics may be absent for such streams (byte counts remain exact).
 
@@ -628,8 +701,10 @@ Upstream model logs are shown as the server emitted them, without repeated model
 
 NInfer's `[YYYY-MM-DD HH:MM:SS.mmm] [info|warning|error] ninfer-serve: ...` lines retain their complete upstream text. Their outer bracketed level controls switcher formatting, so an NInfer request line marked `[info]` remains normal output even if its message contains `error` or `rejected`.
 
+Backends that print plain lines without a level field get their own rules, described in their sections: [TabbyAPI](#tabbyapi), [Strata](#strata), [TensorFold](#tensorfold), and [Splash](#splash).
+
 Colors auto-disable when output is piped or `NO_COLOR` is set.
 
 ## Shutdown
 
-Send `SIGINT` or `SIGTERM` to the switcher. On the first signal, it runs the optional shutdown hook, then gracefully stops the active upstream model process group (SIGTERM + 3s grace, then SIGKILL), including servers launched through wrapper scripts. A second `SIGINT` or `SIGTERM` cancels the main server task; owned cleanup can still delay exit. This signal policy is unchanged and does not guarantee immediate forced exit. SIGKILL, power/network failure, and forced service termination cannot guarantee hooks complete. Cleanup ownership is in memory only, with no persistent recovery after restart.
+Send `SIGINT` or `SIGTERM` to the switcher. On the first signal, it runs the optional shutdown hook, then gracefully stops the active upstream model process group (SIGTERM, then the model's [stop grace](#stop-grace-period) of 3 s by default, then SIGKILL), including servers launched through wrapper scripts. A second `SIGINT` or `SIGTERM` cancels the main server task; owned cleanup can still delay exit. This signal policy is unchanged and does not guarantee immediate forced exit. SIGKILL, power/network failure, and forced service termination cannot guarantee hooks complete. Cleanup ownership is in memory only, with no persistent recovery after restart.

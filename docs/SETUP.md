@@ -23,7 +23,8 @@ outside command arguments. Hooks must never prompt for input.
 
 Budget service stop time for the hook timeout (default 30s), plus hook process
 group cleanup (up to 3s SIGTERM grace and 5s SIGKILL confirmation), plus the same
-local launcher cleanup budget, plus server/request shutdown overhead. Configure
+local launcher cleanup budget (with the model's `stop_grace`, default 3s, as its
+SIGTERM grace), plus server/request shutdown overhead. Configure
 systemd `TimeoutStopSec` and any external supervisor's deadlines accordingly;
 a hook timeout is not the total switcher shutdown deadline. Hook descendants
 must stay in their process group; daemonized/detached workers cannot be tracked

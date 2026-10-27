@@ -1,7 +1,9 @@
 # Model Switcher Configuration
 # Each key is a model name used in API requests.
 # Each value is a startup command string, or a mapping with cmd and optional
-# shutdown_cmd / shutdown_timeout. Existing string entries remain supported.
+# shutdown_cmd / shutdown_timeout / stop_grace. Existing string entries remain
+# supported. stop_grace is the wait in seconds between SIGTERM and SIGKILL
+# when the model stops (positive number, default 3).
 # A mapping with "variants" gives one name several launch commands; pick the
 # active one at runtime from /control (see the variants example at the end).
 # Model and variant names must not contain "@".
@@ -46,6 +48,17 @@ qwen3.8-flash-next: "env -C /path/to/Strata python serve/server.py --engine stra
 # pipe buffer. Use the full path to tensorfold if it is not on PATH.
 qwen3.8-27b-tensorfold: 'bash -c "PYTHONUNBUFFERED=1 exec tensorfold serve TensorFold/Qwen3.8-27B-MLX-4bit --host 127.0.0.1 --port ${PORT} --name qwen3.8-27b-tensorfold --no-update-check"'
 
+# --- Splash: splash serve (Apple silicon M3 or newer, macOS 26.4+ only) ---
+# Splash answers only to its --model name and --served-model-name aliases, so
+# alias the config key. --model-dir serves local files without the Hub. The
+# port opens only after the model loads; raise --timeout for slow loads.
+# stop_grace: Splash needs up to ~15 s after SIGTERM to close its engine and
+# flush its cache (default wait is 3 s). Use the full path to splash (for
+# example /opt/homebrew/bin/splash) if it is not on PATH.
+qwen3.8-27b-splash:
+  cmd: "splash serve --model local/qwen3.8-27b --model-dir /path/to/Qwen3.8-27B-UD-Q4_K_M.gguf --served-model-name qwen3.8-27b-splash --port ${PORT}"
+  stop_grace: 20
+
 # --- Mode 2: Natural command (port flag replaced) ---
 # Switcher auto-assigns a free port and replaces --port 8000 with it.
 mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port 8000 --ctx-size 4096"
@@ -83,12 +96,12 @@ my-model: "./start-model.sh --ctx 8192 --threads 4"
 # active variant. Switch variants on /control or with
 # PUT /api/v1/control/model {"model": "qwen3.8-27b", "variant": "vision"}.
 # Each variant is a command string or a mapping with cmd and optional
-# shutdown_cmd / shutdown_timeout (hooks are per variant). default is optional
-# (first variant if omitted). The choice is kept in memory only: a restart
-# starts on default. Each variant's server must accept the model name, because
-# the request body is forwarded unchanged. Stats show one row per variant
-# (qwen3.8-27b@text, qwen3.8-27b@vision). A name may appear only once, so
-# remove the plain qwen3.8-27b entry above before using this one.
+# shutdown_cmd / shutdown_timeout / stop_grace (all per variant). default is
+# optional (first variant if omitted). The choice is kept in memory only: a
+# restart starts on default. Each variant's server must accept the model name,
+# because the request body is forwarded unchanged. Stats show one row per
+# variant (qwen3.8-27b@text, qwen3.8-27b@vision). A name may appear only once,
+# so remove the plain qwen3.8-27b entry above before using this one.
 # qwen3.8-27b:
 #   default: text
 #   variants:

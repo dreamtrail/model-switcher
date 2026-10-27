@@ -46,6 +46,23 @@ _TENSORFOLD_PREFIX = "[tensorfold] "
 _TENSORFOLD_ERROR_RE = re.compile(r"(?:request |stream )?error:", re.IGNORECASE)
 _TENSORFOLD_WARNING_RE = re.compile(r"warning:", re.IGNORECASE)
 
+# Splash (server/diagnostics.py print_status, runtime StderrLine.hpp logLine)
+# prints "HH:MM:SS <event> · <details>" ("--:--:--" when the runtime has no
+# local time); severity is the event. Other events fall through to the rules
+# below, which leave them info. Native "error: ..." exit lines (runtime
+# main.mm) already match the generic rule.
+_SPLASH_EVENT_RE = re.compile(
+    r"^(?:\d{2}:\d{2}:\d{2}|--:--:--) (?P<event>[^\u00b7]+?) \u00b7(?: |$)"
+)
+_SPLASH_EVENT_LEVELS = {
+    "Error": logging.ERROR,
+    "Engine failed": logging.ERROR,
+    "Engine restart failed": logging.ERROR,
+    "Engine stopped": logging.ERROR,
+    "Warning": logging.WARNING,
+    "Refused": logging.WARNING,
+}
+
 _UPSTREAM_LEVEL_RE = re.compile(
     r"^\s*(?:"
     r"(?:\d+\.)+\d+\s+"  # llama.cpp: dotted timestamp (13.31.779.183)
@@ -70,6 +87,8 @@ class ProcessHandle:
     _stderr_task: asyncio.Task | None = None
     shutdown_cmd: str | None = field(default=None, repr=False)
     shutdown_timeout: float = 30
+    # Seconds between SIGTERM and SIGKILL; None means GRACE_PERIOD.
+    stop_grace: float | None = None
     hook_succeeded: bool = False
     hook_process: ProcessHandle | None = field(default=None, repr=False)
     hook_exit_ok: bool = False
@@ -107,6 +126,9 @@ def _upstream_log_level(text: str) -> int:
         return _strata_log_level(text)
     if text.startswith(_TENSORFOLD_PREFIX):
         return _tensorfold_log_level(text[len(_TENSORFOLD_PREFIX):])
+    splash = _SPLASH_EVENT_RE.match(text)
+    if splash and splash.group("event") in _SPLASH_EVENT_LEVELS:
+        return _SPLASH_EVENT_LEVELS[splash.group("event")]
     match = (
         _NINFER_LEVEL_RE.search(text)
         or _TABBY_LEVEL_RE.search(text)
@@ -195,12 +217,13 @@ async def start_process(
 async def stop_process(handle: ProcessHandle) -> None:
     """Stop a running upstream process.
 
-    Sends SIGTERM to the process group, waits up to GRACE_PERIOD seconds,
-    then SIGKILLs the group. Falls back to direct process signals if group
-    signaling is unavailable.
+    Sends SIGTERM to the process group, waits up to ``handle.stop_grace``
+    seconds (GRACE_PERIOD when unset), then SIGKILLs the group. Falls back
+    to direct process signals if group signaling is unavailable.
     """
     proc = handle.process
     pid = proc.pid
+    grace = GRACE_PERIOD if handle.stop_grace is None else handle.stop_grace
 
     signal_error: Exception | None = None
     terminated = False
@@ -258,7 +281,7 @@ async def stop_process(handle: ProcessHandle) -> None:
                 signal_error = exc
 
         try:
-            terminated = await _wait_for_stopped(handle, GRACE_PERIOD)
+            terminated = await _wait_for_stopped(handle, grace)
         except Exception as exc:
             signal_error = exc
 
@@ -267,7 +290,7 @@ async def stop_process(handle: ProcessHandle) -> None:
                 "%s (pid %s) did not exit in %ds, sending SIGKILL",
                 handle.model_name,
                 pid,
-                GRACE_PERIOD,
+                grace,
             )
             try:
                 group_signaled = _signal_process_group(

@@ -152,11 +152,13 @@ class _SwapperLifecycleMixin:
         during the stop of the previous model cannot change what starts.
         """
         shutdown_cmd, shutdown_timeout = mc.shutdown_cmd, mc.shutdown_timeout
+        stop_grace = mc.stop_grace
 
         async def spawn() -> ProcessHandle:
             handle = await self._start_process(model_name, cmd, port)
             handle.shutdown_cmd = shutdown_cmd
             handle.shutdown_timeout = shutdown_timeout
+            handle.stop_grace = stop_grace
             return handle
 
         task = asyncio.create_task(spawn(), name=f"start-{model_name}")

@@ -2,6 +2,7 @@
 
 ## Next
 
+- [P-20261027-02] Point Strata and TensorFold docs to per-model `stop_grace` for slow stops (plan: artifacts/P-20261027-02/plan.md)
 - [P-20261026-02] Hygiene(refactor): Split README.md (635 lines, 65,313 bytes) into focused usage/backend docs; preserve guidance and repair links
 - [P-20261026-03] Hygiene(reformat): Normalize TODO sections and overlong entries; move the remaining 27 legacy Done records to TASKLOG, preserving IDs, dates and chronology
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)

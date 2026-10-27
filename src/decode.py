@@ -7,6 +7,11 @@ Backends report their own generation (decode) work in different places:
 - TabbyAPI: ``usage.completion_time`` (seconds).
 - vLLM (``--enable-per-request-metrics``): top-level
   ``metrics.generation_time_ms`` (first to last token).
+- Splash: llama.cpp-style ``timings``, but ``predicted_ms`` starts after
+  the first emission (which can hold a whole speculative block) while
+  ``predicted_n`` counts all tokens. ``metrics.decode.tokens`` leaves that
+  emission out; it comes in the later ``include_usage`` chunk (both on a
+  non-stream body) and, when seen, replaces ``predicted_n``.
 
 Without server timing, streaming requests fall back to the proxy's own
 first-chunk → end time, but only when the output arrived in at least two
@@ -37,6 +42,9 @@ class ServerDecode:
     predicted_ms: float | None = None
     completion_time_s: float | None = None
     generation_time_ms: float | None = None
+    # Splash ``metrics.decode.tokens``; may come from a later event than
+    # the ``timings`` pair it corrects.
+    decode_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +88,11 @@ def apply_server_decode(data: Any, server: ServerDecode) -> None:
         generation_ms = parse_duration(metrics.get("generation_time_ms"))
         if generation_ms is not None:
             server.generation_time_ms = generation_ms
+        decode = metrics.get("decode")
+        if isinstance(decode, dict):
+            decode_tokens = parse_count(decode.get("tokens"))
+            if decode_tokens is not None:
+                server.decode_tokens = decode_tokens
 
 
 def select_decode(
@@ -90,8 +103,9 @@ def select_decode(
 ) -> DecodeDecision:
     """Pick the decode sample for one successful request.
 
-    Priority: ``timings.predicted_n / predicted_ms`` > completion tokens /
-    ``usage.completion_time`` > completion tokens / vLLM
+    Priority: ``timings.predicted_n / predicted_ms`` (Splash: with
+    ``metrics.decode.tokens`` in place of ``predicted_n``) > completion
+    tokens / ``usage.completion_time`` > completion tokens / vLLM
     ``metrics.generation_time_ms`` > completion tokens / proxy decode time.
     The proxy time needs ``gen_chunks >= 2`` (``None`` = not checked);
     otherwise the request is skipped as buffered. Zero server times fall
@@ -101,12 +115,15 @@ def select_decode(
     if completion is None or completion < 1:
         return DecodeDecision()
     if server is not None:
+        predicted_n = server.predicted_n
+        if predicted_n is not None and server.decode_tokens is not None:
+            predicted_n = server.decode_tokens
         if (
-            server.predicted_n is not None and server.predicted_n >= 1
+            predicted_n is not None and predicted_n >= 1
             and server.predicted_ms is not None and server.predicted_ms > 0
         ):
             return DecodeDecision(DecodeSample(
-                tokens=server.predicted_n,
+                tokens=predicted_n,
                 seconds=server.predicted_ms / 1000.0,
                 server_timed=True,
             ))

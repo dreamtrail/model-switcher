@@ -23,10 +23,13 @@ class ModelConfig:
     port: int = 0  # resolved port
     shutdown_cmd: str | None = field(default=None, repr=False)
     shutdown_timeout: float = 30
+    # Seconds between SIGTERM and SIGKILL on stop; None means the process
+    # manager's GRACE_PERIOD (3 s).
+    stop_grace: float | None = None
     # Raw launch spec from the file (cmd before port rewriting, hook,
-    # hook timeout, hash of the script file in script mode or None). A
-    # config reload compares it to spot changed entries; None means
-    # unknown (built in code), which always counts as changed.
+    # hook timeout, hash of the script file in script mode or None, stop
+    # grace). A config reload compares it to spot changed entries; None
+    # means unknown (built in code), which always counts as changed.
     spec: tuple | None = field(default=None, repr=False, compare=False)
 
 
@@ -180,15 +183,15 @@ def load_config(path: str | Path) -> Config:
                 f"Model '{name}' value must be a string or mapping with 'cmd', "
                 f"got {type(value).__name__}"
             )
-        cmd, shutdown_cmd, shutdown_timeout = _parse_launch(
+        cmd, shutdown_cmd, shutdown_timeout, stop_grace = _parse_launch(
             f"Model '{name}'", value
         )
         models[name] = ModelConfig(
             name=name, cmd=cmd, shutdown_cmd=shutdown_cmd,
-            shutdown_timeout=shutdown_timeout,
+            shutdown_timeout=shutdown_timeout, stop_grace=stop_grace,
             spec=(
                 cmd, shutdown_cmd, shutdown_timeout,
-                script_fingerprint(cmd),
+                script_fingerprint(cmd), stop_grace,
             ),
         )
 
@@ -199,13 +202,26 @@ def load_config(path: str | Path) -> Config:
     return Config(models=models, variants=variants)
 
 
-_LAUNCH_KEYS = ("cmd", "shutdown_cmd", "shutdown_timeout")
+_LAUNCH_KEYS = ("cmd", "shutdown_cmd", "shutdown_timeout", "stop_grace")
 _GROUP_KEYS = ("variants", "default")
+
+
+def _is_positive_finite(value: object) -> bool:
+    """True for a positive finite int or float (never a bool)."""
+    try:
+        return (
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(value)
+            and value > 0
+        )
+    except OverflowError:
+        return False
 
 
 def _parse_launch(
     label: str, value: str | dict
-) -> tuple[str, str | None, float]:
+) -> tuple[str, str | None, float, float | None]:
     """Validate one launch spec (string or mapping); return its parts."""
     cmd = value if isinstance(value, str) else value.get("cmd", "")
     # A blank ``cmd:`` (None) stays an "empty command" error, as before.
@@ -218,6 +234,7 @@ def _parse_launch(
 
     shutdown_cmd = None
     shutdown_timeout = 30
+    stop_grace = None
     if isinstance(value, dict):
         if "shutdown_cmd" in value:
             shutdown_cmd = value["shutdown_cmd"]
@@ -237,18 +254,16 @@ def _parse_launch(
                 raise ValueError(
                     f"{label} shutdown_timeout requires shutdown_cmd"
                 )
-            try:
-                valid_timeout = (
-                    not isinstance(shutdown_timeout, bool)
-                    and isinstance(shutdown_timeout, (int, float))
-                    and math.isfinite(shutdown_timeout)
-                    and shutdown_timeout > 0
-                )
-            except OverflowError:
-                valid_timeout = False
-            if not valid_timeout:
+            if not _is_positive_finite(shutdown_timeout):
                 raise ValueError(f"{label} has an invalid shutdown_timeout")
-    return cmd, shutdown_cmd, shutdown_timeout
+        if "stop_grace" in value:
+            stop_grace = value["stop_grace"]
+            if not _is_positive_finite(stop_grace):
+                raise ValueError(
+                    f"{label} has an invalid stop_grace: "
+                    "use a positive number of seconds"
+                )
+    return cmd, shutdown_cmd, shutdown_timeout, stop_grace
 
 
 def _parse_variant_entry(
@@ -296,14 +311,16 @@ def _parse_variant_entry(
             for key in spec:
                 if key not in _LAUNCH_KEYS:
                     raise ValueError(f"{vlabel} has unknown key '{key}'")
-        cmd, shutdown_cmd, shutdown_timeout = _parse_launch(vlabel, spec)
+        cmd, shutdown_cmd, shutdown_timeout, stop_grace = _parse_launch(
+            vlabel, spec
+        )
         model_id = variant_id(name, variant)
         models[model_id] = ModelConfig(
             name=model_id, cmd=cmd, shutdown_cmd=shutdown_cmd,
-            shutdown_timeout=shutdown_timeout,
+            shutdown_timeout=shutdown_timeout, stop_grace=stop_grace,
             spec=(
                 cmd, shutdown_cmd, shutdown_timeout,
-                script_fingerprint(cmd),
+                script_fingerprint(cmd), stop_grace,
             ),
         )
         names.append(variant)

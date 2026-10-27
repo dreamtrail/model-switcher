@@ -155,3 +155,26 @@ User approved the plan 2026-10-13. Fixes TODO P-20261013-08.
 
 ### Verification Trade-off
 - **Real interpreter as the binary** — `tests/test_config_reload_e2e.py` starts a real HTTP server with `sys.executable` given by absolute path, calls it, and reloads. The unit tests use small fake binaries (NUL bytes, invalid UTF-8, bad bytes after the first chunk). Real model servers such as `llama-server` were not run.
+
+## P-20261027-01 — Splash Compatibility
+
+User asked for Splash support on 2026-10-27; the plan was restated in chat and the stop-grace choice was made with the user (below).
+
+### Backend Integration
+- **Reuse the generic foreground-command contract** — Splash (incoai/splash) at commit `39a9738` (release 1.4.1) runs `splash serve --model OWNER/REPO [--model-dir PATH] --port N`, binds `127.0.0.1` by default, listens only after the engine is ready, answers `/health` with 200 `{"status": "ok"}`, and stops on SIGTERM. No backend adapter, dependency, health change, or proxy change is added. It runs only on Apple M3 or newer with macOS 26.4+, so it was not run here.
+- **Recipe aliases the config key** — Splash answers 404 `model_not_found` to a request `model` that is not its `--model` name or a `--served-model-name` alias, and the switcher forwards the body unchanged. The recipe adds `--served-model-name <config key>` and uses `--model-dir` so a start does not download the model.
+- **Idle release left to the user** — Splash's own `--idle-release` (default 10m) frees the weights but keeps the process and `/health` at 200; the next request reloads them. It does not conflict with the switcher's `--idle-timeout`, which stops the process, so README explains both and suggests `--idle-release off` for one policy. Not verified on real hardware.
+
+### Prompt and Generation Speed
+- **Processed counts from `metrics`** — Splash's `timings` look like llama.cpp's, but `timings.prompt_n` is the whole prompt (cached tokens included) and `timings.predicted_n` includes the first emission, which `timings.predicted_ms` does not cover. Splash's own counts for those intervals are `metrics.prefill.tokens` and `metrics.decode.tokens`. When present, they replace `prompt_n` and `predicted_n` as the token counts for `prompt_ms` and `predicted_ms`. Without the change a cache hit made prompt speed many times too high.
+- **Combine across events for these two counts only** — `timings` arrive on the stream's finish chunk and `metrics` in the later `include_usage` chunk, so the counts are stored on their own and joined at selection. The rule that a `prompt_n`/`prompt_ms` or `predicted_n`/`predicted_ms` pair comes from one event is unchanged, and so is vLLM's `metrics.time_to_first_token_ms` / `generation_time_ms` handling (the new counts are used only with a `timings` pair). A count of 0 falls through like `prompt_n` 0.
+
+### Logs
+- **Levels from the event word** — Splash prints `HH:MM:SS <event> · <details>`. Events `Error`, `Engine failed`, `Engine restart failed`, and `Engine stopped` mean error; `Warning` and `Refused` mean warning. Other Splash lines fall through to the existing rules, which leave them info. The match needs the time, the exact event, and ` ·`, so other backends' lines (TabbyAPI `HH:MM:SS.mmm LEVEL:`, llama.cpp, vLLM, NInfer, Strata, TensorFold) are classified as before. The native runtime's `error: ...` exit lines already matched the generic rule. `Template error ·` (a request whose chat template failed, answered 400) stays info.
+
+### Stop Grace
+- **Per-model `stop_grace`** — after SIGTERM, Splash's runtime waits up to 15 s for the native engine (cache flush budget 6 s); the global 3 s wait would SIGKILL it partway. Options were raising the global wait for every backend or a per-model setting. User decision 2026-10-27: "Per-model setting". New optional config field `stop_grace` (seconds, positive finite number, not a boolean; allowed in a mapping entry or a variant, not next to `variants`; no `shutdown_cmd` needed). Unset means `GRACE_PERIOD` (3 s), read at stop time.
+- **Carried on the process handle** — the value is copied to the handle at spawn, like `shutdown_cmd`, so a reload does not change the wait of a running model. `stop_grace` is part of the reload spec, so a changed value marks the entry changed. Recipe value: `stop_grace: 20`. The wait ends when the process group is gone, so it costs time only on a slow stop.
+
+### Verification Trade-off
+- **Use a deterministic loopback fake pinned to `39a9738`** — a stdlib HTTP/1.1 fake installed as `splash` on `PATH` and launched through the unmodified `config.example.yaml` recipe covers bind-then-listen readiness, `/health`, alias acceptance, the Host check, an `Origin` refusal, JSON and SSE (keepalive comment, `prompt_progress`, empty keepalive chunk, finish chunk with `timings`, usage chunk with `metrics`, `[DONE]`), cache-hit prompt speed, decode speed, log levels, and a 1 s engine close that finishes only because of `stop_grace` (and is killed without it). Splash is not installed, no model is downloaded, and no Mac is used; real-hardware behavior (load, idle release, stop time) is not verified, and README documents a manual check.

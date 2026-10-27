@@ -19,6 +19,10 @@ Response shapes follow the upstream sources pinned in the plan record:
   ``tensorfold`` object (MLX ``prefill_seconds``, CUDA ``prefill_s``, both
   seconds) on the non-stream body and on the stream's finish chunk; with
   ``include_usage`` the usage follows in its own ``choices: []`` chunk.
+- Splash 39a9738 (P-20261027-01): llama.cpp-style ``timings`` on the
+  stream's finish chunk, but ``prompt_n`` counts cached tokens too; the
+  new count ``metrics.prefill.tokens`` comes with usage in the later
+  ``include_usage`` chunk (``server/metrics.py``, ``server/server.py``).
 
 Upstreams are loopback fakes; delays make the proxy TTFT much larger than
 the server's own prefill time so the two sources are distinguishable.
@@ -522,6 +526,128 @@ async def test_tensorfold_never_reporting_cache_is_skipped(monkeypatch):
         assert prompt["skipped_unknown_cache"] == 1
         assert prompt["avg"] is None
         assert block["tokens"]["prefill"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Splash
+# ---------------------------------------------------------------------------
+
+SPLASH_USAGE = {
+    "prompt_tokens": 300, "completion_tokens": 10, "total_tokens": 310,
+    "prompt_tokens_details": {"cached_tokens": 256},
+    "completion_tokens_details": {"reasoning_tokens": 0},
+}
+# timings_dict: prompt_n is all prompt tokens, cached ones included;
+# prompt_per_second is Splash's own prefill_tokens / prompt_ms.
+SPLASH_TIMINGS = {
+    "prompt_n": 300, "prompt_ms": 88.0, "prompt_per_second": 500.0,
+    "predicted_n": 10, "predicted_ms": 40.0, "predicted_per_second": 200.0,
+    "cache_n": 256,
+}
+# metrics_dict: prefill.tokens is the uncached part that was prefilled.
+SPLASH_METRICS = {
+    "prefill": {"tokens": 44},
+    "decode": {"tokens": 8},
+    "request_latency": {
+        "start_to_first_token_ms": 88.0, "first_token_to_done_ms": 40.0,
+        "wall_ms": 130.0, "ttft_ms": 90.0, "queue_to_start_ms": 2.0,
+        "stream_tokens_per_second": 200.0,
+    },
+    "cache": {"status": "hit", "matched_tokens": 256,
+              "deduplicated_tokens": 0, "lane": 0},
+}
+
+
+async def test_splash_stream_cache_hit_uses_prefill_tokens(monkeypatch):
+    final = [
+        # Finish chunk: timings only.
+        _chunk({}, finish_reason="stop", timings=SPLASH_TIMINGS),
+        # include_usage chunk: usage and metrics, no choices.
+        _chunk(choices=False, usage=SPLASH_USAGE, metrics=SPLASH_METRICS),
+    ]
+    data = await _run(monkeypatch, _streaming_app(final), [True])
+    for block in _blocks(data):
+        prompt = block["rates"]["prompt_tps"]
+        # 44 prefilled tokens / 88 ms, not 300 (cached included) / 88 ms.
+        assert prompt["avg"] == pytest.approx(500.0)
+        assert prompt["server_timed_share"] == 1.0
+        assert block["tokens"]["prefill"] == 44
+        assert block["tokens"]["cached"] == 256
+        assert block["tokens"]["prompt"] == 300
+
+
+async def test_splash_non_stream_body_uses_prefill_tokens(monkeypatch):
+    body = {
+        "id": "chatcmpl-1", "object": "chat.completion", "created": 0,
+        "model": MODEL,
+        "choices": [{"index": 0, "finish_reason": "stop",
+                     "message": {"role": "assistant", "content": "Hi"}}],
+        "usage": SPLASH_USAGE,
+        "metrics": SPLASH_METRICS,
+        "timings": SPLASH_TIMINGS,
+    }
+    data = await _run(monkeypatch, _json_app(body, delay=0.01), [False])
+    for block in _blocks(data):
+        prompt = block["rates"]["prompt_tps"]
+        assert prompt["avg"] == pytest.approx(500.0)
+        assert block["tokens"]["prefill"] == 44
+
+
+def test_splash_prefill_tokens_combine_across_events():
+    from src.prefill import (
+        ServerPrefill, apply_server_prefill, select_prefill,
+    )
+
+    server = ServerPrefill()
+    apply_server_prefill({"timings": SPLASH_TIMINGS}, server)
+    # Before the usage chunk, prompt_n is all that is known.
+    sample = select_prefill(300, 256, server, None, cache_learned=True)
+    assert sample.sample.tokens == 300
+    apply_server_prefill({"metrics": SPLASH_METRICS}, server)
+    sample = select_prefill(300, 256, server, None, cache_learned=True)
+    assert (sample.sample.tokens, sample.sample.seconds) == (44, 0.088)
+    assert sample.sample.server_timed
+
+
+@pytest.mark.parametrize("tokens", [None, -1, 1.5, True, "44"])
+def test_splash_invalid_prefill_tokens_are_ignored(tokens):
+    from src.prefill import (
+        ServerPrefill, apply_server_prefill, select_prefill,
+    )
+
+    server = ServerPrefill()
+    apply_server_prefill({"timings": SPLASH_TIMINGS,
+                          "metrics": {"prefill": {"tokens": tokens}}}, server)
+    assert server.prefill_tokens is None
+    sample = select_prefill(300, 256, server, None, cache_learned=True)
+    assert sample.sample.tokens == 300
+
+
+def test_splash_zero_prefill_tokens_is_not_a_timings_sample():
+    from src.prefill import (
+        ServerPrefill, apply_server_prefill, select_prefill,
+    )
+
+    server = ServerPrefill()
+    apply_server_prefill({"timings": SPLASH_TIMINGS,
+                          "metrics": {"prefill": {"tokens": 0}}}, server)
+    # Falls through like prompt_n == 0; prompt - cached = 0 is no sample.
+    decision = select_prefill(256, 256, server, 0.2, cache_learned=True)
+    assert decision.sample is None
+
+
+def test_prefill_tokens_without_timings_leave_vllm_ttft_rule():
+    from src.prefill import (
+        ServerPrefill, apply_server_prefill, select_prefill,
+    )
+
+    server = ServerPrefill()
+    apply_server_prefill({"metrics": {"time_to_first_token_ms": 100.0,
+                                      "prefill": {"tokens": 7}}}, server)
+    assert server.ttft_ms == 100.0
+    decision = select_prefill(50, 10, server, None, cache_learned=True)
+    # vLLM rule: prompt - cached over the server's time to first token.
+    assert (decision.sample.tokens, decision.sample.seconds) == (40, 0.1)
 
 
 # ---------------------------------------------------------------------------

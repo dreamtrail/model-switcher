@@ -134,6 +134,35 @@ class TestReloadModels:
         assert kind == "success"
         assert summary["changed"] == ["a"]
 
+    @pytest.mark.parametrize(
+        ("before", "after", "changed"),
+        [
+            ({"cmd": "serve-a"}, {"cmd": "serve-a", "stop_grace": 20}, True),
+            ({"cmd": "serve-a", "stop_grace": 20},
+             {"cmd": "serve-a", "stop_grace": 30}, True),
+            ({"cmd": "serve-a", "stop_grace": 20}, {"cmd": "serve-a"}, True),
+            ({"cmd": "serve-a", "stop_grace": 20},
+             {"cmd": "serve-a", "stop_grace": 20}, False),
+        ],
+    )
+    async def test_stop_grace_changes_count_as_changed(
+        self, tmp_path, fakes, cleanup, before, after, changed
+    ):
+        """P-20261027-01: stop_grace is part of the launch spec."""
+        path = tmp_path / "config.yaml"
+        write(path, {"a": before})
+        swapper = make_swapper(path)
+        cleanup.append(swapper)
+        old = swapper.config.models["a"]
+        write(path, {"a": after})
+
+        kind, summary = swapper.control_reload_config()
+
+        assert kind == "success"
+        assert summary["changed"] == (["a"] if changed else [])
+        assert (swapper.config.models["a"] is old) is not changed
+        assert swapper.config.models["a"].stop_grace == after.get("stop_grace")
+
     async def test_new_ports_avoid_the_running_process_and_kept_entries(
         self, tmp_path, fakes, cleanup, monkeypatch
     ):
@@ -293,6 +322,32 @@ class TestRunningModel:
 
         assert fakes.started[-1] == ("b", resolved_b.cmd, resolved_b.port)
         assert swapper._current.shutdown_cmd == "true hook-b"
+
+    async def test_running_model_keeps_its_stop_grace_until_restarted(
+        self, tmp_path, fakes, cleanup
+    ):
+        """P-20261027-01: the handle holds the stop_grace it started with."""
+        path = tmp_path / "config.yaml"
+        write(path, {"a": {"cmd": "serve-a", "stop_grace": 20}, "b": "serve-b"})
+        swapper = make_swapper(path)
+        cleanup.append(swapper)
+        assert await swapper.control_load_model("a") == "success"
+        handle = swapper._current
+        assert handle.stop_grace == 20
+        write(path, {"a": {"cmd": "serve-a", "stop_grace": 45}, "b": "serve-b"})
+
+        kind, summary = swapper.control_reload_config()
+
+        assert kind == "success"
+        assert summary["changed"] == ["a"]
+        assert summary["running_changed"] is True
+        assert swapper._current is handle and handle.stop_grace == 20
+
+        assert await swapper.control_unload_model() == "success"
+        assert await swapper.control_load_model("a") == "success"
+        assert swapper._current.stop_grace == 45
+        assert await swapper.control_load_model("b") == "success"
+        assert swapper._current.stop_grace is None
 
 
 class TestRefusals:

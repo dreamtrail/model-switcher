@@ -35,3 +35,4 @@
 - [P-20260913-04] Split proxy tests into HTTP/buffered, stream-options and SSE modules; preserve all cases and repair the moved-test reference — DONE 2026-10-26 13:52 +0900
 - [P-20260826-03] Confirm the blank line before handle.stopped in stop_process is already absent; close stale cleanup record — DONE 2026-10-26 14:21 +0900
 - [P-20261026-04] Save the session handoff and size-hygiene follow-ups; keep HANDOFF local-only — DONE 2026-10-26 14:26 +0900
+- [P-20261027-01] Add Splash backend compatibility; per-model `stop_grace` stop wait — DONE 2026-10-27 18:51 +0900
