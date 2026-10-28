@@ -81,11 +81,14 @@ httpd.serve_forever()
 
 
 @asynccontextmanager
-async def _stack(tmp_path: Path, monkeypatch, *, gate_a=False, **kwargs):
+async def _stack(
+    tmp_path: Path, monkeypatch, *, gate_a=False, gate_b=False, **kwargs
+):
     """Swapper over real models ``a`` and ``b`` behind a TestServer."""
     monkeypatch.delenv("PYTHONUNBUFFERED", raising=False)
     events = tmp_path / "events"
     gate = tmp_path / "gate-a"
+    gate_b_file = tmp_path / "gate-b"
     server_py = tmp_path / "server.py"
     server_py.write_text(SERVER)
 
@@ -98,7 +101,7 @@ async def _stack(tmp_path: Path, monkeypatch, *, gate_a=False, **kwargs):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump({
         "a": cmd("a", *(("--gate", str(gate)) if gate_a else ())),
-        "b": cmd("b"),
+        "b": cmd("b", *(("--gate", str(gate_b_file)) if gate_b else ())),
     }, sort_keys=False))
     kwargs.setdefault("timeout", 30)
     kwargs.setdefault("idle_timeout", 0)
@@ -128,7 +131,8 @@ async def _stack(tmp_path: Path, monkeypatch, *, gate_a=False, **kwargs):
                 )
 
             yield SimpleNamespace(
-                swapper=swapper, client=client, chat=chat, log=log, gate=gate,
+                swapper=swapper, client=client, chat=chat, log=log,
+                gate=gate, gate_b=gate_b_file,
             )
     finally:
         await server.close()
@@ -231,6 +235,36 @@ async def test_off_load_in_progress_joins_same_model_and_refuses_another(
         assert await asyncio.wait_for(joiner, 10) == (200, {"served_by": "a"})
         assert stack.swapper.active_model == "a"
     assert stack.log() == ["launch a", "stop a"]
+
+
+async def test_off_manual_switch_in_progress_refuses_old_and_joins_new(
+    tmp_path, monkeypatch
+):
+    async with _stack(tmp_path, monkeypatch, gate_b=True) as stack:
+        assert await stack.chat("a") == (200, {"served_by": "a"})
+        switch = asyncio.create_task(
+            stack.client.put(
+                "/api/v1/control/model", json={"model": "b"}, headers=HEADERS
+            )
+        )
+        await _until(
+            lambda: stack.swapper.control_state()["pending_model"] == "b"
+        )
+
+        # The manual switch to b is in progress: a is refused, b joins.
+        status, body = await stack.chat("a")
+        assert (status, _code(body)) == (409, "automatic_switch_disabled")
+        joiner = asyncio.create_task(stack.chat("b"))
+        await _until(lambda: len(stack.swapper._queue) == 1)
+        assert not switch.done() and not joiner.done()
+
+        stack.gate_b.touch()
+        response = await asyncio.wait_for(switch, 10)
+        assert response.status == 200
+        assert (await response.json())["active_model"] == "b"
+        assert await asyncio.wait_for(joiner, 10) == (200, {"served_by": "b"})
+        assert stack.swapper.active_model == "b"
+    assert stack.log() == ["launch a", "stop a", "launch b", "stop b"]
 
 
 async def test_off_after_failed_load_another_model_loads(tmp_path, monkeypatch):

@@ -505,7 +505,7 @@ CONTROL_HTML = (
 <section class="card section">
   <h2>Runtime settings</h2>
   <div class="body">
-    <label class="setting"><input id="automatic-switch" type="checkbox"> Allow request-driven model changes</label>
+    <label class="setting"><input id="automatic-switch" type="checkbox"> Let requests switch away from the running model</label>
     <label class="setting"><input id="quick-switch" type="checkbox"> Let a newer target supersede a pending load</label>
     <label class="setting">Idle timeout (seconds) <input id="idle-timeout" type="number" min="0" step="any"></label>
     <button id="save-settings" class="primary" type="button">Apply settings</button>
