@@ -132,7 +132,7 @@ async def test_cleans_resistant_child_after_hook_launcher_exit(tmp_path, monkeyp
     import os
     import signal
     import src.process_manager as pm
-    from tests.test_process_manager import _wait_for_pid_gone
+    from tests.process_helpers import _wait_for_pid_gone
 
     monkeypatch.setattr(pm, "GRACE_PERIOD", 0.1)
     pid_file = tmp_path / "child.pid"

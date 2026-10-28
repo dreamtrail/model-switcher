@@ -5,7 +5,7 @@ Expected behavior is derived from plan P-20260918-02.  AC-to-test map:
 - AC2/AC3: test_quick_off_same_target_joins_and_different_target_refused
 - AC4/AC5: test_rapid_a_b_c_fans_out_only_after_cleanup
 - AC6: test_cleanup_failure_fans_out_all_generations_and_allows_retry and
-  test_process_manager.py stop-failure/process-group tests
+  test_process_manager_lifecycle.py stop-failure/process-group tests
 - AC7: spawn/post-readiness race tests and the gated A/B/C fan-out test
 - AC8: TestCompatibilityAndAdmission and test_same_generation_timeout_...
 - AC9: test_request_for_prior_a_supersedes_mistaken_b
