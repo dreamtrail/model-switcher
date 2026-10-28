@@ -112,6 +112,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--automatic-switch",
+        action="store_true",
+        default=False,
+        help=(
+            "Let a request for another model replace the running model "
+            "(default: off; a request still loads its model when none is "
+            "running)"
+        ),
+    )
+    parser.add_argument(
         "--sse-keepalive",
         type=parse_non_negative_seconds,
         default=15.0,
@@ -231,6 +241,7 @@ async def _main(argv: list[str] | None = None) -> None:
         timeout=args.timeout,
         idle_timeout=args.idle_timeout,
         quick_switch=args.quick_switch,
+        automatic_switch=args.automatic_switch,
         sse_keepalive=args.sse_keepalive,
         client=client,
     )

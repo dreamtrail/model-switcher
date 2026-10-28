@@ -57,7 +57,7 @@ class TestLifecycleRaces:
         monkeypatch.setattr(module, "wait_for_ready", ready)
         monkeypatch.setattr(module, "stop_process", stop)
         monkeypatch.setattr(module, "proxy_request", proxy)
-        swapper = Swapper(make_config(), quick_switch=True)
+        swapper = Swapper(make_config(), quick_switch=True, automatic_switch=True)
         server = await make_server(swapper)
         try:
             async with TestClient(server) as client:
@@ -109,7 +109,7 @@ class TestLifecycleRaces:
         monkeypatch.setattr(module, "start_process", start)
         monkeypatch.setattr(module, "wait_for_ready", ready)
         monkeypatch.setattr(module, "stop_process", stop)
-        swapper = Swapper(make_config(), quick_switch=True)
+        swapper = Swapper(make_config(), quick_switch=True, automatic_switch=True)
         admission, generation = swapper._admit_request("a")
         assert admission == "owner"
 

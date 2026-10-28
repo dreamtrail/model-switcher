@@ -57,6 +57,8 @@ class TestRuntimePolicyAndRaces:
     async def test_admitted_inference_finishes_after_automatic_switch_is_disabled(
         self, monkeypatch
     ):
+        # Off allows joining the load in progress; only another model is
+        # rejected (P-20261028-03).
         import src.swapper as module
 
         ready_entered = asyncio.Event()
@@ -79,18 +81,23 @@ class TestRuntimePolicyAndRaces:
         monkeypatch.setattr(module, "wait_for_ready", ready)
         monkeypatch.setattr(module, "stop_process", stop)
         monkeypatch.setattr(module, "proxy_request", proxy)
-        swapper = Swapper(make_config(), idle_timeout=0)
+        swapper = Swapper(make_config(), idle_timeout=0, automatic_switch=True)
         admitted = asyncio.create_task(swapper.handle_request(StubRequest("a")))
         await asyncio.wait_for(ready_entered.wait(), 1)
         assert swapper.control_apply_settings(
-            automatic_switch=False, quick_switch=False, idle_timeout_seconds=0
+            automatic_switch=False, quick_switch=True, idle_timeout_seconds=0
         ) == "success"
-        pending_new = await swapper.handle_request(StubRequest("a"))
-        assert pending_new.status == 409
-        assert response_body(pending_new)["error"]["code"] == "automatic_switch_disabled"
+        other = await swapper.handle_request(StubRequest("b"))
+        assert other.status == 409
+        assert response_body(other)["error"]["code"] == "automatic_switch_disabled"
+        joined = asyncio.create_task(swapper.handle_request(StubRequest("a")))
+        await asyncio.sleep(0)
+        assert not joined.done()
         release_ready.set()
         completed = await asyncio.wait_for(admitted, 1)
         assert completed.status == 200
+        assert (await asyncio.wait_for(joined, 1)).status == 200
+        assert swapper.active_model == "a"
         await swapper.shutdown()
 
     async def test_manual_and_inference_share_quick_latest_wins_ordering(
@@ -128,7 +135,10 @@ class TestRuntimePolicyAndRaces:
         monkeypatch.setattr(module, "wait_for_ready", ready)
         monkeypatch.setattr(module, "stop_process", stop)
         monkeypatch.setattr(module, "proxy_request", proxy)
-        swapper = Swapper(make_config(), quick_switch=True, idle_timeout=0)
+        swapper = Swapper(
+            make_config(), quick_switch=True, idle_timeout=0,
+            automatic_switch=True,
+        )
         manual = asyncio.create_task(swapper.control_load_model("a"))
         await asyncio.wait_for(a_ready.wait(), 1)
         inference = asyncio.create_task(swapper.handle_request(StubRequest("b")))
@@ -176,4 +186,46 @@ class TestRuntimePolicyAndRaces:
         release_proxy.set()
         assert (await asyncio.wait_for(request, 1)).status == 200
         assert swapper.control_state()["inflight_requests"] == 0
+        await swapper.shutdown()
+
+    async def test_off_request_may_load_after_failed_stop_and_retries_it(
+        self, monkeypatch
+    ):
+        """A retained, unhealthy handle is not running: retry stop, then load."""
+        import src.swapper as module
+
+        attempts = []
+
+        async def start(model, cmd, port):
+            return handle(model, 2)
+
+        async def ready(*args, **kwargs):
+            return None
+
+        async def stop(tracked):
+            attempts.append(tracked.model_name)
+            if len(attempts) == 1:
+                raise RuntimeError("still stuck")
+            tracked.process.returncode = 0
+
+        async def proxy(*args, **kwargs):
+            return web.json_response({"ok": True})
+
+        monkeypatch.setattr(module, "start_process", start)
+        monkeypatch.setattr(module, "wait_for_ready", ready)
+        monkeypatch.setattr(module, "stop_process", stop)
+        monkeypatch.setattr(module, "proxy_request", proxy)
+        swapper = Swapper(make_config(), idle_timeout=0)
+        assert swapper.automatic_switch is False
+        swapper._current, swapper._current_model = handle("a"), "a"
+        swapper._healthy, swapper._cleanup_failed = False, True
+        assert swapper.control_state()["lifecycle"] == "cleanup_failed"
+
+        failed = await swapper.handle_request(StubRequest("b"))
+        assert failed.status == 503
+        assert response_body(failed)["error"]["code"] == "process_cleanup_failed"
+        loaded = await swapper.handle_request(StubRequest("b"))
+        assert loaded.status == 200
+        assert attempts == ["a", "a"]
+        assert swapper.active_model == "b"
         await swapper.shutdown()

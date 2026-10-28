@@ -178,3 +178,22 @@ User asked for Splash support on 2026-10-27; the plan was restated in chat and t
 
 ### Verification Trade-off
 - **Use a deterministic loopback fake pinned to `39a9738`** — a stdlib HTTP/1.1 fake installed as `splash` on `PATH` and launched through the unmodified `config.example.yaml` recipe covers bind-then-listen readiness, `/health`, alias acceptance, the Host check, an `Origin` refusal, JSON and SSE (keepalive comment, `prompt_progress`, empty keepalive chunk, finish chunk with `timings`, usage chunk with `metrics`, `[DONE]`), cache-hit prompt speed, decode speed, log levels, and a 1 s engine close that finishes only because of `stop_grace` (and is killed without it). Splash is not installed, no model is downloaded, and no Mac is used; real-hardware behavior (load, idle release, stop time) is not verified, and README documents a manual check.
+
+## P-20261028-03 — Automatic switching off by default
+
+User decision 2026-10-28: "let automatic_switch be off by default". Two follow-up choices were made with the user: "Load it" when nothing is loaded, and "CLI flag, off".
+
+### Default and Flag
+- **Start with automatic switching off** — a request no longer swaps away a running model unless the user turns it on. This replaces "restart restores automatic switching to enabled" in [P-20260923-01](archive.md#p-20260923-01--same-listener-control-panel-and-runtime-api) and [P-20261013-04](#p-20261013-04--reload-config-without-restart); those records stay as history.
+- **`--automatic-switch` turns it on at start** — a `store_true` flag passed to `Swapper(automatic_switch=...)`, like `--quick-switch`. The `/control` checkbox and `PUT /api/v1/control/settings` still change it at runtime, and a restart restores the flag value. No config YAML field and no API shape change.
+
+### When a Request May Load
+- **Load when nothing is running or loading** — with the setting off, a request may still load its model at start, after an idle or manual unload, after the process exits, or after a failed load. Before this change the same setting refused those loads too, which made "off" unusable as a default.
+- **Exact gate** — an automatic (inference) request is refused with 409 `automatic_switch_disabled` when the setting is off and either a load is in progress (`_swapping`) with a target (`_desired_model`) other than the requested model, or no load is in progress and `active_model` (a live process that passed its health check) is another model. A dead process or a retained handle after a failed stop is not running, so the request owns a load, which first retries the stop. Shutdown and stop-only `control_busy` keep their earlier precedence; unknown models stay 404 before admission.
+- **Joining is allowed** — a request for the model being loaded joins that load. The old gate refused it because the model was not yet active.
+- **A different-model request during a load gets `automatic_switch_disabled`** — not `switch_in_progress`, and with `--quick-switch` it does not supersede the load. This also holds during a manual switch from A to B: a request for A is refused, where the old gate let it pass and, with quick switching, supersede the manual load.
+- **Unchanged** — with the setting on, admission is as before. Model-less requests go to a running model and get 400 when none runs, either way. Manual loads are not gated.
+
+### Verification Trade-off
+- **Real processes for the policy** — `tests/test_automatic_switch_default.py` starts small real HTTP servers through the real config loader, port rewriting, process start/stop, health checks, Swapper, proxy, and control API. It covers load from empty, refusal while another model runs, manual switch and unload, a SIGKILLed process, idle unload, joining a gated load, a timed-out load, and the setting turned on. The failed-stop retry uses a faked stop (`tests/test_control_lifecycle_policy.py`). No real model servers were run.
+- **Existing tests changed on purpose** — tests that check switching away from a running model, or quick-switch supersession by requests, now pass `automatic_switch=True`. Tests that pinned the default state now expect `false`. One test that expected a join to be refused now expects it to succeed and a different model to be refused.

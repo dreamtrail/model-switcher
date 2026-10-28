@@ -189,7 +189,7 @@ class TestRouting:
             assert (await response.json())["served_by"] == "qwen@text"
 
     async def test_plain_model_routes_as_before(self, monkeypatch):
-        async with _variant_stack(monkeypatch) as stack:
+        async with _variant_stack(monkeypatch, automatic_switch=True) as stack:
             status, data = await _chat(stack.client, "plain")
             assert (status, data["served_by"]) == (200, "plain")
             status, data = await _chat(stack.client, "qwen")
@@ -326,7 +326,7 @@ class TestControlVariantSwitch:
             "lifecycle": "idle",
             "inflight_requests": 0,
             "settings": {
-                "automatic_switch": True,
+                "automatic_switch": False,
                 "quick_switch": False,
                 "idle_timeout_seconds": 0.0,
             },

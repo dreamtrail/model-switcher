@@ -38,3 +38,4 @@
 - [P-20261027-01] Add Splash backend compatibility; per-model `stop_grace` stop wait — DONE 2026-10-27 18:51 +0900
 - [P-20261027-02] Point Strata and TensorFold docs to per-model `stop_grace` for slow stops — DONE 2026-10-27 18:57 +0900
 - [P-20261028-01] Send SSE `: keepalive` comments while a streaming engine is quiet (`--sse-keepalive`, default 15 s, 0 = off) — DONE 2026-10-28 13:48 +0900
+- [P-20261028-03] Start with automatic_switch off (`--automatic-switch` or /control turns it on); a request still loads a model when none is running — DONE 2026-10-28 15:03 +0900

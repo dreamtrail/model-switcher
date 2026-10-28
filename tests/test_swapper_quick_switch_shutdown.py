@@ -132,7 +132,10 @@ class TestCancellationAndShutdown:
 
         monkeypatch.setattr(module, "start_process", start)
         monkeypatch.setattr(module, "stop_process", stop)
-        swapper = Swapper(make_config(), idle_timeout=0, client=client)
+        swapper = Swapper(
+            make_config(), idle_timeout=0, client=client,
+            automatic_switch=True,
+        )
         swapper._current = handle
         swapper._current_model = "a"
         swapper._healthy = True
@@ -264,7 +267,7 @@ class TestCancellationAndShutdown:
 
         monkeypatch.setattr(module, "start_process", start)
         monkeypatch.setattr(module, "stop_process", stop)
-        swapper = Swapper(make_config(), idle_timeout=0)
+        swapper = Swapper(make_config(), idle_timeout=0, automatic_switch=True)
         swapper._current = handle
         swapper._current_model = "a"
         swapper._healthy = True
@@ -363,7 +366,7 @@ class TestCancellationAndShutdown:
         monkeypatch.setattr(module, "start_process", start)
         monkeypatch.setattr(module, "wait_for_ready", ready)
         monkeypatch.setattr(module, "stop_process", stop)
-        swapper = Swapper(make_config(), quick_switch=True)
+        swapper = Swapper(make_config(), quick_switch=True, automatic_switch=True)
         requests = [
             asyncio.create_task(swapper.handle_request(StubRequest("a")))
         ]

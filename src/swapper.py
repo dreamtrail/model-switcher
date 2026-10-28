@@ -64,6 +64,7 @@ class Swapper(_SwapperLifecycleMixin):
         timeout: float = 60,
         idle_timeout: float = 900,
         quick_switch: bool = False,
+        automatic_switch: bool = False,
         sse_keepalive: float = 15,
         client: aiohttp.ClientSession | None = None,
         stats: StatsCollector | None = None,
@@ -75,7 +76,9 @@ class Swapper(_SwapperLifecycleMixin):
         self.sse_keepalive = sse_keepalive
         self.idle_timeout = idle_timeout
         self.quick_switch = quick_switch
-        self.automatic_switch = True
+        # Off: a request may load its model only while nothing is running
+        # or loading (see _automatic_switch_blocks).
+        self.automatic_switch = automatic_switch
         self._client = client
         self.stats = stats or StatsCollector()
         self._current: ProcessHandle | None = None
@@ -175,11 +178,7 @@ class Swapper(_SwapperLifecycleMixin):
             return "outcome", _LoadOutcome("shutting_down")
         if self._stop_only_operation is not None:
             return "outcome", _LoadOutcome("control_busy")
-        if (
-            automatic
-            and not self.automatic_switch
-            and model_name != self.active_model
-        ):
+        if automatic and self._automatic_switch_blocks(model_name):
             return "outcome", _LoadOutcome("automatic_switch_disabled")
         if not self._swapping and model_name == self.active_model:
             return "outcome", _LoadOutcome("success", self._current)
@@ -230,6 +229,25 @@ class Swapper(_SwapperLifecycleMixin):
         ):
             readiness.cancel()
         return "waiter", future
+
+    def _automatic_switch_blocks(self, model_name: str) -> bool:
+        """True when automatic switching is off and the request would
+        replace a running model or a load/switch of a different model.
+
+        "Running" means ``active_model`` (a live, healthy process). With no
+        load in progress and no active model (at start, after an idle or
+        manual unload, a crash, or a failed load), the request may load.
+        During a load only the model being loaded may be joined.
+        """
+        if self.automatic_switch:
+            return False
+        if self._swapping:
+            return (
+                self._desired_model is not None
+                and model_name != self._desired_model
+            )
+        active = self.active_model
+        return active is not None and model_name != active
 
     def _remove_waiter(self, future: asyncio.Future) -> None:
         self._waiters.pop(future, None)

@@ -111,7 +111,7 @@ class TestLifecycleStatePriority:
                 "lifecycle": "loading",
                 "inflight_requests": 0,
                 "settings": {
-                    "automatic_switch": True,
+                    "automatic_switch": False,
                     "quick_switch": False,
                     "idle_timeout_seconds": 0.0,
                 },

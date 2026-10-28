@@ -75,7 +75,7 @@ class TestStateAndReservedRoutes:
             "lifecycle": "idle",
             "inflight_requests": 0,
             "settings": {
-                "automatic_switch": True,
+                "automatic_switch": False,
                 "quick_switch": False,
                 "idle_timeout_seconds": 37.5,
             },
@@ -220,7 +220,7 @@ class TestSettingsValidation:
                     {
                         **base,
                         "settings": {
-                            "automatic_switch": True,
+                            "automatic_switch": False,
                             "quick_switch": False,
                             "idle_timeout_seconds": 90.0,
                         },
@@ -501,10 +501,10 @@ class TestMutationBoundaryAndAutomaticPolicy:
                 name: (model.cmd, model.port) for name, model in first.swapper.config.models.items()
             }
             first.swapper.control_apply_settings(
-                automatic_switch=False, quick_switch=True, idle_timeout_seconds=99
+                automatic_switch=True, quick_switch=True, idle_timeout_seconds=99
             )
             assert first.swapper.control_state()["settings"] == {
-                "automatic_switch": False,
+                "automatic_switch": True,
                 "quick_switch": True,
                 "idle_timeout_seconds": 99.0,
             }
@@ -516,7 +516,7 @@ class TestMutationBoundaryAndAutomaticPolicy:
             monkeypatch, extra_models=("a",), idle_timeout=11
         ) as fresh:
             assert fresh.swapper.control_state()["settings"] == {
-                "automatic_switch": True,
+                "automatic_switch": False,
                 "quick_switch": False,
                 "idle_timeout_seconds": 11.0,
             }

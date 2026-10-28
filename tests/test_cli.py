@@ -81,6 +81,23 @@ class TestParseArgs:
             "--config", "config.yaml", "--quick-switch",
         ]).quick_switch is True
 
+    def test_automatic_switch_defaults_off_and_can_be_enabled(self):
+        """--automatic-switch is a boolean opt-in, off by default."""
+        assert parse_args(["--config", "config.yaml"]).automatic_switch is False
+        assert parse_args([
+            "--config", "config.yaml", "--automatic-switch",
+        ]).automatic_switch is True
+
+    def test_automatic_switch_is_documented_in_help(self, capsys):
+        """CLI help names the flag and its default-off policy."""
+        with pytest.raises(SystemExit) as exc:
+            parse_args(["--help"])
+        assert exc.value.code == 0
+        help_text = " ".join(capsys.readouterr().out.split())
+        assert "--automatic-switch" in help_text
+        assert "default: off" in help_text
+        assert "loads its model when none is running" in help_text
+
     def test_quick_switch_is_documented_in_help(self, capsys):
         """CLI help documents supersession and the default-off policy (AC1)."""
         with pytest.raises(SystemExit) as exc:
@@ -198,7 +215,7 @@ class TestMainRuntime:
         class FakeSwapper:
             def __init__(
                 self, config, *, timeout, idle_timeout, quick_switch,
-                sse_keepalive, client,
+                automatic_switch, sse_keepalive, client,
             ):
                 self.config = config
                 self.timeout = timeout
@@ -251,7 +268,7 @@ class TestMainRuntime:
         class FakeSwapper:
             def __init__(
                 self, config, *, timeout, idle_timeout, quick_switch,
-                sse_keepalive, client,
+                automatic_switch, sse_keepalive, client,
             ):
                 self.config = config
                 captured["quick_switch"] = quick_switch
@@ -273,6 +290,44 @@ class TestMainRuntime:
         assert captured == {"quick_switch": expected_quick_switch}
 
     @pytest.mark.parametrize(
+        ("extra_args", "expected_automatic_switch"),
+        [([], False), (["--automatic-switch"], True)],
+    )
+    async def test_main_passes_automatic_switch_to_swapper(
+        self, monkeypatch, extra_args, expected_automatic_switch
+    ):
+        """_main wires the parsed --automatic-switch boolean into Swapper."""
+        captured = {}
+
+        class FakeClientSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class FakeSwapper:
+            def __init__(
+                self, config, *, timeout, idle_timeout, quick_switch,
+                automatic_switch, sse_keepalive, client,
+            ):
+                self.config = config
+                captured["automatic_switch"] = automatic_switch
+
+            async def shutdown(self):
+                pass
+
+        async def fake_run_server(host, port, swapper, shutdown_event):
+            pass
+
+        config = type("Config", (), {"models": {"model-a": object()}})()
+        monkeypatch.setattr(cli_module, "load_config", lambda path: config)
+        monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)
+        monkeypatch.setattr(cli_module, "Swapper", FakeSwapper)
+        monkeypatch.setattr(cli_module, "_run_server", fake_run_server)
+
+        await cli_module._main(["--config", "config.yaml", *extra_args])
+
+        assert captured == {"automatic_switch": expected_automatic_switch}
+
+    @pytest.mark.parametrize(
         ("extra_args", "expected_keepalive"),
         [([], 15.0), (["--sse-keepalive", "0"], 0.0),
          (["--sse-keepalive", "2.5"], 2.5)],
@@ -290,7 +345,7 @@ class TestMainRuntime:
         class FakeSwapper:
             def __init__(
                 self, config, *, timeout, idle_timeout, quick_switch,
-                sse_keepalive, client,
+                automatic_switch, sse_keepalive, client,
             ):
                 self.config = config
                 captured["sse_keepalive"] = sse_keepalive
@@ -325,7 +380,7 @@ class TestMainRuntime:
         class FakeSwapper:
             def __init__(
                 self, config, *, timeout, idle_timeout, quick_switch,
-                sse_keepalive, client,
+                automatic_switch, sse_keepalive, client,
             ):
                 self.config = config
 
@@ -369,7 +424,7 @@ class TestMainRuntime:
         class FakeSwapper:
             def __init__(
                 self, config, *, timeout, idle_timeout, quick_switch,
-                sse_keepalive, client,
+                automatic_switch, sse_keepalive, client,
             ):
                 self.config = config
 
@@ -413,7 +468,7 @@ class TestMainRuntime:
         class FakeSwapper:
             def __init__(
                 self, config, *, timeout, idle_timeout, quick_switch,
-                sse_keepalive, client,
+                automatic_switch, sse_keepalive, client,
             ):
                 self.config = config
 
@@ -465,7 +520,7 @@ class TestMainRuntime:
         class FakeSwapper:
             def __init__(
                 self, config, *, timeout, idle_timeout, quick_switch,
-                sse_keepalive, client,
+                automatic_switch, sse_keepalive, client,
             ):
                 self.config = config
 
@@ -510,7 +565,7 @@ class TestMainRuntime:
         class FakeSwapper:
             def __init__(
                 self, config, *, timeout, idle_timeout, quick_switch,
-                sse_keepalive, client,
+                automatic_switch, sse_keepalive, client,
             ):
                 self.config = config
 

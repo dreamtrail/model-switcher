@@ -83,7 +83,7 @@ class TestCompatibilityAndAdmission:
 
     async def test_quick_mode_capacity_is_reserved_before_supersession(self):
         """A full queue cannot publish target/generation or cancel readiness (AC8)."""
-        swapper = Swapper(make_config(), quick_switch=True)
+        swapper = Swapper(make_config(), quick_switch=True, automatic_switch=True)
         readiness = asyncio.create_task(asyncio.Event().wait())
         swapper._swapping = True
         swapper._intent_generation = 7
@@ -144,7 +144,7 @@ class TestPendingLoadPolicies:
         monkeypatch.setattr(module, "wait_for_ready", ready)
         monkeypatch.setattr(module, "stop_process", stop)
         monkeypatch.setattr(module, "proxy_request", proxy)
-        swapper = Swapper(make_config())
+        swapper = Swapper(make_config(), automatic_switch=True)
         server = await make_server(swapper)
         try:
             async with TestClient(server) as client:
@@ -212,7 +212,7 @@ class TestPendingLoadPolicies:
         monkeypatch.setattr(module, "wait_for_ready", ready)
         monkeypatch.setattr(module, "stop_process", stop)
         monkeypatch.setattr(module, "proxy_request", proxy)
-        swapper = Swapper(make_config(), quick_switch=True)
+        swapper = Swapper(make_config(), quick_switch=True, automatic_switch=True)
         server = await make_server(swapper)
         try:
             async with TestClient(server) as client:
@@ -276,7 +276,7 @@ class TestPendingLoadPolicies:
         monkeypatch.setattr(module, "wait_for_ready", ready)
         monkeypatch.setattr(module, "stop_process", stop)
         monkeypatch.setattr(module, "proxy_request", proxy)
-        swapper = Swapper(make_config(), quick_switch=True)
+        swapper = Swapper(make_config(), quick_switch=True, automatic_switch=True)
         server = await make_server(swapper)
         try:
             async with TestClient(server) as client:
@@ -372,7 +372,7 @@ class TestPendingLoadPolicies:
         monkeypatch.setattr(module, "wait_for_ready", ready)
         monkeypatch.setattr(module, "stop_process", stop)
         monkeypatch.setattr(module, "proxy_request", proxy)
-        swapper = Swapper(make_config(), quick_switch=True)
+        swapper = Swapper(make_config(), quick_switch=True, automatic_switch=True)
 
         async def capture_proxy(
             request, model_name, body, handle=None, outcome=None

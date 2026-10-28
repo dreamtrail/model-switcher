@@ -55,7 +55,7 @@ class TestCancellationAndShutdown:
         monkeypatch.setattr(module, "wait_for_ready", ready)
         monkeypatch.setattr(module, "stop_process", stop)
         monkeypatch.setattr(module, "proxy_request", proxy)
-        swapper = Swapper(make_config(), quick_switch=True)
+        swapper = Swapper(make_config(), quick_switch=True, automatic_switch=True)
         owner = asyncio.create_task(swapper.handle_request(StubRequest("a")))
         requests = []
         try:
@@ -171,7 +171,7 @@ class TestCancellationAndShutdown:
         monkeypatch.setattr(module, "start_process", start)
         monkeypatch.setattr(module, "wait_for_ready", ready)
         monkeypatch.setattr(module, "stop_process", stop)
-        swapper = Swapper(make_config(), quick_switch=True)
+        swapper = Swapper(make_config(), quick_switch=True, automatic_switch=True)
         owner = asyncio.create_task(swapper.handle_request(StubRequest("a")))
         requests = []
         shutdown_task = None

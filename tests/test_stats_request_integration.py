@@ -344,7 +344,8 @@ class TestPreAdmissionRejectionStats:
         self, monkeypatch
     ):
         async with _stack(
-            monkeypatch, extra_models=("model-a", "model-b")
+            monkeypatch, extra_models=("model-a", "model-b"),
+            automatic_switch=True,
         ) as stack:
             swapper = stack.swapper
             swapper._swapping = True
@@ -385,6 +386,7 @@ class TestSwapStats:
             monkeypatch,
             {"model-a": upstream_a, "model-b": upstream_b},
             seed="model-a",
+            automatic_switch=True,
         ) as stack:
             async with TestClient(stack.proxy) as client:
                 resp = await client.post(

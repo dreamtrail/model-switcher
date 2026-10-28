@@ -139,7 +139,7 @@ class TestSuccessfulLoads:
             handle.process.returncode = 0
 
         _install(monkeypatch, stop=slow_stop)
-        swapper = Swapper(make_config())
+        swapper = Swapper(make_config(), automatic_switch=True)
         try:
             await swapper.handle_request(StubRequest("a"))
             await swapper.handle_request(StubRequest("b"))
@@ -199,7 +199,7 @@ class TestSuccessfulLoads:
                 await asyncio.Event().wait()
 
         _install(monkeypatch, start=start, ready=ready)
-        swapper = Swapper(make_config(), quick_switch=True)
+        swapper = Swapper(make_config(), quick_switch=True, automatic_switch=True)
         requests = []
         try:
             requests.append(asyncio.create_task(

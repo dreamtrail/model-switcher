@@ -2,6 +2,8 @@
 
 Automatic model swapping reverse proxy for local AI servers. Point your client at the switcher, and it handles starting, stopping, and routing to the correct model — no manual intervention needed.
 
+By default a request loads its model when none is running, but does not replace a running model with another one. Start with `--automatic-switch` (or turn it on in the control panel) to let requests switch models: see [Automatic switching](#automatic-switching).
+
 ## Quick Start
 
 ```bash
@@ -152,6 +154,8 @@ qwen3.8-27b:
 
 ## Quick Switching
 
+These rules apply to requests while [automatic switching](#automatic-switching) is on, and to manual loads. With automatic switching off (the default), a request for a different model than the one loading gets `automatic_switch_disabled` instead.
+
 By default, a request for the model that is already loading joins that load. A request for a different model is refused immediately with HTTP 409 and `error.code: "switch_in_progress"`; it is not queued to trigger another slow load afterward.
 
 Enable quick switching when a newer different-model request should replace the pending target:
@@ -196,7 +200,7 @@ Example state:
   "lifecycle": "ready",
   "inflight_requests": 0,
   "settings": {
-    "automatic_switch": true,
+    "automatic_switch": false,
     "quick_switch": false,
     "idle_timeout_seconds": 1800.0
   }
@@ -231,11 +235,27 @@ curl -X DELETE http://127.0.0.1:8080/api/v1/control/model \
 
 The model body is `{"model": name}` or, for a variant model, `{"model": name, "variant": variant}`. With `variant`, that variant becomes active in the same step that admits the load, so requests arriving after it go to the new variant (they join its load instead of getting `switch_in_progress`). If the load is refused before it starts (for example 409 `switch_in_progress` without quick switching, or `control_busy`), the active variant does not change. If the load starts and then fails, the new choice stays. `{"model": name}` alone loads the active variant. An unknown variant returns 404 `unknown_variant`; `variant` on a model without variants returns 400 `model_has_no_variants`; a variant id such as `qwen3.8-27b@vision` in `model` returns 404 `unknown_model`. With quick switching, a pending request for the old variant is superseded (409 `swap_superseded`).
 
-`automatic_switch=false` pins inference routing to the currently healthy model. Explicit requests for that model and model-less requests routed to it continue; known requests that would load, join, or change a model return HTTP 409 with `error.code: "automatic_switch_disabled"`. Unknown models remain 404. Manual model controls bypass only this automatic-switch policy: they still share the same bounded admission, latest-wins quick-switch setting, cleanup, readiness, and shutdown rules. A manual unload returns 409 `control_busy` while a load/switch or another unload is pending. Disabling automatic switching does not cancel work already admitted.
-
 Changing a positive idle timeout restarts the countdown from the update time when a healthy model is idle; zero disables idle unload. Cleanup already in progress still finishes. Manual switches and unloads preserve the existing model-change behavior and may interrupt in-flight requests using the previous process; the panel shows the in-flight count but does not drain requests.
 
-All control settings are process-local; a [config reload](#reloading-the-config) does not change them. Restart restores `automatic_switch=true`, the command-line `--quick-switch` value, the command-line `--idle-timeout` value, and each variant model's `default` variant; no YAML is changed.
+All control settings are process-local; a [config reload](#reloading-the-config) does not change them. Restart restores the command-line `--automatic-switch` value (off unless given), the command-line `--quick-switch` value, the command-line `--idle-timeout` value, and each variant model's `default` variant; no YAML is changed.
+
+### Automatic switching
+
+The `automatic_switch` setting decides whether a request may replace the model that is running or loading. It is off at start. Turn it on with `--automatic-switch`, or at runtime with the `/control` checkbox or `PUT /api/v1/control/settings`.
+
+```bash
+./run.sh --config config.yaml --automatic-switch
+```
+
+With it off (the default):
+
+- **Nothing running or loading** — at start, after an idle or manual unload, after the model process exits, or after a failed load, a request loads its model, the same as with it on. More requests for that model join the load.
+- **A model running or loading** — requests for that model and model-less requests go to it. A request for any other model gets HTTP 409 with `error.code: "automatic_switch_disabled"` and changes nothing, also with `--quick-switch`. While a manual switch replaces one model with another, only the incoming model counts.
+- "Running" means the process is alive and passed its health check. A model whose process exited, or whose stop failed (lifecycle `cleanup_failed`), is not running, so a request may load a model; after a failed stop the switcher first retries the stop and returns 503 `process_cleanup_failed` if it fails again.
+
+With it on, a request for another model stops the running model and loads the requested one; during a load, the [quick switching](#quick-switching) rules apply.
+
+Model-less requests with no model running get 400 either way. Unknown models remain 404. Manual model controls are not limited by this setting: they still share the same bounded admission, latest-wins quick-switch setting, cleanup, readiness, and shutdown rules. A manual unload returns 409 `control_busy` while a load/switch or another unload is pending. Turning automatic switching off does not cancel work already admitted.
 
 ### Reloading the config
 
@@ -661,6 +681,7 @@ Known limitations: these paths shadow upstreams serving the same paths (like `/v
 | `--port` | `8080` | Listen port |
 | `--timeout` | `60` | For positive values: total swap/non-stream timeout and stream connection/read-inactivity timeout (seconds); streams have no total lifetime limit |
 | `--idle-timeout` | `30m` | Unload idle model after duration (`900`, `900s`, `15m`, `1h`; `0` disables) |
+| `--automatic-switch` | off | Let a request for another model replace the running model; when off, a request still loads its model if none is running ([details](#automatic-switching)) |
 | `--quick-switch` | off | Let a newer different-model request supersede a model that is still loading |
 | `--sse-keepalive` | `15` | Seconds without stream data before the switcher sends the client an SSE keepalive comment (fractions allowed; `0` disables) |
 | `--timestamp` | off | Include timestamps in log output |

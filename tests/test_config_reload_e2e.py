@@ -50,7 +50,10 @@ async def test_reload_with_real_processes(tmp_path, monkeypatch):
         "alpha": f"{script} --name alpha",
         "beta": f"{script} --name beta",
     })
-    swapper = Swapper(load_config(config_path), timeout=30, idle_timeout=0)
+    swapper = Swapper(
+        load_config(config_path), timeout=30, idle_timeout=0,
+        automatic_switch=True,
+    )
     swapper.config_path = config_path
     first_alpha = swapper.config.models["alpha"]
     first_alpha_copy = Path(first_alpha.cmd.split()[0])
@@ -197,7 +200,10 @@ async def test_real_process_started_from_binary_given_by_path(
         )
 
     write({"binary": entry("binary")})
-    swapper = Swapper(load_config(config_path), timeout=30, idle_timeout=0)
+    swapper = Swapper(
+        load_config(config_path), timeout=30, idle_timeout=0,
+        automatic_switch=True,
+    )
     swapper.config_path = config_path
     model = swapper.config.models["binary"]
     assert model.cmd == entry("binary").replace(

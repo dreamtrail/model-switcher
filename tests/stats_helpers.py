@@ -53,6 +53,7 @@ async def _stack(
     extra_models: tuple[str, ...] = (),
     timeout: float = 60.0,
     idle_timeout: float = 900.0,
+    automatic_switch: bool = False,
 ):
     """Start upstream TestServers + a Swapper + a catch-all proxy server.
 
@@ -89,7 +90,10 @@ async def _stack(
                 name=name, cmd=f"echo {name} --port 19876", port=19876
             )
 
-        swapper = Swapper(config, timeout=timeout, idle_timeout=idle_timeout)
+        swapper = Swapper(
+            config, timeout=timeout, idle_timeout=idle_timeout,
+            automatic_switch=automatic_switch,
+        )
 
         if seed is not None:
             handle = _fake_handle(seed, port=servers[seed].port)

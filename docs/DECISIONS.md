@@ -36,3 +36,4 @@ Complete decision records, grouped by topic. Records remain in their original re
 - [P-20261013-07 — Variant and reload minors, SIGHUP reload](decisions/runtime.md#p-20261013-07--variant-and-reload-minors-sighup-reload)
 - [P-20261013-10 — Programs given by path](decisions/runtime.md#p-20261013-10--programs-given-by-path)
 - [P-20261027-01 — Splash Compatibility](decisions/runtime.md#p-20261027-01--splash-compatibility)
+- [P-20261028-03 — Automatic switching off by default](decisions/runtime.md#p-20261028-03--automatic-switching-off-by-default)
