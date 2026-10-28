@@ -662,10 +662,18 @@ Known limitations: these paths shadow upstreams serving the same paths (like `/v
 | `--timeout` | `60` | For positive values: total swap/non-stream timeout and stream connection/read-inactivity timeout (seconds); streams have no total lifetime limit |
 | `--idle-timeout` | `30m` | Unload idle model after duration (`900`, `900s`, `15m`, `1h`; `0` disables) |
 | `--quick-switch` | off | Let a newer different-model request supersede a model that is still loading |
+| `--sse-keepalive` | `15` | Seconds without stream data before the switcher sends the client an SSE keepalive comment (fractions allowed; `0` disables) |
 | `--timestamp` | off | Include timestamps in log output |
 | `--version` | — | Print version |
 
 For positive `--timeout` values, model swaps and non-streaming requests must finish within the configured total duration. Streaming requests may continue for any total duration while data keeps arriving; establishing the upstream connection or waiting between chunks for longer than the configured duration ends the stream through the existing error path.
+
+Some engines go quiet for a long time mid-stream (for example while building a tool call they cannot stream), and clients or proxies in between may drop an idle connection. With `--sse-keepalive N`, the switcher sends `: keepalive` (an SSE comment; clients that follow the SSE spec ignore it) after every N quiet seconds. It does this only after the upstream has sent its response headers (the model load wait is not covered), only for `text/event-stream` responses, and only between events, never inside one. Keepalives do not count in stats and do not reset the `--timeout` limit: an upstream that sends nothing for longer than `--timeout` still ends the stream with an error.
+
+```bash
+./run.sh --config config.yaml --sse-keepalive 10   # every 10 s of quiet
+./run.sh --config config.yaml --sse-keepalive 0    # off
+```
 
 ## API Endpoints
 

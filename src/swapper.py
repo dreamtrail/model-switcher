@@ -64,11 +64,15 @@ class Swapper(_SwapperLifecycleMixin):
         timeout: float = 60,
         idle_timeout: float = 900,
         quick_switch: bool = False,
+        sse_keepalive: float = 15,
         client: aiohttp.ClientSession | None = None,
         stats: StatsCollector | None = None,
     ):
         self.config = config
         self.timeout = timeout
+        # Seconds of client-side quiet before an SSE keepalive comment on
+        # a streaming response; 0 disables.
+        self.sse_keepalive = sse_keepalive
         self.idle_timeout = idle_timeout
         self.quick_switch = quick_switch
         self.automatic_switch = True
@@ -843,7 +847,7 @@ class Swapper(_SwapperLifecycleMixin):
             return await stream_proxy(
                 request, upstream, body,
                 timeout=self.timeout, client=self._client,
-                outcome=outcome,
+                outcome=outcome, sse_keepalive=self.sse_keepalive,
             )
         return await proxy_request(
             request, upstream, body,

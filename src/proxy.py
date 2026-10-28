@@ -62,6 +62,63 @@ _STREAM_OPTIONS_ENDPOINTS = frozenset([
 # newline-free stream (e.g. binary audio) is discarded once it exceeds this.
 _SSE_LINE_BUFFER_CAP = 64 * 1024
 
+# SSE comment sent to the client while a streaming upstream is quiet.
+_SSE_KEEPALIVE = b": keepalive\n\n"
+
+
+def _at_event_boundary(tail: bytes) -> bool:
+    """Return True if forwarded bytes ending in ``tail`` end an SSE event.
+
+    Nothing forwarded yet, or a blank line (``\n\n`` or ``\r\n\r\n``)
+    at the end, is a boundary where a comment cannot split an event.
+    """
+    return not tail or tail.endswith((b"\n\n", b"\r\n\r\n"))
+
+
+class _UpstreamReader:
+    """Read upstream chunks with an optional wait limit.
+
+    A wait that runs out keeps its read pending for the next call, so no
+    upstream data is lost and the session's ``sock_read`` limit still
+    applies to the read.
+    """
+
+    def __init__(self, content: aiohttp.StreamReader) -> None:
+        self._content = content
+        self._pending: asyncio.Future[bytes] | None = None
+
+    async def read(self, wait_s: float | None) -> bytes | None:
+        """Return the next chunk (``b""`` at end of stream).
+
+        With ``wait_s`` set, return None if no chunk arrived within
+        ``wait_s`` seconds. With ``wait_s`` None, wait without a limit.
+        """
+        if wait_s is None and self._pending is None:
+            return await self._content.readany()
+        if self._pending is None:
+            self._pending = asyncio.ensure_future(self._content.readany())
+        if wait_s is not None:
+            if wait_s > 0:
+                await asyncio.wait({self._pending}, timeout=wait_s)
+            if not self._pending.done():
+                return None
+        pending, self._pending = self._pending, None
+        return await pending
+
+    def close(self) -> None:
+        """Cancel a pending read; its result or error is dropped."""
+        pending, self._pending = self._pending, None
+        if pending is None:
+            return
+        if pending.done():
+            if not pending.cancelled():
+                pending.exception()
+            return
+        pending.add_done_callback(
+            lambda fut: fut.cancelled() or fut.exception()
+        )
+        pending.cancel()
+
 
 def _int_or_none(value: Any) -> int | None:
     """Return value if it is a plain int, else None."""
@@ -373,8 +430,15 @@ async def stream_proxy(
     timeout: float = 60,
     client: aiohttp.ClientSession | None = None,
     outcome: Outcome | None = None,
+    sse_keepalive: float = 0,
 ) -> web.Response:
-    """Proxy with chunked streaming for SSE responses."""
+    """Proxy with chunked streaming for SSE responses.
+
+    With ``sse_keepalive`` > 0 and a ``text/event-stream`` upstream
+    response, an SSE comment is sent after each ``sse_keepalive`` seconds
+    without a client write, only between events. It is not upstream data:
+    stats and the ``timeout`` read-inactivity limit ignore it.
+    """
     upstream_path = request.path_qs or request.path
     target = upstream_url + upstream_path
     headers = _forward_headers(request)
@@ -429,9 +493,35 @@ async def stream_proxy(
             # the response is never touched again.
             client_gone = False
             bytes_sent = 0
+            keepalive_s = 0.0
+            if (
+                sse_keepalive > 0
+                and upstream_resp.content_type.lower() == "text/event-stream"
+            ):
+                keepalive_s = sse_keepalive
+            clock = asyncio.get_running_loop().time
+            last_write = clock()
+            tail = b""  # last forwarded bytes, for the event-boundary check
+            reader = _UpstreamReader(upstream_resp.content)
             try:
                 buffer = b""
-                async for chunk in upstream_resp.content.iter_any():
+                while True:
+                    wait_s = None
+                    if keepalive_s and _at_event_boundary(tail):
+                        wait_s = keepalive_s - (clock() - last_write)
+                    chunk = await reader.read(wait_s)
+                    if chunk is None:
+                        # Quiet upstream at an event boundary: keep the
+                        # client connection alive. Not upstream data.
+                        try:
+                            await response.write(_SSE_KEEPALIVE)
+                        except OSError:
+                            client_gone = True
+                            break
+                        last_write = clock()
+                        continue
+                    if not chunk:
+                        break
                     try:
                         await response.write(chunk)
                     except OSError:
@@ -439,6 +529,8 @@ async def stream_proxy(
                         # lost" — both OSError subclasses.
                         client_gone = True
                         break
+                    last_write = clock()
+                    tail = (tail + chunk)[-4:]
                     bytes_sent += len(chunk)
                     if outcome is not None:
                         outcome.bytes_out += len(chunk)
@@ -470,6 +562,8 @@ async def stream_proxy(
                     )
                 except OSError:
                     client_gone = True
+            finally:
+                reader.close()
 
             if client_gone:
                 # Leaving the ``async with`` closes the upstream response,

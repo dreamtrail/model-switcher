@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import math
 import re
 import signal
 import sys
@@ -40,6 +41,21 @@ def parse_duration(value: str) -> int:
         )
     amount, unit = match.groups()
     return int(amount) * _DURATION_MULTIPLIERS[unit]
+
+
+def parse_non_negative_seconds(value: str) -> float:
+    """Parse a non-negative number of seconds (fractions allowed)."""
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "must be a non-negative number of seconds"
+        ) from None
+    if not math.isfinite(seconds) or seconds < 0:
+        raise argparse.ArgumentTypeError(
+            "must be a non-negative number of seconds"
+        )
+    return seconds
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -93,6 +109,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Let a different-model request supersede a model that is still "
             "loading (default: off)"
+        ),
+    )
+    parser.add_argument(
+        "--sse-keepalive",
+        type=parse_non_negative_seconds,
+        default=15.0,
+        metavar="SECONDS",
+        help=(
+            "Send an SSE keepalive comment to the client after this many "
+            "seconds without stream data (default: 15; 0 disables)"
         ),
     )
     parser.add_argument(
@@ -205,6 +231,7 @@ async def _main(argv: list[str] | None = None) -> None:
         timeout=args.timeout,
         idle_timeout=args.idle_timeout,
         quick_switch=args.quick_switch,
+        sse_keepalive=args.sse_keepalive,
         client=client,
     )
     # Kept for control API config reload (absolute, so a later chdir

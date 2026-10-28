@@ -10,6 +10,7 @@
 
 ## Discovered
 
+- [P-20261028-02] SSE keepalive (P-20261028-01) review minors: rare early keepalive when a new read hasn't run yet (`src/proxy.py:97-104`); bare-`\r` upstreams never get keepalives (not in README); `tests/test_cli.py:306` is 81 chars; no live Pi / slow-engine check (see `artifacts/P-20261028-01/plan.md`)
 - [P-20261027-04] Splash (P-20261027-01) not checked on a real Apple silicon Mac (README § Splash manual check); review minors: SIGKILL warning `%ds` truncates fractional `stop_grace`; `Template error ·` lines log as INFO; TensorFold e2e doesn't exercise the long `stop_grace` (see `artifacts/P-20261027-01/plan.md`, `artifacts/P-20261027-02/plan.md`)
 - [P-20261013-09] Pre-existing: at startup a non-script `${PORT}` command gets the port flag twice (`serve --port ${PORT}` -> `serve --port N --port N`, `serve -p ${PORT}` -> `serve -p N --port N`) because `_resolve_ports` fills the port before `rewrite_command` appends `--port`; after a reload the same entry runs with one flag (see `artifacts/P-20261013-07/reviewer-fix-01-port-probe.txt`)
 - [P-20261013-02] Persist the chosen model variant across restarts (P-20261013-01 keeps it in memory and starts on `default`; user undecided): decide where to store it (state file vs. YAML) and how a removed variant falls back (see `artifacts/P-20261013-01/plan.md`)

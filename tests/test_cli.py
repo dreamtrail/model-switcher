@@ -122,6 +122,41 @@ class TestParseArgs:
             parse_args(["--config", "config.yaml", "--idle-timeout", value])
         assert exc.value.code == 2
 
+    def test_sse_keepalive_defaults_to_15_seconds(self):
+        """--sse-keepalive is on at 15 s by default (P-20261028-01 AC8)."""
+        assert parse_args(["--config", "config.yaml"]).sse_keepalive == 15
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [("0", 0.0), ("0.5", 0.5), ("10", 10.0), ("2.25", 2.25)],
+    )
+    def test_sse_keepalive_accepts_zero_and_fractions(self, value, expected):
+        """--sse-keepalive takes 0 (off) and fractional seconds (AC8)."""
+        args = parse_args([
+            "--config", "config.yaml", "--sse-keepalive", value,
+        ])
+        assert args.sse_keepalive == expected
+
+    @pytest.mark.parametrize(
+        "value", ["-1", "-0.1", "abc", "", "nan", "inf", "10s"],
+    )
+    def test_sse_keepalive_invalid_values_exit_2(self, value):
+        """Negative or non-numeric --sse-keepalive is a usage error (AC8)."""
+        with pytest.raises(SystemExit) as exc:
+            parse_args([
+                "--config", "config.yaml", "--sse-keepalive", value,
+            ])
+        assert exc.value.code == 2
+
+    def test_sse_keepalive_is_documented_in_help(self, capsys):
+        """CLI help names the flag, its default, and how to disable it."""
+        with pytest.raises(SystemExit) as exc:
+            parse_args(["--help"])
+        assert exc.value.code == 0
+        help_text = " ".join(capsys.readouterr().out.split())
+        assert "--sse-keepalive SECONDS" in help_text
+        assert "default: 15; 0 disables" in help_text
+
     def test_all_flags_combined(self, tmp_path):
         """All flags work together."""
         config_path = tmp_path / "config.yaml"
@@ -162,7 +197,8 @@ class TestMainRuntime:
 
         class FakeSwapper:
             def __init__(
-                self, config, *, timeout, idle_timeout, quick_switch, client
+                self, config, *, timeout, idle_timeout, quick_switch,
+                sse_keepalive, client,
             ):
                 self.config = config
                 self.timeout = timeout
@@ -214,7 +250,8 @@ class TestMainRuntime:
 
         class FakeSwapper:
             def __init__(
-                self, config, *, timeout, idle_timeout, quick_switch, client
+                self, config, *, timeout, idle_timeout, quick_switch,
+                sse_keepalive, client,
             ):
                 self.config = config
                 captured["quick_switch"] = quick_switch
@@ -235,6 +272,45 @@ class TestMainRuntime:
 
         assert captured == {"quick_switch": expected_quick_switch}
 
+    @pytest.mark.parametrize(
+        ("extra_args", "expected_keepalive"),
+        [([], 15.0), (["--sse-keepalive", "0"], 0.0),
+         (["--sse-keepalive", "2.5"], 2.5)],
+    )
+    async def test_main_passes_sse_keepalive_to_swapper(
+        self, monkeypatch, extra_args, expected_keepalive
+    ):
+        """_main wires the parsed --sse-keepalive into Swapper (AC8)."""
+        captured = {}
+
+        class FakeClientSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class FakeSwapper:
+            def __init__(
+                self, config, *, timeout, idle_timeout, quick_switch,
+                sse_keepalive, client,
+            ):
+                self.config = config
+                captured["sse_keepalive"] = sse_keepalive
+
+            async def shutdown(self):
+                pass
+
+        async def fake_run_server(host, port, swapper, shutdown_event):
+            pass
+
+        config = type("Config", (), {"models": {"model-a": object()}})()
+        monkeypatch.setattr(cli_module, "load_config", lambda path: config)
+        monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)
+        monkeypatch.setattr(cli_module, "Swapper", FakeSwapper)
+        monkeypatch.setattr(cli_module, "_run_server", fake_run_server)
+
+        await cli_module._main(["--config", "config.yaml", *extra_args])
+
+        assert captured == {"sse_keepalive": expected_keepalive}
+
     async def test_main_first_signal_starts_graceful_shutdown(
         self, monkeypatch
     ):
@@ -248,7 +324,8 @@ class TestMainRuntime:
 
         class FakeSwapper:
             def __init__(
-                self, config, *, timeout, idle_timeout, quick_switch, client
+                self, config, *, timeout, idle_timeout, quick_switch,
+                sse_keepalive, client,
             ):
                 self.config = config
 
@@ -291,7 +368,8 @@ class TestMainRuntime:
 
         class FakeSwapper:
             def __init__(
-                self, config, *, timeout, idle_timeout, quick_switch, client
+                self, config, *, timeout, idle_timeout, quick_switch,
+                sse_keepalive, client,
             ):
                 self.config = config
 
@@ -334,7 +412,8 @@ class TestMainRuntime:
 
         class FakeSwapper:
             def __init__(
-                self, config, *, timeout, idle_timeout, quick_switch, client
+                self, config, *, timeout, idle_timeout, quick_switch,
+                sse_keepalive, client,
             ):
                 self.config = config
 
@@ -385,7 +464,8 @@ class TestMainRuntime:
 
         class FakeSwapper:
             def __init__(
-                self, config, *, timeout, idle_timeout, quick_switch, client
+                self, config, *, timeout, idle_timeout, quick_switch,
+                sse_keepalive, client,
             ):
                 self.config = config
 
@@ -429,7 +509,8 @@ class TestMainRuntime:
 
         class FakeSwapper:
             def __init__(
-                self, config, *, timeout, idle_timeout, quick_switch, client
+                self, config, *, timeout, idle_timeout, quick_switch,
+                sse_keepalive, client,
             ):
                 self.config = config
 
