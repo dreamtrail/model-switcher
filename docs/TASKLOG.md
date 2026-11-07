@@ -41,3 +41,4 @@
 - [P-20261028-03] Start with automatic_switch off (`--automatic-switch` or /control turns it on); a request still loads a model when none is running — DONE 2026-10-28 15:03 +0900
 - [P-20261028-04] automatic_switch review minors: test that a request for A is refused during a manual A→B switch; clearer /control label — DONE 2026-10-28 15:32 +0900
 - [P-20261027-03] Hygiene(refactor): Split tests/test_process_manager.py (902 lines) into focused test modules; keep all cases — DONE 2026-10-28 15:33 +0900
+- [P-20261107-01] Retry once on a stale pooled upstream connection (no 502 Broken pipe); `--upstream-keepalive` (default 4 s); requested by dgx-67, pushed 8800beb — DONE 2026-11-07 21:30 +0900
