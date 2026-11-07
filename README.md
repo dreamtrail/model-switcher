@@ -684,6 +684,7 @@ Known limitations: these paths shadow upstreams serving the same paths (like `/v
 | `--automatic-switch` | off | Let a request for another model replace the running model; when off, a request still loads its model if none is running ([details](#automatic-switching)) |
 | `--quick-switch` | off | Let a newer different-model request supersede a model that is still loading |
 | `--sse-keepalive` | `15` | Seconds without stream data before the switcher sends the client an SSE keepalive comment (fractions allowed; `0` disables) |
+| `--upstream-keepalive` | `4` | Seconds an idle pooled connection to the upstream stays open before the switcher closes it (fractions allowed; must be above `0`) ([details](#upstream-connections)) |
 | `--timestamp` | off | Include timestamps in log output |
 | `--version` | — | Print version |
 
@@ -694,6 +695,18 @@ Some engines go quiet for a long time mid-stream (for example while building a t
 ```bash
 ./run.sh --config config.yaml --sse-keepalive 10   # every 10 s of quiet
 ./run.sh --config config.yaml --sse-keepalive 0    # off
+```
+
+### Upstream connections
+
+The switcher keeps idle connections to the upstream open for reuse, for `--upstream-keepalive` seconds (default 4). Keep this value below the upstream's own idle keep-alive limit. vLLM (uvicorn) closes idle connections after 5 s; if the switcher reuses a connection at the moment the upstream closes it, sending fails (for example `[Errno 32] Broken pipe`).
+
+If sending fails this way before the upstream answers, the request is retried once on another connection, so it reaches the upstream at most twice. For `GET`, `HEAD`, `PUT`, `DELETE`, `OPTIONS`, and `TRACE` the HTTP client library (aiohttp) does this retry itself; for other methods, such as `POST`, the switcher does it and logs a warning. A second failure returns the usual 502. Failed new connections, timeouts, and errors after the response headers arrived are not retried.
+
+Trade-off: if the upstream received the whole request and then dropped the connection before answering, the request runs twice. For non-streaming requests the engine sends its headers only after generation finishes, so an engine that crashes or drops the connection mid-generation is retried too. The retry then usually gets "connection refused" and returns 502, or, if the engine is still up, generates the answer a second time.
+
+```bash
+./run.sh --config config.yaml --upstream-keepalive 2   # upstream closes idle connections after 3 s
 ```
 
 ## API Endpoints

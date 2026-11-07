@@ -58,6 +58,21 @@ def parse_non_negative_seconds(value: str) -> float:
     return seconds
 
 
+def parse_positive_seconds(value: str) -> float:
+    """Parse a positive number of seconds (fractions allowed)."""
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "must be a positive number of seconds"
+        ) from None
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError(
+            "must be a positive number of seconds"
+        )
+    return seconds
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
@@ -129,6 +144,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Send an SSE keepalive comment to the client after this many "
             "seconds without stream data (default: 15; 0 disables)"
+        ),
+    )
+    parser.add_argument(
+        "--upstream-keepalive",
+        type=parse_positive_seconds,
+        default=4.0,
+        metavar="SECONDS",
+        help=(
+            "Close a pooled upstream connection after this many idle "
+            "seconds; keep it below the upstream's own keep-alive limit "
+            "(default: 4)"
         ),
     )
     parser.add_argument(
@@ -232,8 +258,13 @@ async def _main(argv: list[str] | None = None) -> None:
     )
 
     # Create shared client session for upstream requests
+    # Pooled connections idle for --upstream-keepalive seconds are closed
+    # before the upstream closes them (vLLM/uvicorn: 5 s).
     client_timeout = aiohttp.ClientTimeout(total=args.timeout)
-    client = aiohttp.ClientSession(timeout=client_timeout)
+    connector = aiohttp.TCPConnector(
+        keepalive_timeout=args.upstream_keepalive,
+    )
+    client = aiohttp.ClientSession(timeout=client_timeout, connector=connector)
 
     # Create swapper
     swapper = Swapper(

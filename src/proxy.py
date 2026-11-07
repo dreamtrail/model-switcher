@@ -19,6 +19,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+try:
+    from aiohttp.client import IDEMPOTENT_METHODS as _AIOHTTP_RETRIED_METHODS
+except ImportError:  # not public API; aiohttp 3.14 retries these itself
+    _AIOHTTP_RETRIED_METHODS = frozenset(
+        {"GET", "HEAD", "OPTIONS", "TRACE", "PUT", "DELETE"}
+    )
+
 # Hop-by-hop headers that must NOT be forwarded (RFC 7230 / RFC 7231).
 _HOP_BY_HOP_HEADERS = frozenset([
     "connection",
@@ -361,6 +368,55 @@ def _process_sse_line(line: bytes, outcome: Outcome) -> None:
     _apply_server_timing(event, outcome)
 
 
+def _is_stale_connection_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` looks like a dead pooled upstream connection.
+
+    The upstream may close an idle keep-alive connection just as the
+    switcher reuses it; sending then fails with a broken pipe, a reset,
+    or a disconnect before any response arrives. A failed new connection
+    (``ClientConnectorError``) and timeouts are not this case.
+    """
+    if isinstance(exc, (aiohttp.ClientConnectorError, asyncio.TimeoutError)):
+        return False
+    return isinstance(exc, (
+        aiohttp.ServerDisconnectedError,
+        aiohttp.ClientOSError,
+        ConnectionError,
+    ))
+
+
+async def _open_upstream(
+    client: aiohttp.ClientSession,
+    **request_kwargs: Any,
+) -> aiohttp.ClientResponse:
+    """Send a request upstream and return the response once headers arrive.
+
+    A stale-connection failure before the response status is retried once.
+    aiohttp already does that itself for idempotent methods (GET, PUT,
+    ...), so only the others (POST, PATCH) are retried here: every request
+    is sent at most twice. aiohttp drops the failed connection from its
+    pool, so the retry uses another connection. A request the upstream
+    fully received before dropping the connection runs twice.
+    """
+    method = str(request_kwargs.get("method", "")).upper()
+    try:
+        return await client.request(**request_kwargs)
+    except (aiohttp.ClientError, OSError) as exc:
+        if (
+            method in _AIOHTTP_RETRIED_METHODS
+            or not _is_stale_connection_error(exc)
+        ):
+            raise
+        logger.warning(
+            "Upstream connection dropped before a response to %s %s (%s); "
+            "retrying once on another connection",
+            method,
+            request_kwargs.get("url"),
+            exc,
+        )
+    return await client.request(**request_kwargs)
+
+
 async def proxy_request(
     request: web.Request,
     upstream_url: str,
@@ -390,7 +446,8 @@ async def proxy_request(
         client = aiohttp.ClientSession(timeout=client_timeout)
 
     try:
-        async with client.request(
+        async with await _open_upstream(
+            client,
             method=request.method,
             url=target,
             headers=headers,
@@ -459,7 +516,8 @@ async def stream_proxy(
 
     prepared = False
     try:
-        async with client.request(
+        async with await _open_upstream(
+            client,
             method=request.method,
             url=target,
             headers=headers,

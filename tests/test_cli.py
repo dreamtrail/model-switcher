@@ -174,6 +174,44 @@ class TestParseArgs:
         assert "--sse-keepalive SECONDS" in help_text
         assert "default: 15; 0 disables" in help_text
 
+    def test_upstream_keepalive_defaults_to_4_seconds(self):
+        """--upstream-keepalive is 4 s by default (P-20261107-01)."""
+        args = parse_args(["--config", "config.yaml"])
+        assert args.upstream_keepalive == 4.0
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [("0.5", 0.5), ("2", 2.0), ("10", 10.0), ("1.25", 1.25)],
+    )
+    def test_upstream_keepalive_accepts_positive_seconds(
+        self, value, expected,
+    ):
+        """--upstream-keepalive takes positive and fractional seconds."""
+        args = parse_args([
+            "--config", "config.yaml", "--upstream-keepalive", value,
+        ])
+        assert args.upstream_keepalive == expected
+
+    @pytest.mark.parametrize(
+        "value", ["0", "0.0", "-1", "-0.1", "abc", "", "nan", "inf", "4s"],
+    )
+    def test_upstream_keepalive_invalid_values_exit_2(self, value):
+        """Zero, negative, or non-numeric values are a usage error."""
+        with pytest.raises(SystemExit) as exc:
+            parse_args([
+                "--config", "config.yaml", "--upstream-keepalive", value,
+            ])
+        assert exc.value.code == 2
+
+    def test_upstream_keepalive_is_documented_in_help(self, capsys):
+        """CLI help names the flag and its default."""
+        with pytest.raises(SystemExit) as exc:
+            parse_args(["--help"])
+        assert exc.value.code == 0
+        help_text = " ".join(capsys.readouterr().out.split())
+        assert "--upstream-keepalive SECONDS" in help_text
+        assert "(default: 4)" in help_text
+
     def test_all_flags_combined(self, tmp_path):
         """All flags work together."""
         config_path = tmp_path / "config.yaml"
@@ -365,6 +403,53 @@ class TestMainRuntime:
         await cli_module._main(["--config", "config.yaml", *extra_args])
 
         assert captured == {"sse_keepalive": expected_keepalive}
+
+    @pytest.mark.parametrize(
+        ("extra_args", "expected_keepalive"),
+        [([], 4.0), (["--upstream-keepalive", "2.5"], 2.5)],
+    )
+    async def test_main_passes_upstream_keepalive_to_connector(
+        self, monkeypatch, extra_args, expected_keepalive
+    ):
+        """_main builds the shared session on a connector with the value."""
+        captured = {}
+
+        class FakeConnector:
+            def __init__(self, *args, **kwargs):
+                captured["connector_kwargs"] = kwargs
+
+        class FakeClientSession:
+            def __init__(self, *args, **kwargs):
+                captured["session_connector"] = kwargs.get("connector")
+
+        class FakeSwapper:
+            def __init__(
+                self, config, *, timeout, idle_timeout, quick_switch,
+                automatic_switch, sse_keepalive, client,
+            ):
+                self.config = config
+                captured["client"] = client
+
+            async def shutdown(self):
+                pass
+
+        async def fake_run_server(host, port, swapper, shutdown_event):
+            pass
+
+        config = type("Config", (), {"models": {"model-a": object()}})()
+        monkeypatch.setattr(cli_module, "load_config", lambda path: config)
+        monkeypatch.setattr(cli_module.aiohttp, "TCPConnector", FakeConnector)
+        monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)
+        monkeypatch.setattr(cli_module, "Swapper", FakeSwapper)
+        monkeypatch.setattr(cli_module, "_run_server", fake_run_server)
+
+        await cli_module._main(["--config", "config.yaml", *extra_args])
+
+        assert captured["connector_kwargs"] == {
+            "keepalive_timeout": expected_keepalive,
+        }
+        assert isinstance(captured["session_connector"], FakeConnector)
+        assert isinstance(captured["client"], FakeClientSession)
 
     async def test_main_first_signal_starts_graceful_shutdown(
         self, monkeypatch
