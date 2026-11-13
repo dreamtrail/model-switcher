@@ -2,6 +2,7 @@
 
 ## Next
 
+- [P-20261114-04] Hygiene(refactor): Split src/stats.py (950 lines after P-20261114-01) into focused modules; keep behavior and tests unchanged
 - [P-20261026-02] Hygiene(refactor): Split README.md (635 lines, 65,313 bytes) into focused usage/backend docs; preserve guidance and repair links
 - [P-20261026-03] Hygiene(reformat): Normalize TODO sections and overlong entries; move the remaining 27 legacy Done records to TASKLOG, preserving IDs, dates and chronology
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)

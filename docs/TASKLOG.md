@@ -42,3 +42,5 @@
 - [P-20261028-04] automatic_switch review minors: test that a request for A is refused during a manual A→B switch; clearer /control label — DONE 2026-10-28 15:32 +0900
 - [P-20261027-03] Hygiene(refactor): Split tests/test_process_manager.py (902 lines) into focused test modules; keep all cases — DONE 2026-10-28 15:33 +0900
 - [P-20261107-01] Retry once on a stale pooled upstream connection (no 502 Broken pipe); `--upstream-keepalive` (default 4 s); requested by dgx-67, pushed 8800beb — DONE 2026-11-07 21:30 +0900
+- [P-20261114-01] Live gen t/s from the vLLM generated-token counter (exact; estimate fallback), 5 s window, `live.source` in /stats/json; pushed 489fe6d — DONE 2026-11-14 08:34 +0900
+- [P-20261114-03] Live check of P-20261114-01 on dgx1: switcher SIGKILLed while idle, cluster adopted, live source `engine` read 65–87 t/s vs 74.1 t/s server-measured — DONE 2026-11-14 08:49 +0900
