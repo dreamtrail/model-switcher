@@ -49,12 +49,12 @@ class TestStatsPageStatic:
         head = STATS_HTML.split("<thead>", 1)[1].split("</thead>", 1)[0]
         cells = re.findall(r"<th([^>]*)>([^<]*)</th>", head)
         assert [label for _, label in cells] == [
-            "Model", "Reqs", "Errors", "Gen t/s", "Live t/s ≈", "Gen total",
+            "Model", "Reqs", "Errors", "Gen t/s", "Live t/s", "Gen total",
             "Prompt t/s", "Prompt total", "Prompt share", "TTFT p50 / p95",
             "Cache", "Gen tok", "Prefill tok",
         ]
         tip = ' title="Combined speed while busy @ average concurrent requests"'
-        live = ' title="Estimated combined speed while generating, last 15 s (streamed chunks × tokens per chunk)"'
+        live = ' title="Combined speed while generating, last 5 s: the engine\'s generated-token counter (vLLM), else an estimate from streamed chunks × tokens per chunk"'
         prompt = ' title="Prompt processing speed; uses the server\'s own prefill time when available, else time to first token"'
         gen = ' title="Generation speed; uses the server\'s own decode time when available, else first to last streamed chunk"'
         share = ' title="Share of request time spent on prompt processing (the rest is generation); counts only requests where both times are known"'

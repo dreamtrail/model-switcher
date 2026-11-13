@@ -1,7 +1,9 @@
-"""Live (estimated) generation rate — P-20260926-01, fixed by P-20260926-04.
+"""Live generation rate, estimate path — P-20260926-01, P-20260926-04.
 
-``rates.generation_tps.live`` is calibrated streamed output chunks in the
-last 15 s (chunks × tokens per chunk) divided by busy time: the union of
+Window 5 s since P-20261114-01 (engine-counter path: test_stats_live_engine).
+Without engine counter samples, ``rates.generation_tps.live`` is calibrated
+streamed output chunks in the last 5 s (chunks × tokens per chunk) divided
+by busy time, with ``source: "estimate"``: the union of
 ended and active decode intervals clipped to the window, floored at 1 s.
 It is 0 while no decode is active. The exact-token windows (``last_60s`` /
 ``last_300s``) are separate and keep their 60 s / 300 s spans. Tokens per chunk is Σ exact completion
@@ -64,42 +66,43 @@ class TestLiveRateCollector:
     def test_fresh_collector_reports_zero_estimate(self, clock):
         snap = StatsCollector().snapshot()
         assert _live(snap) == {
-            "tps": 0.0, "window_s": 15, "estimate": True,
-            "busy_s": 0.0, "tokens_per_chunk": None,
+            "tps": 0.0, "window_s": 5, "estimate": True,
+            "source": "estimate", "busy_s": 0.0, "tokens_per_chunk": None,
         }
 
     def test_idle_model_reports_default_ratio(self, clock):
         collector = StatsCollector()
         collector.record_model_start("idle")
         assert _live(collector.snapshot(), "idle") == {
-            "tps": 0.0, "window_s": 15, "estimate": True,
-            "busy_s": 0.0, "tokens_per_chunk": 1.0,
+            "tps": 0.0, "window_s": 5, "estimate": True,
+            "source": "estimate", "busy_s": 0.0, "tokens_per_chunk": 1.0,
         }
 
     def test_ac1_idle_time_between_streams_is_not_counted(self, clock):
-        # 10 s at 50 chunks/s, then 4 s with nothing generating; a new
+        # 3 s at 50 chunks/s, then 1 s with nothing generating; a new
         # stream has just started, so the model is active again.
         collector = StatsCollector()
-        _stream(collector, clock, "m", "a", seconds=10, per_second=50)
-        clock.now += 4.0
+        _stream(collector, clock, "m", "a", seconds=3, per_second=50)
+        clock.now += 1.0
         collector.record_decode_start("m", "b", clock.now)
 
         live = _live(collector.snapshot(), "m")
-        assert live["window_s"] == 15
-        assert live["busy_s"] == pytest.approx(10.0)
-        assert live["tps"] == pytest.approx(50.0)  # not 500 / 15 ≈ 33.3
+        assert live["window_s"] == 5
+        assert live["source"] == "estimate"
+        assert live["busy_s"] == pytest.approx(3.0)
+        assert live["tps"] == pytest.approx(50.0)  # not 150 / 5 = 30
 
     def test_ac2_concurrent_streams_aggregate(self, clock):
         collector = StatsCollector()
         for rid in range(8):
             collector.record_decode_start("m", rid, clock.now)
-        for _ in range(10):
+        for _ in range(4):
             for _rid in range(8):
                 collector.record_gen_chunks("m", 50)
             clock.now += 1.0
 
         snap = collector.snapshot()
-        assert _live(snap, "m")["busy_s"] == pytest.approx(10.0)
+        assert _live(snap, "m")["busy_s"] == pytest.approx(4.0)
         assert _live(snap, "m")["tps"] == pytest.approx(400.0)
         assert _live(snap)["tps"] == pytest.approx(400.0)
 
@@ -116,12 +119,12 @@ class TestLiveRateCollector:
     def test_ac4_calibrated_ratio_scales_chunks(self, clock):
         collector = StatsCollector()
         collector.record_gen_calibration("m", 300, 100)
-        _stream(collector, clock, "m", "a", seconds=10, per_second=10,
+        _stream(collector, clock, "m", "a", seconds=4, per_second=10,
                 end=False)
 
         live = _live(collector.snapshot(), "m")
         assert live["tokens_per_chunk"] == pytest.approx(3.0)
-        assert live["tps"] == pytest.approx(100 * 3 / 10)
+        assert live["tps"] == pytest.approx(40 * 3 / 4)
 
     def test_ac5_default_ratio_and_cap_of_fifty(self, clock):
         collector = StatsCollector()
@@ -153,21 +156,21 @@ class TestLiveRateCollector:
         collector = StatsCollector()
         start = clock.now
         collector.record_decode_start("m", "a", start)
-        collector.record_decode_start("m", "b", start + 3)
+        collector.record_decode_start("m", "b", start + 1)
         collector.record_decode_end(
-            "m", "a", ended_at=start + 6, ok=True, completion_tokens=None,
+            "m", "a", ended_at=start + 2, ok=True, completion_tokens=None,
         )
         collector.record_decode_end(
-            "m", "b", ended_at=start + 9, ok=False, completion_tokens=None,
+            "m", "b", ended_at=start + 3, ok=False, completion_tokens=None,
         )
-        collector.record_decode_start("m", "c", start + 8)
+        collector.record_decode_start("m", "c", start + 2.5)
         collector.record_gen_chunks("m", 60)
-        clock.now = start + 12
+        clock.now = start + 4
 
         live = _live(collector.snapshot(), "m")
-        # [0,6] ∪ [3,9] ∪ [8,12] = [0,12]
-        assert live["busy_s"] == pytest.approx(12.0)
-        assert live["tps"] == pytest.approx(5.0)
+        # [0,2] ∪ [1,3] ∪ [2.5,4] = [0,4]
+        assert live["busy_s"] == pytest.approx(4.0)
+        assert live["tps"] == pytest.approx(15.0)
 
     def test_ac6_busy_clipped_to_window(self, clock):
         collector = StatsCollector()
@@ -176,27 +179,27 @@ class TestLiveRateCollector:
         collector.record_gen_chunks("m", 120)
 
         live = _live(collector.snapshot(), "m")
-        assert live["busy_s"] == pytest.approx(15.0)
-        assert live["tps"] == pytest.approx(8.0)
+        assert live["busy_s"] == pytest.approx(5.0)
+        assert live["tps"] == pytest.approx(24.0)
 
     def test_ended_interval_straddling_window_start_is_clipped(self, clock):
-        # Decode ran [1000, 1020]; at t = 1025 the window is [1010, 1025],
-        # so only the last 10 s of that ended interval count as busy.
+        # Decode ran [1000, 1006]; at t = 1008 the window is [1003, 1008],
+        # so only the last 3 s of that ended interval count as busy.
         collector = StatsCollector()
         start = clock.now
         collector.record_decode_start("m", "a", start)
-        clock.now = start + 20
-        collector.record_gen_chunks("m", 40)  # t = 1020, inside window
+        clock.now = start + 6
+        collector.record_gen_chunks("m", 40)  # t = 1006, inside window
         collector.record_decode_end(
             "m", "a", ended_at=clock.now, ok=True, completion_tokens=None,
         )
-        collector.record_decode_start("m", "b", start + 25)
-        clock.now = start + 25
+        collector.record_decode_start("m", "b", start + 8)
+        clock.now = start + 8
 
         live = _live(collector.snapshot(), "m")
-        # Clipped [1010, 1020] plus the just-started [1025, 1025].
-        assert live["busy_s"] == pytest.approx(10.0)
-        assert live["tps"] == pytest.approx(40 / 10)
+        # Clipped [1003, 1006] plus the just-started [1008, 1008].
+        assert live["busy_s"] == pytest.approx(3.0)
+        assert live["tps"] == pytest.approx(40 / 3)
         assert len(collector._models["m"].live_decode_intervals) == 1
 
     def test_ac6_busy_floor_one_second(self, clock):
@@ -213,18 +216,19 @@ class TestLiveRateCollector:
         collector = StatsCollector()
         start = clock.now
         collector.record_decode_start("a", 1, start)
-        collector.record_decode_start("b", 2, start + 5)
+        collector.record_decode_start("b", 2, start + 2)
         collector.record_gen_calibration("b", 20, 10)
         collector.record_gen_chunks("a", 100)
         collector.record_gen_chunks("b", 50)
-        clock.now = start + 10
+        clock.now = start + 4
 
         snap = collector.snapshot()
-        assert _live(snap, "a")["tps"] == pytest.approx(100 / 10)
-        assert _live(snap, "b")["tps"] == pytest.approx(100 / 5)
-        # (100 + 50 × 2) tokens over union [0, 10] = 20 t/s.
-        assert _live(snap)["busy_s"] == pytest.approx(10.0)
-        assert _live(snap)["tps"] == pytest.approx(20.0)
+        assert _live(snap, "a")["tps"] == pytest.approx(100 / 4)
+        assert _live(snap, "b")["tps"] == pytest.approx(100 / 2)
+        # (100 + 50 × 2) tokens over union [0, 4] = 50 t/s.
+        assert _live(snap)["busy_s"] == pytest.approx(4.0)
+        assert _live(snap)["tps"] == pytest.approx(50.0)
+        assert _live(snap)["source"] == "estimate"
         assert _live(snap)["tokens_per_chunk"] is None
 
     def test_global_union_across_model_swap(self, clock):
@@ -233,40 +237,40 @@ class TestLiveRateCollector:
         # intervals; per-model A reads 0 because A has no active decode.
         collector = StatsCollector()
         start = clock.now
-        _stream(collector, clock, "a", 1, seconds=4, per_second=30)  # [0,4]
-        clock.now = start + 6  # swap gap [4, 6] is idle
+        _stream(collector, clock, "a", 1, seconds=2, per_second=30)  # [0,2]
+        clock.now = start + 2.5  # swap gap [2, 2.5] is idle
         collector.record_decode_start("b", 2, clock.now)
-        for _ in range(4):
+        for _ in range(2):
             collector.record_gen_chunks("b", 10)
-            clock.now += 1.0  # ends at start + 10
+            clock.now += 1.0  # ends at start + 4.5
 
         snap = collector.snapshot()
         assert _live(snap, "a")["tps"] == 0.0
-        assert _live(snap, "a")["busy_s"] == pytest.approx(4.0)
-        assert _live(snap, "b")["busy_s"] == pytest.approx(4.0)
-        assert _live(snap, "b")["tps"] == pytest.approx(40 / 4)
-        # (120 + 40) tokens over [0, 4] ∪ [6, 10] = 8 s busy.
-        assert _live(snap)["busy_s"] == pytest.approx(8.0)
-        assert _live(snap)["tps"] == pytest.approx(160 / 8)
+        assert _live(snap, "a")["busy_s"] == pytest.approx(2.0)
+        assert _live(snap, "b")["busy_s"] == pytest.approx(2.0)
+        assert _live(snap, "b")["tps"] == pytest.approx(20 / 2)
+        # (60 + 20) tokens over [0, 2] ∪ [2.5, 4.5] = 4 s busy.
+        assert _live(snap)["busy_s"] == pytest.approx(4.0)
+        assert _live(snap)["tps"] == pytest.approx(80 / 4)
 
     def test_events_older_than_window_drop_out(self, clock):
         collector = StatsCollector()
         collector.record_decode_start("m", "a", clock.now)
         collector.record_gen_chunks("m", 60)   # t = 1000
-        clock.now += 7.5
-        collector.record_gen_chunks("m", 120)  # t = 1007.5
+        clock.now += 2.5
+        collector.record_gen_chunks("m", 120)  # t = 1002.5
 
-        clock.now += 7.5  # t = 1015: both still inside (edge inclusive)
-        assert _live(collector.snapshot(), "m")["tps"] == pytest.approx(12.0)
+        clock.now += 2.5  # t = 1005: both still inside (edge inclusive)
+        assert _live(collector.snapshot(), "m")["tps"] == pytest.approx(36.0)
 
-        clock.now += 0.5  # first event now 15.5 s old
+        clock.now += 0.5  # first event now 5.5 s old
         snap = collector.snapshot()
-        assert _live(snap, "m")["tps"] == pytest.approx(8.0)
-        assert _live(snap)["tps"] == pytest.approx(8.0)
+        assert _live(snap, "m")["tps"] == pytest.approx(24.0)
+        assert _live(snap)["tps"] == pytest.approx(24.0)
         # Pruned from memory, not just filtered.
         assert len(collector._models["m"].gen_chunk_events) == 1
 
-        clock.now += 15.0
+        clock.now += 5.0
         snap = collector.snapshot()
         assert _live(snap, "m")["tps"] == 0.0
         assert len(collector._models["m"].gen_chunk_events) == 0
@@ -275,7 +279,7 @@ class TestLiveRateCollector:
         collector = StatsCollector()
         _stream(collector, clock, "m", "a", seconds=2, per_second=1)
         assert len(collector._models["m"].live_decode_intervals) == 1
-        clock.now += 14.5
+        clock.now += 4.5
         assert _live(collector.snapshot(), "m")["busy_s"] == pytest.approx(0.5)
         clock.now += 1.0
         snap = collector.snapshot()
@@ -315,7 +319,7 @@ class TestLiveRateCollector:
         assert snap["requests"]["total"] == 0
 
     def test_exact_token_windows_keep_60s_and_300s(self, clock):
-        # The live window is 15 s, but last_60s / last_300s stay 60 / 300 s:
+        # The live window is 5 s, but last_60s / last_300s stay 60 / 300 s:
         # an exact-token event 30 s old counts in last_60s, while chunks
         # 30 s old are outside the live window.
         collector = StatsCollector()
@@ -327,13 +331,13 @@ class TestLiveRateCollector:
 
         snap = collector.snapshot()
         gen = snap["requests"]["rates"]["generation_tps"]
-        assert gen["live"]["window_s"] == 15
+        assert gen["live"]["window_s"] == 5
         assert gen["live"]["tps"] == 0.0
         assert gen["last_60s"] == pytest.approx(90 / 60)
         assert gen["last_300s"] == pytest.approx(90 / 300)
         row = snap["models"]["m"]["requests"]["rates"]["generation_tps"]
         assert row["last_60s"] == pytest.approx(90 / 60)
-        assert row["live"]["window_s"] == 15
+        assert row["live"]["window_s"] == 5
 
 
 class TestLiveRateThroughSwapper:

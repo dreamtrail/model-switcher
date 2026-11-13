@@ -32,7 +32,7 @@ FULL = {
             "generation_tps": {
                 "avg": 52.66,
                 "avg_aggregate": {"tps": 77.71, "concurrency": 2.14},
-                "live": {"tps": 38.25, "window_s": 15, "estimate": True},
+                "live": {"tps": 38.25, "window_s": 5, "estimate": True},
             },
         },
         "ttft_ms": {"p50": 180.2, "p95": 849.6},
@@ -64,7 +64,7 @@ FULL = {
                     "prompt_tps": {"avg": 4120.0, "avg_aggregate": None},
                     "generation_tps": {
                         "avg": 96.44, "max_aggregate": None, "avg_aggregate": None,
-                        "live": {"tps": 0.0, "window_s": 15, "estimate": True},
+                        "live": {"tps": 0.0, "window_s": 5, "estimate": True},
                     },
                 },
                 "ttft_ms": {"p50": 95.0, "p95": 310.4},
@@ -91,7 +91,7 @@ FULL = {
                         "avg": 42.1,
                         "max_aggregate": {"tps": 118.44, "concurrency": 4},
                         "avg_aggregate": {"tps": 85.34, "concurrency": 2.36},
-                        "live": {"tps": 38.25, "window_s": 15, "estimate": True},
+                        "live": {"tps": 38.25, "window_s": 5, "estimate": True},
                     },
                 },
                 "ttft_ms": {"p50": 210.4, "p95": 890.0},

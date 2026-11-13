@@ -33,11 +33,13 @@ from src.stats_support import (
     _PrefillInterval,
     _busy_seconds,
     _component_totals,
+    _engine_window,
     _duration_report,
     _interval_components,
     _is_count,
     _peak_decode_concurrency,
     _percentile,
+    _prune_engine_samples,
     _prune_gen_chunk_events,
     _prune_live_decode_intervals,
     _prune_token_events,
@@ -45,7 +47,9 @@ from src.stats_support import (
     _tokens_per_chunk,
 )
 
-# Floor for the live-rate busy-time denominator (seconds).
+# Floor for the live-rate busy-time denominator (seconds). Kept at 1 s with
+# the 5 s window: engine samples arrive about once per second, so a fresh
+# decode already spans about 1 s of busy time when its rate first shows.
 LIVE_BUSY_FLOOR_S = 1.0
 
 
@@ -160,6 +164,9 @@ class _ModelStats:
     gen_calibration: deque = field(
         default_factory=lambda: deque(maxlen=GEN_CALIBRATION_SAMPLES),
     )
+    # Live rate: engine generated-token counter samples (monotonic, total)
+    # from src/engine_metrics.py; cleared when a new process is probed.
+    engine_samples: deque = field(default_factory=deque)
     decode_frontier: list[_DecodeInterval] = field(default_factory=list)
     max_aggregate_tps: float | None = None
     max_aggregate_concurrency: int | None = None
@@ -379,6 +386,28 @@ class StatsCollector:
         events = self._model(model).gen_chunk_events
         events.append((now_monotonic, n))
         _prune_gen_chunk_events(events, now_monotonic)
+
+    def record_engine_tokens(self, model: str, total: object) -> None:
+        """Record the engine's generated-token counter for the live rate."""
+        if isinstance(total, bool) or not isinstance(total, (int, float)):
+            return
+        if not math.isfinite(total) or total < 0:
+            return
+        now_monotonic = time.monotonic()
+        samples = self._model(model).engine_samples
+        samples.append((now_monotonic, float(total)))
+        _prune_engine_samples(samples, now_monotonic)
+
+    def clear_engine_tokens(self, model: str) -> None:
+        """Forget engine counter samples (a new model process was loaded)."""
+        stats = self._models.get(model)
+        if stats is not None:
+            stats.engine_samples.clear()
+
+    def has_active_decode(self, model: str) -> bool:
+        """True while the model has a decode past its first token."""
+        stats = self._models.get(model)
+        return stats is not None and bool(stats.active_decodes)
 
     def record_gen_calibration(
         self, model: str, completion_tokens: object, chunks: object,
@@ -697,14 +726,18 @@ class StatsCollector:
             times.popleft()
 
     def _live_reports(
-        self, now_monotonic: float,
+        self, now_monotonic: float, current_model: str | None = None,
     ) -> tuple[dict[str, dict], dict]:
-        """Per-model and global live generation-rate estimates.
+        """Per-model and global live generation rates.
 
-        Calibrated tokens (chunks in the 15 s window × tokens per chunk)
-        divided by busy time: the union of ended and active decode
-        intervals clipped to the window, floored at 1 s. The rate is 0
-        while no decode is active.
+        Engine source: the generated-token counter increase over the
+        sampled part of the 5 s window divided by busy time in that span.
+        Estimate source (no counter samples): calibrated tokens (chunks in
+        the window × tokens per chunk) divided by busy time in the window.
+        Busy time is the union of ended and active decode intervals,
+        floored at 1 s. The rate is 0 while no decode is active. Global
+        uses the current model's engine rate when it has one and no other
+        model is decoding; otherwise the summed estimate.
         """
         per_model: dict[str, dict] = {}
         all_intervals: list[tuple[float, float]] = []
@@ -728,22 +761,52 @@ class StatsCollector:
             total_tokens += tokens
             active = bool(ms.active_decodes)
             any_active = any_active or active
+            engine = _engine_window(
+                ms.engine_samples, intervals, now_monotonic,
+            )
+            if engine is not None:
+                engine_tokens, engine_busy = engine
+                tps = engine_tokens / max(engine_busy, LIVE_BUSY_FLOOR_S)
+                source = "engine"
+            else:
+                tps = tokens / max(busy, LIVE_BUSY_FLOOR_S)
+                source = "estimate"
             per_model[name] = {
-                "tps": (
-                    tokens / max(busy, LIVE_BUSY_FLOOR_S) if active else 0.0
-                ),
+                "tps": tps if active else 0.0,
+                "estimate": source == "estimate",
+                "source": source,
                 "busy_s": busy,
                 "tokens_per_chunk": ratio,
             }
         busy = _busy_seconds(all_intervals, now_monotonic)
-        global_live = {
-            "tps": (
-                total_tokens / max(busy, LIVE_BUSY_FLOOR_S)
-                if any_active else 0.0
-            ),
-            "busy_s": busy,
-            "tokens_per_chunk": None,
-        }
+        current = per_model.get(current_model)
+        others_active = any(
+            ms.active_decodes
+            for name, ms in self._models.items() if name != current_model
+        )
+        if (
+            current is not None
+            and current["source"] == "engine"
+            and not others_active
+        ):
+            global_live = {
+                "tps": current["tps"],
+                "estimate": False,
+                "source": "engine",
+                "busy_s": busy,
+                "tokens_per_chunk": None,
+            }
+        else:
+            global_live = {
+                "tps": (
+                    total_tokens / max(busy, LIVE_BUSY_FLOOR_S)
+                    if any_active else 0.0
+                ),
+                "estimate": True,
+                "source": "estimate",
+                "busy_s": busy,
+                "tokens_per_chunk": None,
+            }
         return per_model, global_live
 
     def snapshot(
@@ -761,8 +824,9 @@ class StatsCollector:
             _prune_live_decode_intervals(
                 ms.live_decode_intervals, now_monotonic,
             )
+            _prune_engine_samples(ms.engine_samples, now_monotonic)
         now_monotonic = time.monotonic()
-        live, global_live = self._live_reports(now_monotonic)
+        live, global_live = self._live_reports(now_monotonic, current_model)
         uptime = max(time.time() - self._started_at, 0.0)
         if self._swap_durations:
             ordered = sorted(self._swap_durations)
@@ -864,7 +928,8 @@ class StatsCollector:
                 now_monotonic=now_monotonic,
                 decode_aggregate=global_decode,
                 prefill_aggregate=global_prefill,
-                # Global: Σ calibrated tokens / union busy time (all models).
+                # Global: current model's engine rate, else Σ calibrated
+                # tokens / union busy time (all models).
                 live=global_live,
             ),
             "throughput": {

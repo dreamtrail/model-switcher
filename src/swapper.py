@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from collections import deque
 from collections.abc import Callable
@@ -15,6 +16,7 @@ from aiohttp import web
 
 from src.config import Config, variant_id
 from src.control import dispatch_control
+from src.engine_metrics import EngineCounterPoller
 from src.health import wait_for_ready
 from src.port_rewrite import create_temp_dir
 from src.process_manager import (
@@ -41,6 +43,8 @@ from src.swapper_lifecycle import (
     _SwapperLifecycleMixin,
     _SwapSuperseded,
 )
+
+logger = logging.getLogger("src.swapper")
 
 MAX_QUEUE = 10  # max pending requests during swap
 
@@ -81,6 +85,9 @@ class Swapper(_SwapperLifecycleMixin):
         self.automatic_switch = automatic_switch
         self._client = client
         self.stats = stats or StatsCollector()
+        # Reads the backend's generated-token counter during decodes for
+        # the live generation rate (src/engine_metrics.py).
+        self._engine_poller = EngineCounterPoller(self.stats)
         self._current: ProcessHandle | None = None
         self._current_model: str | None = None
         self._healthy = False
@@ -739,12 +746,23 @@ class Swapper(_SwapperLifecycleMixin):
         """Proxy a request already recorded as active model usage."""
         started = time.monotonic()
         decode_identity = object()
-        outcome = Outcome(
-            first_token_observer=lambda first_token_at: (
-                self.stats.record_decode_start(
-                    model_name, decode_identity, first_token_at,
+
+        def on_first_token(first_token_at: float) -> None:
+            self.stats.record_decode_start(
+                model_name, decode_identity, first_token_at,
+            )
+            if handle is None:
+                return
+            try:
+                self._engine_poller.notify_decode(
+                    model_name, handle, f"http://127.0.0.1:{handle.port}",
                 )
-            ),
+            except Exception:
+                # The live rate must never break the proxied stream.
+                logger.debug("Engine counter poll not started", exc_info=True)
+
+        outcome = Outcome(
+            first_token_observer=on_first_token,
             # Only the streaming proxy reports chunks (live rate estimate).
             gen_chunk_observer=lambda units: (
                 self.stats.record_gen_chunks(model_name, units)

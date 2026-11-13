@@ -615,6 +615,7 @@ class _SwapperLifecycleMixin:
                 self._desired_model = None
                 self._swapping = False
         finally:
+            await self._engine_poller.close()
             if self._client:
                 await self._client.close()
                 self._client = None

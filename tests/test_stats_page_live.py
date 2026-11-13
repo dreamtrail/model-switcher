@@ -19,19 +19,24 @@ from tests.stats_page_helpers import (
 
 
 class TestStatsPageLiveRate:
-    """P-20260926-01: estimated live generation rate tile and column.
+    """P-20260926-01: live generation rate tile and column.
 
-    Tooltip text updated by P-20260926-04 (busy-time, calibrated).
+    Tooltip text updated by P-20260926-04 (busy-time, calibrated) and
+    P-20261114-01 (5 s window, engine counter source shown on the tile).
     """
 
-    TIP = "Estimated combined speed while generating, last 15 s (streamed chunks × tokens per chunk)"
+    TIP = (
+        "Combined speed while generating, last 5 s: the engine's"
+        " generated-token counter (vLLM), else an estimate from streamed"
+        " chunks × tokens per chunk"
+    )
 
     def test_tile_markup_is_labelled_as_estimate_with_tooltip(self):
         tiles = STATS_HTML.split('<section class="kpis"', 1)[1].split("</section>", 1)[0]
         assert f'<div class="card tile" title="{self.TIP}">' in tiles
-        assert '<div class="label">Live gen t/s ≈</div>' in tiles
+        assert '<div class="label">Live gen t/s</div>' in tiles
         assert '<div id="kpi-live" class="value">–</div>' in tiles
-        assert "estimate · 15 s" in tiles
+        assert '<div id="kpi-live-sub" class="sub">estimate · 5 s</div>' in tiles
         # Seven tiles: the wide model tile keeps 2/4/8-column rows full.
         assert tiles.count('class="card tile') == 7
         assert '<div class="card tile wide">' in tiles
@@ -43,7 +48,7 @@ class TestStatsPageLiveRate:
     @pytest.mark.parametrize(
         ("value_expression", "expected"),
         [
-            ("{tps: 12.34, window_s: 15, estimate: true}", "12.3"),
+            ("{tps: 12.34, window_s: 5, estimate: true}", "12.3"),
             ("{tps: 0.05}", "0.1"),
             ("{tps: 0}", "–"),
             ("{tps: -1}", "–"),
@@ -64,8 +69,42 @@ class TestStatsPageLiveRate:
         )
         assert output == expected
 
+    @pytest.mark.parametrize(
+        ("value_expression", "expected"),
+        [
+            ('{tps: 80, window_s: 5, source: "engine"}', "engine · 5 s"),
+            ('{tps: 3, window_s: 5, source: "estimate"}', "estimate · 5 s"),
+            ("{tps: 3, window_s: 5}", "estimate · 5 s"),
+            ('{source: "other", window_s: 7}', "estimate · 7 s"),
+            ('{source: "engine", window_s: "5"}', "engine · 5 s"),
+            ("null", "estimate · 5 s"),
+            ("[]", "estimate · 5 s"),
+        ],
+    )
+    def test_live_source_formatter_contract(self, value_expression, expected):
+        output = _execute(
+            "console.log(JSON.stringify(fmtLiveSource("
+            + value_expression + ")));\n"
+        )
+        assert output == expected
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [("engine", "engine · 5 s"), ("estimate", "estimate · 5 s")],
+    )
+    def test_tile_subtitle_shows_source(self, source, expected):
+        page = _render({
+            "requests": {"total": 1, "rates": {"generation_tps": {"live": {
+                "tps": 81.5, "window_s": 5, "source": source,
+                "estimate": source == "estimate",
+            }}}},
+            "models": {},
+        })
+        assert _text(page, "kpi-live") == "81.5"
+        assert _text(page, "kpi-live-sub") == expected
+
     def test_live_values_render_per_model_and_in_all_models_row(self):
-        live = lambda tps: {"tps": tps, "window_s": 15, "estimate": True}
+        live = lambda tps: {"tps": tps, "window_s": 5, "estimate": True}
         page = _render({
             "current_model": "a",
             "requests": {"total": 3, "rates": {"generation_tps": {"live": live(7.5)}}},

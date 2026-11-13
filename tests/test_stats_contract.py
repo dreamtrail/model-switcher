@@ -64,8 +64,8 @@ class TestStatsEndpoints:
                         "server_timed_share": None,
                         "skipped_buffered": 0,
                         "live": {
-                            "tps": 0.0, "window_s": 15, "estimate": True,
-                            "busy_s": 0.0, "tokens_per_chunk": None,
+                            "tps": 0.0, "window_s": 5, "estimate": True,
+                            "source": "estimate", "busy_s": 0.0, "tokens_per_chunk": None,
                         },
                     },
                 }

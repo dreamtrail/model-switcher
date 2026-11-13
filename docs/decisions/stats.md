@@ -91,7 +91,9 @@ Return to the [decision index](../DECISIONS.md). Earlier metric contracts, inclu
 ## P-20260926-04 — Live Generation Rate: Busy Time and Calibration
 
 Supersedes the **Rate** line of § P-20260926-01. Units, wiring, limits of
-chunk detection, and page layout from that section still apply.
+chunk detection, and page layout from that section still apply. The window
+is 5 s and an engine counter source was added in § P-20261114-01; this
+section still defines the estimate path.
 
 ### Problem
 - **Slow to react** (Revision 2, user request 2026-09-26: "short the window") — the live window is now 15 s (`LIVE_WINDOW_S`), separate from the exact-token windows; `last_60s` / `last_300s` keep 60 s / 300 s.
@@ -262,5 +264,36 @@ chunk detection, and page layout from that section still apply.
 
 ### Status
 - Implemented under P-20260930-03 with swapper-level tests (`tests/test_stats_loads.py`), key-set and contract updates, and page tests (`tests/test_stats_page.py`). README describes the tile and `loads`.
+
+## P-20261114-01 — Live Generation Rate: Engine Counter and 5 s Window
+
+Builds on § P-20260926-04, which still defines busy time and the chunk
+estimate. Changes the window and adds a second, exact source.
+
+### Problem
+- **Silent streams read near 0** — user report 2026-11-14: "Live gen t/s ≈ 3.4" while vLLM ran at about 200 t/s. On the live server a stream sent its first token, then about 25 s of no counted chunks (a buffered tool call), and ended with 2438 more completion tokens. Busy time kept growing with no chunks, so the tile fell from 125 to 1.9 to 0, and later short replies read 3–50 t/s while that span stayed in the 15 s window (evidence: `artifacts/P-20261114-01/main-02-live-samples.jsonl`).
+- **Slow to react** — user decision 2026-11-14: a 5 s window, fixed (no flag).
+
+### Definition
+- **Window** — `LIVE_WINDOW_S` is 5 s for both sources. `LIVE_BUSY_FLOOR_S` stays 1 s: engine samples arrive about once per second, so a new decode already spans about 1 s of busy time when its engine rate first shows.
+- **Counter table** — `ENGINE_TOKEN_COUNTERS` in `src/engine_metrics.py` lists counters that grow during generation. It holds only `vllm:generation_tokens_total` (checked on the live server 2026-11-14; it grows every engine step). SGLang's `sglang:generation_tokens_total` and llama.cpp's `llamacpp:tokens_predicted_total` grow only when a request finishes (`artifacts/P-20261114-01/web-researcher-01-quotes.txt`), so they would read 0 and then spike; those backends use the estimate. A future live counter is one more table entry.
+- **Parsing** — stdlib Prometheus text parsing: comments, blank lines, labels (quoted values may hold `}` or spaces), optional timestamps, and scientific notation (`2.429807e+06`). The value is the sum over all label sets of the first table name present; NaN, infinite, and negative samples are skipped.
+- **Polling** — `EngineCounterPoller` (owned by the swapper) starts when a decode records its first token and polls `http://127.0.0.1:{port}/metrics` of the model process directly, not through the client listener. It polls about once per second with a 1 s timeout and its own short-lived HTTP session (not the proxy pool), one poll in flight at most, and stops when the model has no active decode, so an idle switcher sends no requests. The whole body is read up to 4 MB (live vLLM: about 74 KB, counter at line 231). If a first token arrives while a stopping loop is still closing its session, the loop restarts as soon as it ends. Each model process is probed until it answers: a 404, 405, or 501, a body over 4 MB, or a body without a listed counter means estimate only until a new process is loaded. Timeouts, refused connections, and other errors are retried at the normal cadence. Poll errors are logged at debug level and never reach the proxied request.
+- **Engine rate** — samples `(time, counter)` older than 5 s are dropped, and all samples are cleared when polling starts again after the model was idle (or on a new process), so time before the idle gap never enters the first reading. Over the span from the oldest to the newest in-window sample: `tps = counter increase / max(busy time in that span, 1 s)`, where busy time is the union of decode intervals from § P-20260926-04. A drop in the counter (engine restart) counts as 0 for that step. With fewer than two in-window samples the model uses the estimate.
+- **Zero when idle** — `tps` is `0` while the model has no active decode (first token seen, not ended), with either source, so prompt processing alone reads 0. When one reply streams while another prefills, the counter rises slower and the rate shows that.
+- **Global** — the current model's engine rate when it has one and no other model is decoding; otherwise the § P-20260926-04 estimate.
+- **JSON** — `live` adds `source`: `"engine"` (then `estimate` is `false`) or `"estimate"`; `window_s` is `5`. `busy_s` stays the busy time in the whole window.
+
+### Limits
+- **vLLM only** — other backends keep the estimate and its limits (lag of the tokens-per-chunk ratio, silent streams count as busy).
+- **Per engine, not per request** — the counter covers everything the engine generates, including requests that reach it without going through the switcher. That matches the aggregate meaning of the live rate.
+- **First second** — a decode after an idle gap shows the estimate until its second sample arrives (about 1 s).
+- **Not tested on the live server** — the parser and poller are tested against a fake backend (aiohttp test server); the counter name and its live growth were checked by hand on the live vLLM server.
+
+### Page
+- **Tile** — the label is "Live gen t/s" (no "≈") and the subtitle shows the source and window, for example "engine · 5 s" or "estimate · 5 s" (`kpi-live-sub`). The column is "Live t/s". Both tooltips read "Combined speed while generating, last 5 s: the engine's generated-token counter (vLLM), else an estimate from streamed chunks × tokens per chunk".
+
+### Status
+- Implemented under P-20261114-01 with parser and poller tests against an aiohttp fake backend (`tests/test_engine_metrics.py`: large streamed bodies, transient errors, the stop/restart race, restart after idle), fake-clock collector tests and swapper integration tests including the 25 s silent-stream regression (`tests/test_stats_live_engine.py`), and the existing live-rate and page tests moved to the 5 s window.
 
 Return to the [decision index](../DECISIONS.md).

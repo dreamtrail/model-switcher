@@ -144,10 +144,10 @@ STATS_HTML = (
     <div class="value"><span id="kpi-gen">–</span><span id="kpi-gen-unit" class="unit" hidden>tok/s</span></div>
     <div class="sub">average</div>
   </div>
-  <div class="card tile" title="Estimated combined speed while generating, last 15 s (streamed chunks × tokens per chunk)">
-    <div class="label">Live gen t/s ≈</div>
+  <div class="card tile" title="Combined speed while generating, last 5 s: the engine's generated-token counter (vLLM), else an estimate from streamed chunks × tokens per chunk">
+    <div class="label">Live gen t/s</div>
     <div id="kpi-live" class="value">–</div>
-    <div class="sub">estimate · 15 s</div>
+    <div id="kpi-live-sub" class="sub">estimate · 5 s</div>
   </div>
   <div class="card tile">
     <div class="label">Requests</div>
@@ -176,7 +176,7 @@ STATS_HTML = (
   <table>
     <thead><tr>
       <th>Model</th><th>Reqs</th><th>Errors</th><th title="Generation speed; uses the server's own decode time when available, else first to last streamed chunk">Gen t/s</th>
-      <th title="Estimated combined speed while generating, last 15 s (streamed chunks × tokens per chunk)">Live t/s ≈</th>
+      <th title="Combined speed while generating, last 5 s: the engine's generated-token counter (vLLM), else an estimate from streamed chunks × tokens per chunk">Live t/s</th>
       <th title="Combined speed while busy @ average concurrent requests">Gen total</th>
       <th title="Prompt processing speed; uses the server's own prefill time when available, else time to first token">Prompt t/s</th>
       <th title="Combined speed while busy @ average concurrent requests">Prompt total</th>
@@ -228,6 +228,13 @@ function fmtCompact(v) {
 function fmtLive(live) {
   const tps = obj(live).tps;
   return isNum(tps) && tps > 0 ? fmtTps(tps) : DASH;
+}
+
+function fmtLiveSource(live) {
+  const l = obj(live);
+  const source = l.source === "engine" ? "engine" : "estimate";
+  const win = isNum(l.window_s) && l.window_s > 0 ? l.window_s : 5;
+  return source + " · " + win + " s";
 }
 
 function fmtPct(v) {
@@ -367,6 +374,7 @@ function renderTiles(data) {
   if (unit) unit.hidden = gen === DASH;
   const live = setText("kpi-live", fmtLive(genRates.live));
   if (live) live.className = live.textContent === DASH ? "value idle" : "value";
+  setText("kpi-live-sub", fmtLiveSource(genRates.live));
 
   setCount("kpi-reqs", req.total);
   const reqSub = byId("kpi-reqs-sub");

@@ -14,7 +14,7 @@ REQUEST_RETENTION_S = 3600
 # Live-rate calibration: finished streaming requests kept per model.
 GEN_CALIBRATION_SAMPLES = 50
 # Live generation-rate window (seconds); exact-token windows stay above.
-LIVE_WINDOW_S = 15
+LIVE_WINDOW_S = 5
 
 
 @dataclass(frozen=True)
@@ -193,13 +193,27 @@ def _prune_live_decode_intervals(
         intervals.popleft()
 
 
+def _prune_engine_samples(samples: deque, now_monotonic: float) -> None:
+    """Drop engine counter samples older than the live window."""
+    while samples and now_monotonic - samples[0][0] > LIVE_WINDOW_S:
+        samples.popleft()
+
+
 def _busy_seconds(
     intervals: list[tuple[float, float]], now_monotonic: float,
 ) -> float:
     """Length of the union of intervals clipped to the live window."""
-    window_start = now_monotonic - LIVE_WINDOW_S
+    return _busy_between(
+        intervals, now_monotonic - LIVE_WINDOW_S, now_monotonic,
+    )
+
+
+def _busy_between(
+    intervals: list[tuple[float, float]], span_start: float, span_end: float,
+) -> float:
+    """Length of the union of intervals clipped to [span_start, span_end]."""
     clipped = sorted(
-        (max(start, window_start), min(end, now_monotonic))
+        (max(start, span_start), min(end, span_end))
         for start, end in intervals
     )
     busy = 0.0
@@ -216,6 +230,35 @@ def _busy_seconds(
     if cur_end is not None:
         busy += cur_end - cur_start
     return busy
+
+
+def _engine_window(
+    samples: deque,
+    intervals: list[tuple[float, float]],
+    now_monotonic: float,
+) -> tuple[float, float] | None:
+    """Engine counter increase and busy time over the sampled live span.
+
+    The span runs from the oldest to the newest counter sample inside the
+    live window: the counter is only known at sample times. Busy time is
+    the union of decode intervals clipped to that span. A negative step
+    (engine restart) counts as 0. Returns None with fewer than two samples
+    covering a positive span.
+    """
+    points = [
+        (t, v) for t, v in samples if now_monotonic - t <= LIVE_WINDOW_S
+    ]
+    if len(points) < 2:
+        return None
+    span_start, span_end = points[0][0], points[-1][0]
+    if span_end <= span_start:
+        return None
+    tokens = 0.0
+    for (_, v0), (_, v1) in zip(points, points[1:]):
+        delta = v1 - v0
+        if math.isfinite(delta) and delta > 0:
+            tokens += delta
+    return tokens, _busy_between(intervals, span_start, span_end)
 
 
 def _tokens_per_chunk(samples: deque) -> float:
@@ -299,10 +342,10 @@ def _requests_report(
             decode_server_tokens / decode_tokens
         ) if decode_tokens > 0 else None,
         "skipped_buffered": decode_skipped_buffered,
-        # Estimate: calibrated streamed chunks per busy second.
+        # Engine counter, else calibrated streamed chunks, per busy second.
         "live": {
             "tps": 0.0, "window_s": LIVE_WINDOW_S, "estimate": True,
-            "busy_s": 0.0, "tokens_per_chunk": None,
+            "source": "estimate", "busy_s": 0.0, "tokens_per_chunk": None,
             **(live or {}),
         },
     }

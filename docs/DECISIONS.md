@@ -37,3 +37,4 @@ Complete decision records, grouped by topic. Records remain in their original re
 - [P-20261013-10 — Programs given by path](decisions/runtime.md#p-20261013-10--programs-given-by-path)
 - [P-20261027-01 — Splash Compatibility](decisions/runtime.md#p-20261027-01--splash-compatibility)
 - [P-20261028-03 — Automatic switching off by default](decisions/runtime.md#p-20261028-03--automatic-switching-off-by-default)
+- [P-20261114-01 — Live Generation Rate: Engine Counter and 5 s Window](decisions/stats.md#p-20261114-01--live-generation-rate-engine-counter-and-5-s-window)
