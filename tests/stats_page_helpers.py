@@ -275,14 +275,25 @@ def _rows(page, ident="models") -> list[dict]:
 
 
 def _cells(row) -> list[str]:
-    """Visible cell texts; the model cell reports only the name, not the pill."""
+    """Visible cell texts; the model cell gives only the name, not the dot."""
     tds = row["children"]
-    return [tds[0]["children"][0]["text"]] + [td["text"] for td in tds[1:]]
+    return [_label(row)["text"]] + [td["text"] for td in tds[1:]]
 
 
-def _pill(row):
-    extra = row["children"][0]["children"][1:]
-    return extra[0] if extra else None
+def _slot(row):
+    """The fixed-width slot that leads every model cell."""
+    return row["children"][0]["children"][0]
+
+
+def _label(row):
+    """The truncating model-name span, after the slot."""
+    return row["children"][0]["children"][1]
+
+
+def _dot(row):
+    """The loaded marker, or None when the slot is blank."""
+    slot = _slot(row)
+    return slot if "dot" in slot["className"].split() else None
 
 
 def _classes(node) -> list[str]:

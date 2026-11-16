@@ -29,7 +29,10 @@ STATS_HTML = (
 """
     + LIGHT_PALETTE_START_CSS
     + PAGE_BASE_REST_CSS
-    + """  .top {
+    + """  /* Wider than the shared 80rem cap so the 14-column Models table
+     fits without a sideways scroll bar; narrow screens still scroll it. */
+  main { max-width: 84rem; }
+  .top {
     display: flex; flex-wrap: wrap; align-items: flex-end;
     justify-content: space-between; gap: 0.5rem 1.5rem; margin-bottom: 1.25rem;
   }
@@ -101,13 +104,10 @@ STATS_HTML = (
     font-weight: 500;
   }
   tr.loaded .model-name { font-weight: 600; }
-  .pill {
-    display: inline-flex; align-items: center; gap: 0.3rem; margin-left: 0.5rem;
-    padding: 0.05rem 0.5rem 0.05rem 0.4rem; border-radius: 999px;
-    background: var(--good-tint); color: var(--ink-2);
-    font-size: 0.7rem; font-weight: 500; vertical-align: 0.1em;
+  .slot {
+    display: inline-block; width: 0.5rem; height: 0.5rem;
+    margin-right: 0.5rem; vertical-align: middle;
   }
-  .pill .dot { width: 0.4rem; height: 0.4rem; }
   .muted { color: var(--muted); }
   .chips { display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0 1.25rem 1.1rem; }
   .chip {
@@ -440,15 +440,22 @@ function rowCells(name, req) {
 
 function nameCell(name, loaded) {
   const td = el("td");
+  // Every row starts with a fixed-width slot so names stay aligned; the
+  // loaded model fills it with a green dot. Title and aria-label name the
+  // dot so colour is not the only signal. The slot sits outside the name
+  // span, so name truncation never cuts it off.
+  const slot = el("span", loaded ? "slot dot good" : "slot");
+  if (loaded) {
+    slot.title = "Loaded";
+    slot.setAttribute("role", "img");
+    slot.setAttribute("aria-label", "Loaded");
+  } else {
+    slot.setAttribute("aria-hidden", "true");
+  }
+  td.appendChild(slot);
   const label = el("span", "model-name", name);
   label.title = name;
   td.appendChild(label);
-  if (loaded) {
-    const pill = el("span", "pill");
-    pill.appendChild(el("span", "dot good"));
-    pill.appendChild(el("span", "", "Loaded"));
-    td.appendChild(pill);
-  }
   return td;
 }
 

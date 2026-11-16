@@ -21,7 +21,9 @@ from tests.stats_page_helpers import (
     _has_meter,
     _lines,
     _page_ids,
-    _pill,
+    _dot,
+    _label,
+    _slot,
     _render,
     _rows,
     _text,
@@ -46,6 +48,15 @@ class TestStatsPageStatic:
         header = STATS_HTML.split('<header class="top">', 1)[1].split("</header>", 1)[0]
         assert '<p class="subtitle">Statistics · <a href="/control">Control panel</a></p>' in header
         assert ".subtitle a" in STATS_HTML
+
+    def test_page_widens_main_cap_after_shared_css(self):
+        style = STATS_HTML.split("<style>", 1)[1].split("</style>", 1)[0]
+        shared = style.index("main { max-width: 80rem;")
+        wider = style.index("main { max-width: 84rem; }")
+        assert shared < wider
+        assert style.count("max-width: 84rem") == 1
+        # The loaded marker is a bare dot in a fixed slot, not a text pill.
+        assert ".pill" not in style and ".slot {" in style
 
     def test_page_has_one_svg_favicon_link_in_head(self):
         assert STATS_HTML.count('rel="icon"') == 1
@@ -140,7 +151,7 @@ class TestStatsPageRendering:
         assert _text(page, "kpi-uptime") == "3h 12m"
         assert _lines(page, "kpi-uptime-sub") == ["busy 1h 4m", "33% of uptime"]
 
-    def test_full_data_renders_models_table_with_pill_and_totals(self):
+    def test_full_data_renders_models_table_with_dot_and_totals(self):
         page = _render(FULL)
 
         rows = _rows(page)
@@ -148,11 +159,21 @@ class TestStatsPageRendering:
             "qwen3-32b", "big", "aaa", "llama-3.1-8b",
         ]
         assert [row["className"] for row in rows] == ["loaded", "", "", ""]
-        pill = _pill(rows[0])
-        assert pill["className"] == "pill"
-        assert pill["text"] == "Loaded"
-        assert _classes(pill) == ["dot good", ""]
-        assert all(_pill(row) is None for row in rows[1:])
+        # The loaded dot fills the slot before the name.
+        cell = rows[0]["children"][0]["children"]
+        classes = [c["className"] for c in cell]
+        assert classes == ["slot dot good", "model-name"]
+        dot = _dot(rows[0])
+        assert dot["text"] == "" and dot["children"] == []
+        assert dot["title"] == "Loaded"
+        assert dot["attributes"] == {"role": "img", "aria-label": "Loaded"}
+        # Other rows keep a blank slot of the same width so names align.
+        for row in rows[1:]:
+            assert _slot(row)["className"] == "slot"
+            assert _slot(row)["text"] == "" and _slot(row)["title"] == ""
+            assert _slot(row)["attributes"] == {"aria-hidden": "true"}
+            assert _label(row)["className"] == "model-name"
+        assert all(_dot(row) is None for row in rows[1:])
 
         assert _cells(rows[0]) == [
             "qwen3-32b", "312", "2", "42.1", "38.3", "85.3 @2.4", "1,830", "2,140 @1.0",
@@ -198,7 +219,8 @@ class TestStatsPageRendering:
         totals = _rows(page, "totals")
         assert len(totals) == 1
         assert totals[0]["className"] == "all"
-        assert _pill(totals[0]) is None
+        assert _dot(totals[0]) is None
+        assert _slot(totals[0])["className"] == "slot"
         # The All models row uses the global aggregates and token totals.
         assert _cells(totals[0]) == [
             "All models", "1,400", "2", "52.7", "38.3", "77.7 @2.1", "2,204", "3,140 @1.8",
@@ -551,7 +573,7 @@ class TestStatsPageRendering:
             "–", "–", "–",
         ]
         assert row["className"] == "loaded"
-        assert _pill(row)["text"] == "Loaded"
+        assert _dot(row)["title"] == "Loaded"
 
     @pytest.mark.parametrize(
         ("name", "tile_class"),
@@ -572,13 +594,15 @@ class TestStatsPageRendering:
         assert _text(page, "kpi-model") == name
         assert page["kpi-model"]["title"] == name
         # Table: the name span is capped by CSS; the full name stays in text + title,
-        # and the Loaded pill is a separate sibling so it is never truncated.
+        # and the Loaded dot is a separate sibling before it, so it is never
+        # truncated.
         row = _rows(page)[0]
-        label = row["children"][0]["children"][0]
+        label = _label(row)
         assert label["className"] == "model-name"
         assert label["text"] == name
         assert label["title"] == name
-        assert _pill(row)["text"] == "Loaded"
+        assert _dot(row) == _slot(row)
+        assert _dot(row)["title"] == "Loaded"
 
     def test_name_cap_styles_present(self):
         style = STATS_HTML.split("<style>", 1)[1].split("</style>", 1)[0]
@@ -596,9 +620,9 @@ class TestStatsPageRendering:
         assert page["kpi-model"]["title"] == HOSTILE
         row = _rows(page)[0]
         assert _cells(row)[0] == HOSTILE
-        assert row["children"][0]["children"][0]["title"] == HOSTILE
+        assert _label(row)["title"] == HOSTILE
         assert row["className"] == "loaded"
-        assert _pill(row) is not None
+        assert _dot(row) is not None
         chip = page["errors"]["children"][0]
         assert [c["text"] for c in chip["children"]] == ["", HOSTILE, "1"]
         # Only elements created by the page script exist: no parsed markup.
