@@ -2,7 +2,6 @@
 
 ## NEXT
 
-- [P-20261116-10] Hygiene(refactor): Split src/swapper.py (906 lines after P-20261013-02) into focused modules; keep behavior and tests unchanged
 - [P-20261116-11] Hygiene(triage): DISCOVERED has 22 entries; close, merge or promote stale ones
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to docs/CLI.md

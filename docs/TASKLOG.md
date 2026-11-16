@@ -81,3 +81,4 @@
 - [P-20261013-02] Remember the chosen model variant across restarts in `<config>.state.json`; a YAML `default:` edit wins — DONE 2026-11-16 19:37 +0900
 - [P-20261116-12] /stats: removed the "Models" heading above the table — DONE 2026-11-16 19:44 +0900
 - [P-20261116-09] Push and deploy f7fc22b to dgx1 (idle restart adopted the cluster), then switch to variant 1107, now remembered in config.state.json — DONE 2026-11-16 19:53 +0900
+- [P-20261116-10] Hygiene(refactor): split src/swapper.py (906 → 568 lines) by moving queue/admission/owner hand-off into src/swapper_admission.py; tests unchanged — DONE 2026-11-16 20:29 +0900
