@@ -45,3 +45,4 @@
 - [P-20261114-01] Live gen t/s from the vLLM generated-token counter (exact; estimate fallback), 5 s window, `live.source` in /stats/json; pushed 489fe6d — DONE 2026-11-14 08:34 +0900
 - [P-20261114-03] Live check of P-20261114-01 on dgx1: switcher SIGKILLed while idle, cluster adopted, live source `engine` read 65–87 t/s vs 74.1 t/s server-measured — DONE 2026-11-14 08:49 +0900
 - [P-20261116-01] Tab icon (inline SVG favicon, blue ⇄) on /stats and /control — DONE 2026-11-16 18:23 +0900
+- [P-20261116-03] /stats Models table: **Prompt tok** column (all prompt tokens, cached included) between Gen tok and Prefill tok; "Prompt share" header renamed **PP %** — DONE 2026-11-16 18:33 +0900

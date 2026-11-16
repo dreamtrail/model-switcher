@@ -183,8 +183,9 @@ STATS_HTML = (
       <th title="Combined speed while busy @ average concurrent requests">Gen total</th>
       <th title="Prompt processing speed; uses the server's own prefill time when available, else time to first token">Prompt t/s</th>
       <th title="Combined speed while busy @ average concurrent requests">Prompt total</th>
-      <th title="Share of request time spent on prompt processing (the rest is generation); counts only requests where both times are known">Prompt share</th>
-      <th>TTFT p50 / p95</th><th>Cache</th><th>Gen tok</th><th>Prefill tok</th>
+      <th title="Share of request time spent on prompt processing (the rest is generation); counts only requests where both times are known">PP %</th>
+      <th>TTFT p50 / p95</th><th>Cache</th><th>Gen tok</th>
+      <th>Prompt tok</th><th>Prefill tok</th>
     </tr></thead>
     <tbody id="models"></tbody>
     <tfoot id="totals"></tfoot>
@@ -432,6 +433,7 @@ function rowCells(name, req) {
     fmtTtft(r.ttft_ms),
     tokens.cache_hit_rate,
     tokens.completion,
+    tokens.prompt,
     tokens.prefill,
   ];
 }
@@ -507,8 +509,7 @@ function buildRow(cells, loaded, className) {
   tr.appendChild(shareCell(cells[8]));
   tr.appendChild(ttftCell(cells[9]));
   tr.appendChild(plainCell(fmtPct(cells[10])));
-  tr.appendChild(countCell(cells[11]));
-  tr.appendChild(countCell(cells[12]));
+  for (const v of cells.slice(11, 14)) tr.appendChild(countCell(v));
   return tr;
 }
 

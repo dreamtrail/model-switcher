@@ -711,7 +711,7 @@ class TestTokenMetricsIntegration:
             ">Gen t/s</th>", ">Gen total</th>",
             ">Prompt t/s</th>", ">Prompt total</th>",
             "<th>TTFT p50 / p95</th>", "<th>Cache</th>",
-            "<th>Gen tok</th>", "<th>Prefill tok</th>",
+            "<th>Gen tok</th>", "<th>Prompt tok</th>", "<th>Prefill tok</th>",
         ):
             assert header in body
         assert "Best gen t/s" not in body

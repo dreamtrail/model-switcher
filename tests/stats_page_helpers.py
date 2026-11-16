@@ -23,7 +23,10 @@ FULL = {
         "success": 1398,
         "failure": 2,
         "errors": {"502": 1, "stream_error": 3, "upstream_timeout": 3},
-        "tokens": {"cache_hit_rate": 0.584, "completion": 1234567, "prefill": 9876},
+        "tokens": {
+            "cache_hit_rate": 0.584, "completion": 1234567,
+            "prompt": 2345678, "prefill": 9876,
+        },
         "rates": {
             "prompt_tps": {
                 "avg": 2204.4,
@@ -59,7 +62,10 @@ FULL = {
             "requests": {
                 "total": 88,
                 "failure": 0,
-                "tokens": {"cache_hit_rate": 0.31, "completion": 0, "prefill": 0},
+                "tokens": {
+                    "cache_hit_rate": 0.31, "completion": 0,
+                    "prompt": 0, "prefill": 0,
+                },
                 "rates": {
                     "prompt_tps": {"avg": 4120.0, "avg_aggregate": None},
                     "generation_tps": {
@@ -81,7 +87,10 @@ FULL = {
             "requests": {
                 "total": 312,
                 "failure": 2,
-                "tokens": {"cache_hit_rate": 0.64, "completion": 45210, "prefill": 9876},
+                "tokens": {
+                    "cache_hit_rate": 0.64, "completion": 45210,
+                    "prompt": 27433, "prefill": 9876,
+                },
                 "rates": {
                     "prompt_tps": {
                         "avg": 1830.2,
