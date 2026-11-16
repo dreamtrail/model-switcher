@@ -174,7 +174,6 @@ STATS_HTML = (
   </div>
 </section>
 <section class="card section">
-  <h2>Models</h2>
   <div class="table-wrap">
   <table>
     <thead><tr>
