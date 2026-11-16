@@ -1,4 +1,24 @@
-"""Exact CSS fragments shared by the statistics and control pages."""
+"""Exact CSS and head fragments shared by the statistics and control pages."""
+
+from urllib.parse import quote
+
+_FAVICON_SVG = (
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
+    "<rect width='32' height='32' rx='7' fill='#2a78d6'/>"
+    # Top arrow points right, bottom arrow points left (a swap symbol).
+    "<path d='M9 12h14M19 8l4 4-4 4M23 21H9M13 17l-4 4 4 4' fill='none'"
+    " stroke='#ffffff' stroke-width='2.5' stroke-linecap='round'"
+    " stroke-linejoin='round'/>"
+    "</svg>"
+)
+
+# Tab icon for both pages. The SVG is inlined as a data URI, so no route or
+# file is served. quote() encodes every special character (#, <, >, ", :).
+FAVICON_LINK = (
+    '<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,'
+    + quote(_FAVICON_SVG, safe="")
+    + '">\n'
+)
 
 LIGHT_PALETTE_START_CSS = """  :root {
     color-scheme: light;

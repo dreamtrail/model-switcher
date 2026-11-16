@@ -198,7 +198,7 @@ class TestArchitectureBoundaries:
         }
         assert self._import_roots("stats_support.py") <= stdlib
         assert self._import_roots("stats_page.py") <= stdlib | {"src.page_css"}
-        assert self._import_roots("page_css.py") <= stdlib
+        assert self._import_roots("page_css.py") <= stdlib | {"urllib"}
 
     def test_proxy_does_not_touch_stats_collector(self):
         """AC11: proxy.py communicates only via the Outcome object."""

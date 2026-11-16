@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.parse
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -44,6 +46,17 @@ class TestStatsPageStatic:
         header = STATS_HTML.split('<header class="top">', 1)[1].split("</header>", 1)[0]
         assert '<p class="subtitle">Statistics · <a href="/control">Control panel</a></p>' in header
         assert ".subtitle a" in STATS_HTML
+
+    def test_page_has_one_svg_favicon_link_in_head(self):
+        assert STATS_HTML.count('rel="icon"') == 1
+        link_at = STATS_HTML.index('<link rel="icon"')
+        assert link_at < STATS_HTML.index("</head>")
+        tag = STATS_HTML[link_at:].split(">", 1)[0]
+        href = re.search(r' href="([^"]+)"', tag).group(1)
+        prefix = "data:image/svg+xml,"
+        assert href.startswith(prefix)
+        svg = urllib.parse.unquote(href[len(prefix):])
+        assert ET.fromstring(svg).tag == "{http://www.w3.org/2000/svg}svg"
 
     def test_table_has_the_thirteen_compact_columns(self):
         head = STATS_HTML.split("<thead>", 1)[1].split("</thead>", 1)[0]

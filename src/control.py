@@ -9,6 +9,7 @@ from typing import Protocol
 from aiohttp import web
 
 from src.page_css import (
+    FAVICON_LINK,
     LIGHT_PALETTE_START_CSS,
     PAGE_BASE_REST_CSS,
     HEADINGS_CSS,
@@ -388,7 +389,9 @@ CONTROL_HTML = (
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Model Switcher — Control</title>
-<style>
+"""
+    + FAVICON_LINK
+    + """<style>
   /* Palette, type, and card styles copied from the /stats page (STATS_HTML
      in src/stats.py); a shared stylesheet is deferred to P-20260925-05. */
 """

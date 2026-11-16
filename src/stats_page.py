@@ -1,6 +1,7 @@
 """Statistics dashboard HTML with page-specific styling and JavaScript."""
 
 from src.page_css import (
+    FAVICON_LINK,
     LIGHT_PALETTE_START_CSS,
     PAGE_BASE_REST_CSS,
     HEADINGS_CSS,
@@ -22,7 +23,9 @@ STATS_HTML = (
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Model Switcher — Statistics</title>
-<style>
+"""
+    + FAVICON_LINK
+    + """<style>
 """
     + LIGHT_PALETTE_START_CSS
     + PAGE_BASE_REST_CSS

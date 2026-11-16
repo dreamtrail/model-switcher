@@ -8,6 +8,8 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import urllib.parse
+import xml.etree.ElementTree as ET
 
 from aiohttp.test_utils import TestClient
 import pytest
@@ -77,7 +79,7 @@ class TestPanelHttpAndStaticSafety:
         assert "{{" not in CONTROL_HTML and "${" not in CONTROL_HTML
 
     def test_control_module_does_not_import_config_process_or_new_dependencies(self):
-        stdlib = {"__future__", "json", "math", "typing"}
+        stdlib = {"__future__", "json", "math", "typing", "urllib"}
         allowed = {
             "control.py": stdlib | {"aiohttp", "src.page_css"},
             "page_css.py": stdlib,
@@ -485,6 +487,17 @@ def _palette(style: str) -> tuple[dict, dict]:
 
 
 class TestPanelMatchesStatsLook:
+    def test_page_has_one_svg_favicon_link_in_head(self):
+        assert CONTROL_HTML.count('rel="icon"') == 1
+        link_at = CONTROL_HTML.index('<link rel="icon"')
+        assert link_at < CONTROL_HTML.index("</head>")
+        tag = CONTROL_HTML[link_at:].split(">", 1)[0]
+        href = re.search(r' href="([^"]+)"', tag).group(1)
+        prefix = "data:image/svg+xml,"
+        assert href.startswith(prefix)
+        svg = urllib.parse.unquote(href[len(prefix):])
+        assert ET.fromstring(svg).tag == "{http://www.w3.org/2000/svg}svg"
+
     def test_header_links_to_stats_and_stats_links_back(self):
         header = CONTROL_HTML.split('<header class="top">', 1)[1].split("</header>", 1)[0]
         assert "<h1>Model Switcher</h1>" in header

@@ -10,6 +10,7 @@
 
 ## Discovered
 
+- [P-20261116-02] Favicon (P-20261116-01) review minors: `urllib` in the page_css import guard also admits `urllib.request` (top-level name check); favicon tests duplicated and don't check shape/colour; not checked in Firefox/Safari (see `artifacts/P-20261116-01/plan.md`)
 - [P-20261114-02] Engine live-rate (P-20261114-01) review minors: unexpected non-HTTP error in the `/metrics` poll loop stops polling until the next first token, whose restart clears samples mid-stream; after a good probe an over-cap body is re-read every second (see `artifacts/P-20261114-01/plan.md`)
 - [P-20261107-02] Stale-connection retry (P-20261107-01) review minors: `aiohttp>=3.9` floor may predate aiohttp's own idempotent retry (README then overstates GET retry; raise floor or note version); per-method test lacks HEAD/OPTIONS/TRACE; EPIPE only unit-covered; no live vLLM check (see `artifacts/P-20261107-01/plan.md`)
 - [P-20261028-02] SSE keepalive (P-20261028-01) review minors: rare early keepalive when a new read hasn't run yet (`src/proxy.py:97-104`); bare-`\r` upstreams never get keepalives (not in README); `tests/test_cli.py:306` is 81 chars; no live Pi / slow-engine check (see `artifacts/P-20261028-01/plan.md`)
