@@ -186,11 +186,27 @@ class TestArchitectureBoundaries:
         """AC10: stats and its explicit internal closure use stdlib only.
 
         Decode may use prefill; stats_page may use page_css. Support and
-        shared CSS have no internal runtime dependencies.
+        shared CSS have no internal runtime dependencies. The stats_*
+        split modules use only stats siblings, prefill, and decode.
         """
         stdlib = {"__future__", "math", "time", "collections", "dataclasses"}
         assert self._import_roots("stats.py") <= stdlib | {
             "src.prefill", "src.decode", "src.stats_support", "src.stats_page",
+            "src.stats_records", "src.stats_frontier", "src.stats_live",
+            "src.stats_report",
+        }
+        assert self._import_roots("stats_records.py") <= stdlib | {
+            "src.prefill", "src.decode", "src.stats_support",
+        }
+        assert self._import_roots("stats_frontier.py") <= stdlib | {
+            "src.prefill", "src.decode", "src.stats_records",
+            "src.stats_support",
+        }
+        assert self._import_roots("stats_live.py") <= stdlib | {
+            "src.stats_records", "src.stats_support",
+        }
+        assert self._import_roots("stats_report.py") <= stdlib | {
+            "src.stats_records", "src.stats_support",
         }
         assert self._import_roots("prefill.py") <= stdlib | {"typing"}
         assert self._import_roots("decode.py") <= stdlib | {
