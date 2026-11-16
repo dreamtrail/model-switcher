@@ -694,9 +694,10 @@ class TestTokenMetricCollector:
         # Static gate: the compact dashboard table (P-20260925-01) keeps the
         # cache hit rate column; P-20260925-04 adds the generated and prefill
         # token counts after it. P-20260930-01 drops the meter: text only.
-        # P-20261116-03 adds the cache-inclusive Prompt tok before Prefill tok.
+        # P-20261116-03 adds the cache-inclusive Prompt tok; P-20261116-07
+        # moves it after Prefill tok.
         assert "<th>Cache</th><th>Gen tok</th>" in STATS_HTML
-        assert "<th>Prompt tok</th><th>Prefill tok</th>" in STATS_HTML
+        assert "<th>Prefill tok</th><th>Prompt tok</th>" in STATS_HTML
         assert "tokens.cache_hit_rate" in STATS_HTML
         assert "plainCell(fmtPct(cells[10]))" in STATS_HTML
         assert '"meter"' not in STATS_HTML

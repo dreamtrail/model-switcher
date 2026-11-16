@@ -75,7 +75,7 @@ class TestStatsPageStatic:
         assert [label for _, label in cells] == [
             "Model", "Reqs", "Errors", "Gen t/s", "Live t/s", "Gen total",
             "Prompt t/s", "Prompt total", "PP %", "TTFT p50 / p95",
-            "Cache", "Gen tok", "Prompt tok", "Prefill tok",
+            "Cache", "Gen tok", "Prefill tok", "Prompt tok",
         ]
         tip = ' title="Combined speed while busy @ average concurrent requests"'
         live = ' title="Combined speed while generating, last 5 s: the engine\'s generated-token counter (vLLM), else an estimate from streamed chunks × tokens per chunk"'
@@ -177,7 +177,7 @@ class TestStatsPageRendering:
 
         assert _cells(rows[0]) == [
             "qwen3-32b", "312", "2", "42.1", "38.3", "85.3 @2.4", "1,830", "2,140 @1.0",
-            "20%", "210 / 890 ms", "64%", "45.2K", "27.4K", "9,876",
+            "20%", "210 / 890 ms", "64%", "45.2K", "9,876", "27.4K",
         ]
         assert _cells(rows[3]) == [
             "llama-3.1-8b", "88", "0", "96.4", "–", "–", "4,120", "–",
@@ -190,8 +190,8 @@ class TestStatsPageRendering:
         # Token counts compact like the tiles, full value on hover.
         assert rows[0]["children"][11]["title"] == "45,210"
         # Prompt tok counts cached tokens too, so it differs from Prefill tok.
-        assert rows[0]["children"][12]["title"] == "27,433"
-        assert rows[0]["children"][13]["title"] == "9,876"
+        assert rows[0]["children"][12]["title"] == "9,876"
+        assert rows[0]["children"][13]["title"] == "27,433"
         for i in (11, 12, 13):
             assert rows[1]["children"][i]["title"] == ""
             assert rows[1]["children"][i]["className"] == "muted"
@@ -224,11 +224,11 @@ class TestStatsPageRendering:
         # The All models row uses the global aggregates and token totals.
         assert _cells(totals[0]) == [
             "All models", "1,400", "2", "52.7", "38.3", "77.7 @2.1", "2,204", "3,140 @1.8",
-            "62%", "180 / 850 ms", "58%", "1.23M", "2.35M", "9,876",
+            "62%", "180 / 850 ms", "58%", "1.23M", "9,876", "2.35M",
         ]
         assert totals[0]["children"][11]["title"] == "1,234,567"
-        assert totals[0]["children"][12]["title"] == "2,345,678"
-        assert totals[0]["children"][13]["title"] == "9,876"
+        assert totals[0]["children"][12]["title"] == "9,876"
+        assert totals[0]["children"][13]["title"] == "2,345,678"
         assert totals[0]["children"][8]["title"] == (
             "Prompt 1,234.6 s · Gen 756.0 s over 1,398 requests"
         )

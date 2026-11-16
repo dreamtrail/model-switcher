@@ -298,7 +298,7 @@ estimate. Changes the window and adds a second, exact source.
 
 ## P-20261116-03 / P-20261116-06 — Prompt tok, PP %, loaded dot, 84rem /stats
 
-- **Prompt tok column** — the Models table shows all prompt tokens, cached included (`requests.tokens.prompt`), between Gen tok and Prefill tok (user request). Prefill tok stays uncached-only.
+- **Prompt tok column** — the Models table shows all prompt tokens, cached included (`requests.tokens.prompt`), first between Gen tok and Prefill tok, then moved after Prefill tok (P-20261116-07, user request). Prefill tok stays uncached-only.
 - **PP %** — the "Prompt share" header became "PP %" (user choice: the old header was wider than its values). Values and hover text are unchanged.
 - **Loaded dot instead of a "Loaded" badge** — on /stats only, the loaded model gets a green dot before its name, with "Loaded" as hover text and screen-reader label; other rows keep an empty slot of the same width so names line up (user choice, to save width). This replaces the earlier "dot + label, never color alone" rule for this one place. /control keeps its "Loaded" badge.
 - **/stats is 84rem wide** — with 14 columns the table overflowed the shared 80rem cap. /stats alone is now 84rem, measured with live dgx1 data plus large test numbers (user asked for "only slightly wider"); /control stays 80rem. Narrow windows still scroll the table sideways.

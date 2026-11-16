@@ -77,3 +77,4 @@
 - [P-20261026-02] Hygiene(refactor): README (762 lines) cut to a 54-line entry point; sections moved verbatim to docs/CONFIGURATION, CONTROL, STATISTICS, CLI, ARCHITECTURE; links repaired — DONE 2026-11-16 18:44 +0900
 - [P-20261026-03] Hygiene(reformat): TODO sections NEXT/DISCOVERED; 27 legacy Done records moved to TASKLOG in date order; 10 overlong entries shortened (detail in artifacts/{ID}/notes.md); README mentions retargeted to docs/ — DONE 2026-11-16 18:52 +0900
 - [P-20261116-06] /stats fits without sideways scrolling: page 84rem (/control stays 80rem); "Loaded" badge replaced by a green dot before the model name — DONE 2026-11-16 19:28 +0900
+- [P-20261116-07] /stats Models table: Prefill tok now comes before Prompt tok — DONE 2026-11-16 19:34 +0900

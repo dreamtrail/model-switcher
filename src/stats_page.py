@@ -185,7 +185,7 @@ STATS_HTML = (
       <th title="Combined speed while busy @ average concurrent requests">Prompt total</th>
       <th title="Share of request time spent on prompt processing (the rest is generation); counts only requests where both times are known">PP %</th>
       <th>TTFT p50 / p95</th><th>Cache</th><th>Gen tok</th>
-      <th>Prompt tok</th><th>Prefill tok</th>
+      <th>Prefill tok</th><th>Prompt tok</th>
     </tr></thead>
     <tbody id="models"></tbody>
     <tfoot id="totals"></tfoot>
@@ -433,8 +433,8 @@ function rowCells(name, req) {
     fmtTtft(r.ttft_ms),
     tokens.cache_hit_rate,
     tokens.completion,
-    tokens.prompt,
     tokens.prefill,
+    tokens.prompt,
   ];
 }
 
