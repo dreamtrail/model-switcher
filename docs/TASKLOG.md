@@ -26,6 +26,33 @@
 - [P-20260918-05] Add per-model maximum aggregate generation throughput metric — DONE 2026-09-18 06:59 UTC
 - [P-20260918-03] Split `src/swapper.py` into focused modules — DONE 2026-09-23 00:14 UTC
 - [P-20260918-04] Split `tests/test_swapper_quick_switch.py` into focused test modules — DONE 2026-09-23 00:41 UTC
+- [P-20260913-03] Split statistics test coverage into focused modules — DONE 2026-09-23 01:13 UTC
+- [P-20260923-01] Add same-listener runtime control panel and API — DONE 2026-09-23 03:39 UTC
+- [P-20260923-03] Add optional per-model shutdown hooks with bounded execution and fail-closed cleanup — DONE 2026-09-23 13:13 UTC
+- [P-20260924-01] Fix pp speed: prompt_tps excludes cached reads; expose prefill token counter — DONE 2026-09-24 12:08 UTC
+- [P-20260923-02] Split `tests/test_control_lifecycle.py` (1224 LOC) into focused test modules — DONE 2026-09-24 13:08 UTC
+- [P-20260925-01] Simplify the stats dashboard page (compact table, stat tiles, light/dark card design) — DONE 2026-09-24 23:13 UTC — REVERTED 2026-09-25, RESTORED 2026-09-25 for user trial
+- [P-20260925-04] Add combined (busy-time) generation and prompt speed with average concurrency; token totals columns; drop Best gen t/s from page; header link to /control — DONE 2026-09-25 14:39 UTC
+- [P-20260926-01] Add live (estimated) generation rate to stats dashboard — DONE 2026-09-26 09:04 UTC
+- [P-20260926-02] Make the /control page match the /stats dashboard and link to /stats — DONE 2026-09-26 09:14 UTC
+- [P-20260926-04] Fix live generation rate undercount (busy-time denominator, tokens-per-chunk calibration, 15 s live window) — DONE 2026-09-26 11:10 UTC
+- [P-20260927-01] Add TabbyAPI backend compatibility — DONE 2026-09-27 14:34 UTC
+- [P-20260929-01] Use server-measured prompt time and cached counts for prompt t/s (llama.cpp, vLLM, SGLang, TabbyAPI); learn-per-model unknown-cache rule; first token needs real output — DONE 2026-09-28 23:30 UTC
+- [P-20260929-03] Use server-measured generation time (llama.cpp/TabbyAPI timings, TabbyAPI completion_time, vLLM generation_time_ms); count non-streaming requests; skip single-chunk buffered streams without server timing — DONE 2026-09-28 23:51 UTC
+- [P-20260929-06] Handle client disconnect during streams: no error frame or replacement 502 after prepare, correct log label, `client_disconnect` error kind — DONE 2026-09-29 14:15 UTC
+- [P-20260930-01] Add prompt vs generation time split (Prompt share column, `time_split` JSON); remove cache hit meter — DONE 2026-09-30 00:38 UTC
+- [P-20260930-02] Add utilized (busy) time to the Uptime tile and `utilization` JSON — DONE 2026-09-30 01:07 UTC
+- [P-20260930-03] Count and time every model load (Loads tile, `loads` JSON); `swaps` kept — DONE 2026-09-30 01:44 UTC
+- [P-20261005-01] Add Strata backend compatibility; stop forwarding the client `Host` to backends; `"loaded": false` health is still loading; `[strata] ` log levels — DONE 2026-10-05 11:22 UTC
+- [P-20261005-04] Add TensorFold backend compatibility: `[tensorfold] ` log levels, prompt time from `tensorfold.prefill_seconds` / `prefill_s` — DONE 2026-10-05 14:48 UTC
+- [P-20261006-01] Log `[tensorfold] stream error:` lines as errors (user directive) — DONE 2026-10-05 15:12 UTC
+- [P-20261013-01] Add model variants: several launch commands under one public model name, switched from /control or the API — DONE 2026-10-13 02:28 UTC
+- [P-20261013-04] Reload the config without restart (POST /api/v1/control/reload, Reload button on /control) — DONE 2026-10-13 03:13 UTC
+- [P-20261013-03] Close model variants review minors: `default` needs `variants`, names must be strings, regression tests, README wording — DONE 2026-10-13 04:29 UTC
+- [P-20261013-06] Close config reload review minors: idle-unload test, counter moves on success only, script edits count as changes, fixed-port test — DONE 2026-10-13 04:29 UTC
+- [P-20261013-05] Reload the config on SIGHUP (`kill -HUP`, systemd `ExecReload=`); SIGHUP no longer stops the switcher — DONE 2026-10-13 04:29 UTC
+- [P-20261013-08] Run a command whose first word is a binary path directly (no `UnicodeDecodeError` at startup; reload works) — DONE 2026-10-13 05:02 UTC
+- [P-20261013-11] Drop the red dot before non-zero counts in the /stats per-model Errors column — DONE 2026-10-13 05:16 UTC
 - [P-20261026-01] Remove FreeToken support and its dedicated code, tests, recipes, and docs — DONE 2026-10-26 09:41 +0900
 - [P-20261013-12] Split config-reload tests into model/state and script/binary modules with shared fixtures; preserve all cases — DONE 2026-10-26 10:07 +0900
 - [P-20261013-13] Move the oldest 26 legacy Done records from TODO to TASKLOG; preserve text and chronology — DONE 2026-10-26 11:01 +0900
@@ -48,3 +75,4 @@
 - [P-20261116-03] /stats Models table: **Prompt tok** column (all prompt tokens, cached included) between Gen tok and Prefill tok; "Prompt share" header renamed **PP %** — DONE 2026-11-16 18:33 +0900
 - [P-20261114-04] Hygiene(refactor): split src/stats.py (950 lines) into stats_records, stats_frontier, stats_live, stats_report; stats.py keeps StatsCollector (394); committed 18254d6 — DONE 2026-11-16 18:44 +0900
 - [P-20261026-02] Hygiene(refactor): README (762 lines) cut to a 54-line entry point; sections moved verbatim to docs/CONFIGURATION, CONTROL, STATISTICS, CLI, ARCHITECTURE; links repaired — DONE 2026-11-16 18:44 +0900
+- [P-20261026-03] Hygiene(reformat): TODO sections NEXT/DISCOVERED; 27 legacy Done records moved to TASKLOG in date order; 10 overlong entries shortened (detail in artifacts/{ID}/notes.md); README mentions retargeted to docs/ — DONE 2026-11-16 18:52 +0900
