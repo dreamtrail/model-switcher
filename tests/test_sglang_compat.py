@@ -379,7 +379,7 @@ def _document_section(path: str, heading: str) -> str:
 
 
 def test_readme_documents_sglang_operational_and_api_boundaries():
-    section = _document_section("README.md", "## SGLang")
+    section = _document_section("docs/CONFIGURATION.md", "## SGLang")
 
     for token in (
         "sglang serve",

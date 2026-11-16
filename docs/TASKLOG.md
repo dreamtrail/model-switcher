@@ -46,3 +46,5 @@
 - [P-20261114-03] Live check of P-20261114-01 on dgx1: switcher SIGKILLed while idle, cluster adopted, live source `engine` read 65–87 t/s vs 74.1 t/s server-measured — DONE 2026-11-14 08:49 +0900
 - [P-20261116-01] Tab icon (inline SVG favicon, blue ⇄) on /stats and /control — DONE 2026-11-16 18:23 +0900
 - [P-20261116-03] /stats Models table: **Prompt tok** column (all prompt tokens, cached included) between Gen tok and Prefill tok; "Prompt share" header renamed **PP %** — DONE 2026-11-16 18:33 +0900
+- [P-20261114-04] Hygiene(refactor): split src/stats.py (950 lines) into stats_records, stats_frontier, stats_live, stats_report; stats.py keeps StatsCollector (394); committed 18254d6 — DONE 2026-11-16 18:44 +0900
+- [P-20261026-02] Hygiene(refactor): README (762 lines) cut to a 54-line entry point; sections moved verbatim to docs/CONFIGURATION, CONTROL, STATISTICS, CLI, ARCHITECTURE; links repaired — DONE 2026-11-16 18:44 +0900

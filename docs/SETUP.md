@@ -14,8 +14,8 @@ See the [README quick start](../README.md#quick-start) (venv, `requirements.txt`
 ## Shutdown-hook stop budgets
 
 Optional `shutdown_cmd` and `shutdown_timeout` are set per model, or per
-variant for [variant models](../README.md#model-variants), and are described in
-the [configuration guide](../README.md#optional-shutdown-hooks). Supply your own
+variant for [variant models](CONFIGURATION.md#model-variants), and are described in
+the [configuration guide](CONFIGURATION.md#optional-shutdown-hooks). Supply your own
 local executable; this project does not provide remote scripts or SSH setup.
 The service's environment, working directory, PATH, and permissions apply to
 hooks. Use absolute executable paths where appropriate and arrange credentials
@@ -61,13 +61,13 @@ WantedBy=default.target
 ```
 
 `ExecStart` points at a wrapper in `$HOME/bin` that launches the switcher
-(see [CLI Reference](../README.md#cli-reference) for flags).
+(see [CLI Reference](CLI.md#cli-reference) for flags).
 
 ### Reload the config with systemctl
 
 `systemctl --user reload llm-server.service` sends SIGHUP to the switcher. It
 re-reads its config file and applies the changes without a restart, the same as
-the control API's reload ([what changes and what does not](../README.md#reloading-the-config)).
+the control API's reload ([what changes and what does not](CONTROL.md#reloading-the-config)).
 Once the switcher is running it never exits on SIGHUP. A SIGHUP during startup
 (before it logs `Listening on`) still terminates it. An invalid config keeps the
 old one and logs a warning; check the result with

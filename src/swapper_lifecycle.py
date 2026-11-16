@@ -767,8 +767,9 @@ def _reload_error(exc: BaseException, config_path: Path) -> str:
     """Reload error text that shows no paths and no file contents.
 
     The control panel must not display model commands or the config path
-    (README), so only the config file's base name appears, and YAML errors
-    keep the problem and line/column but drop the quoted source snippet.
+    (docs/CONTROL.md), so only the config file's base name appears, and
+    YAML errors keep the problem and line/column but drop the quoted source
+    snippet.
     """
     name = Path(config_path).name
     if isinstance(exc, yaml.MarkedYAMLError):

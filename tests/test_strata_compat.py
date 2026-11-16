@@ -516,7 +516,7 @@ def _document_section(path: str, heading: str) -> str:
 
 
 def test_readme_documents_strata_launch_and_limits():
-    section = _document_section("README.md", "## Strata")
+    section = _document_section("docs/CONFIGURATION.md", "## Strata")
 
     for token in (
         "https://github.com/Niko1221/Strata",
@@ -552,7 +552,7 @@ def test_readme_documents_strata_launch_and_limits():
 
 
 def test_readme_mentions_host_rewrite_for_all_backends():
-    section = _document_section("README.md", "## How It Works")
+    section = _document_section("docs/ARCHITECTURE.md", "## How It Works")
     assert "Host" in section and "127.0.0.1:<port>" in section
 
 

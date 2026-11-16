@@ -688,7 +688,7 @@ def _document_section(path: str, heading: str) -> str:
 
 
 def test_readme_documents_tabbyapi_launch_auth_and_limits():
-    section = _document_section("README.md", "## TabbyAPI")
+    section = _document_section("docs/CONFIGURATION.md", "## TabbyAPI")
 
     for token in (
         TABBY_COMMIT,

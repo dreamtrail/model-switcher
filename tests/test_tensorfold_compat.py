@@ -493,7 +493,7 @@ def _document_section(path: str, heading: str) -> str:
 
 
 def test_readme_documents_tensorfold_launch_and_limits():
-    section = _document_section("README.md", "## TensorFold")
+    section = _document_section("docs/CONFIGURATION.md", "## TensorFold")
 
     for token in (
         "https://github.com/ashhart/TensorFold",
@@ -529,7 +529,7 @@ def test_readme_documents_tensorfold_launch_and_limits():
 
 
 def test_readme_speed_tables_list_tensorfold():
-    section = _document_section("README.md", "## Statistics")
+    section = _document_section("docs/STATISTICS.md", "## Statistics")
     assert "| TensorFold | none |" in section
     assert "`tensorfold.prefill_seconds`" in section
 

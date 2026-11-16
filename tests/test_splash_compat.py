@@ -592,7 +592,7 @@ def _document_section(path: str, heading: str) -> str:
 
 
 def test_readme_documents_splash_launch_and_limits():
-    section = _document_section("README.md", "## Splash")
+    section = _document_section("docs/CONFIGURATION.md", "## Splash")
 
     for token in (
         "https://github.com/incoai/splash",
@@ -628,13 +628,13 @@ def test_readme_documents_splash_launch_and_limits():
 
 
 def test_readme_configuration_documents_stop_grace():
-    section = _document_section("README.md", "## Configuration")
+    section = _document_section("docs/CONFIGURATION.md", "## Configuration")
     for token in ("stop_grace", "SIGTERM", "SIGKILL", "3"):
         assert token in section, token
 
 
 def test_readme_speed_tables_list_splash():
-    section = _document_section("README.md", "## Statistics")
+    section = _document_section("docs/STATISTICS.md", "## Statistics")
     assert "| Splash | none |" in section
     assert "`metrics.prefill.tokens`" in section
     assert "`metrics.decode.tokens`" in section

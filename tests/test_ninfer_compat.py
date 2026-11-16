@@ -402,7 +402,7 @@ def test_malformed_or_non_ninfer_lines_are_not_promoted(line):
 
 
 def _ninfer_readme_section() -> str:
-    readme = Path("README.md").read_text()
+    readme = Path("docs/CONFIGURATION.md").read_text()
     return readme.split("## NInfer", 1)[1].split("\n## ", 1)[0]
 
 
