@@ -259,7 +259,8 @@ def _extract_usage(body: bytes | None, outcome: Outcome) -> None:
         return
     try:
         data = json.loads(body)
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
+        # UnicodeDecodeError: a non-UTF-8 (e.g. binary) body.
         return
     _apply_usage_dict(data, outcome)
     _apply_server_timing(data, outcome)
@@ -342,7 +343,8 @@ def _process_sse_line(line: bytes, outcome: Outcome) -> None:
         return
     try:
         event = json.loads(payload)
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
+        # UnicodeDecodeError: a non-UTF-8 data line.
         return
     if not isinstance(event, dict):
         return

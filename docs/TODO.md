@@ -2,7 +2,7 @@
 
 ## NEXT
 
-- [P-20260929-02] Non-UTF-8 non-streaming upstream body raises UnicodeDecodeError in `_extract_usage` (src/proxy.py:262) → 500 instead of forwarding; also catch it for SSE lines (:345); add a binary-body test (see `artifacts/P-20261116-11/explorer-01-triage.md`)
+- [P-20261116-13] `extract_model` (src/proxy.py:189-193) raises on a non-UTF-8 JSON request body (UnicodeDecodeError) or a non-object body like `[1]` (AttributeError); called from src/swapper.py:239, so likely a 500 instead of a 400 (see `artifacts/P-20260929-02/reviewer-01-extract-model-probe.txt`)
 - [P-20261013-09] Startup adds `--port N` to commands whose `${PORT}` was already filled (seen on dgx1: `start.sh N --port N`); fill the port once (notes: artifacts/P-20261013-09/notes.md)
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to docs/CLI.md
