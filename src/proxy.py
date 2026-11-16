@@ -188,9 +188,15 @@ def extract_model(
 
     try:
         data = json.loads(body)
-        return data.get("model")
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError,
+            RecursionError):
+        # UnicodeDecodeError: a non-UTF-8 body; RecursionError: deeply
+        # nested JSON.
         return None
+    if not isinstance(data, dict):
+        return None
+    model = data.get("model")
+    return model if isinstance(model, str) else None
 
 
 def _openai_error(message: str, code: str = "internal_error") -> dict:

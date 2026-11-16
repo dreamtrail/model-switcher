@@ -550,9 +550,13 @@ class Swapper(_SwapperAdmissionMixin, _SwapperLifecycleMixin):
         try:
             if body:
                 data = json.loads(body)
-                is_stream = data.get("stream", False)
-        except (json.JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, UnicodeDecodeError, TypeError,
+                RecursionError):
+            # UnicodeDecodeError: a non-UTF-8 body; RecursionError: deeply
+            # nested JSON.
             pass
+        if isinstance(data, dict):
+            is_stream = data.get("stream", False)
 
         if is_stream:
             body = inject_stream_options(request, body, data)

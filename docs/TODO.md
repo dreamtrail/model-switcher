@@ -2,7 +2,6 @@
 
 ## NEXT
 
-- [P-20261116-13] `extract_model` (src/proxy.py:189-193) raises on a non-UTF-8 JSON request body (UnicodeDecodeError) or a non-object body like `[1]` (AttributeError); called from src/swapper.py:239, so likely a 500 instead of a 400 (see `artifacts/P-20260929-02/reviewer-01-extract-model-probe.txt`)
 - [P-20261013-09] Startup adds `--port N` to commands whose `${PORT}` was already filled (seen on dgx1: `start.sh N --port N`); fill the port once (notes: artifacts/P-20261013-09/notes.md)
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to docs/CLI.md
@@ -12,6 +11,7 @@
 
 ## DISCOVERED
 
+- [P-20261116-14] Upstream body parsing (`_extract_usage` src/proxy.py:268, SSE events :352) doesn't catch RecursionError; a deeply nested model-server reply could still raise (see `artifacts/P-20261116-13/plan.md` § Independent review)
 - [P-20261114-02] Engine live-rate minors: an unexpected poll error stops polling until the next decode (restart clears samples); over-cap /metrics body re-read each second after a good probe (notes: artifacts/P-20261114-02/notes.md) (see `artifacts/P-20261114-01/plan.md`)
 - [P-20261005-03] Backend log-level minors (owner decision for Strata): Strata lower-case `error:` logs as info; TabbyAPI with FORCE_COLOR loses levels (ANSI not stripped); Splash `Template error ·` as INFO; SIGKILL warning `%ds` truncates fractional stop_grace (notes: artifacts/P-20261005-03/notes.md)
 - [P-20260929-07] Client disconnect before `prepare()` (while waiting for upstream headers) is still recorded as `502` with the "(pre-prepare)" label, not `client_disconnect`; also no switcher-side stall detection for relayed clients (see `artifacts/P-20260929-06/plan.md`)

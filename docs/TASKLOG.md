@@ -96,3 +96,4 @@
 - [P-20261116-11] Hygiene(triage): DISCOVERED 22 → 5 (5 promoted to NEXT, 6 merged, 2 closed, 4 abandoned) — DONE 2026-11-16 20:28 +0900
 - [P-20261116-10] Hygiene(refactor): split src/swapper.py (906 → 568 lines) by moving queue/admission/owner hand-off into src/swapper_admission.py; tests unchanged — DONE 2026-11-16 20:29 +0900
 - [P-20260929-02] Non-UTF-8 upstream bodies no longer crash the proxy: _extract_usage and _process_sse_line ignore UnicodeDecodeError; tests/test_proxy_non_utf8.py — DONE 2026-11-16 20:35 +0900
+- [P-20261116-13] Bad client request bodies (non-UTF-8, non-object JSON, non-string model, deep nesting) no longer give 500; they take the no-model path (forward or 400) — DONE 2026-11-16 21:03 +0900
