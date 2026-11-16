@@ -6,9 +6,10 @@ Target: dgx1, systemd `llm-server` (checkout `/home/misuzu/src/model-switcher`, 
 
 ## Operations
 - 2026-11-16 [P-20261116-05](../../artifacts/P-20261116-05/operation.md): push 6 commits; update dgx1 to a28efb6 (tab icon, Prompt tok column, stats split). Status: deployed a28efb6, verified; restart reset variant 1107 → native, replaced the cluster, one request got 502. Awaiting user decision on variant.
+- 2026-11-16 [P-20261116-09](../../artifacts/P-20261116-09/operation.md): push and deploy f7fc22b (variant memory, /stats polish); idle restart adopted the cluster; then switched to variant 1107 via the API (~3 min vLLM down, no failed requests). Status: done, independently verified.
 
 ## Current state
-dgx1 runs a28efb6 on variant native (:1030), as of 2026-11-16 10:15Z. Restarts reset the variant to the default (P-20261013-02): check the active variant before any restart.
+dgx1 runs f7fc22b on variant 1107 (:1107), as of 2026-11-16 10:52Z. The variant is now remembered in `config.state.json`, so a switcher restart comes back on 1107 and adopts the running cluster (on the first request).
 
 ## Next action
-See the operation record.
+None pending.

@@ -2,7 +2,6 @@
 
 ## NEXT
 
-- [P-20261116-09] Push 40dd842..2142ecf and deploy to dgx1 (idle SIGKILL restart), then restore variant 1107 on /control; check first that the service can write config.state.json (see `artifacts/P-20261116-05/operation.md`)
 - [P-20261116-10] Hygiene(refactor): Split src/swapper.py (906 lines after P-20261013-02) into focused modules; keep behavior and tests unchanged
 - [P-20261116-11] Hygiene(triage): DISCOVERED has 22 entries; close, merge or promote stale ones
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
@@ -10,7 +9,7 @@
 
 ## DISCOVERED
 
-- [P-20261116-08] Variant state (P-20261013-02) review minors: never-picked models log "restored"/"saved variant ignored" as if picked; docs/CONTROL.md:90 omits the removed-variant case; check dgx1 service User/sandbox can write config.state.json (see `artifacts/P-20261013-02/plan.md`)
+- [P-20261116-08] Variant state (P-20261013-02) review minors: never-picked models log "restored"/"saved variant ignored" as if picked; docs/CONTROL.md:90 omits the removed-variant case (see `artifacts/P-20261013-02/plan.md`)
 - [P-20261116-04] Prompt tok (P-20261116-03) review minors: docs/STATISTICS.md § Statistics calls the page column "Cache hit %" but the header says "Cache"; no end-to-end test from collector prompt count to the rendered Prompt tok cell (see `artifacts/P-20261116-03/plan.md`)
 - [P-20261116-02] Favicon (P-20261116-01) review minors: `urllib` in the page_css import guard also admits `urllib.request` (top-level name check); favicon tests duplicated and don't check shape/colour; not checked in Firefox/Safari (see `artifacts/P-20261116-01/plan.md`)
 - [P-20261114-02] Engine live-rate (P-20261114-01) review minors: unexpected non-HTTP error in the `/metrics` poll loop stops polling until the next first token, whose restart clears samples mid-stream (notes: artifacts/P-20261114-02/notes.md) (see `artifacts/P-20261114-01/plan.md`)
