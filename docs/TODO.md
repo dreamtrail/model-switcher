@@ -7,6 +7,7 @@
 
 ## DISCOVERED
 
+- [P-20261116-08] Variant state (P-20261013-02) review minors: never-picked models log "restored"/"saved variant ignored" as if picked; docs/CONTROL.md:90 omits the removed-variant case; check dgx1 service User/sandbox can write config.state.json (see `artifacts/P-20261013-02/plan.md`)
 - [P-20261116-04] Prompt tok (P-20261116-03) review minors: docs/STATISTICS.md § Statistics calls the page column "Cache hit %" but the header says "Cache"; no end-to-end test from collector prompt count to the rendered Prompt tok cell (see `artifacts/P-20261116-03/plan.md`)
 - [P-20261116-02] Favicon (P-20261116-01) review minors: `urllib` in the page_css import guard also admits `urllib.request` (top-level name check); favicon tests duplicated and don't check shape/colour; not checked in Firefox/Safari (see `artifacts/P-20261116-01/plan.md`)
 - [P-20261114-02] Engine live-rate (P-20261114-01) review minors: unexpected non-HTTP error in the `/metrics` poll loop stops polling until the next first token, whose restart clears samples mid-stream (notes: artifacts/P-20261114-02/notes.md) (see `artifacts/P-20261114-01/plan.md`)
@@ -14,7 +15,6 @@
 - [P-20261028-02] SSE keepalive (P-20261028-01) review minors: rare early keepalive when a new read hasn't run yet (`src/proxy.py:97-104`); bare-`\r` upstreams never get keepalives (not in docs/CLI.md) (notes: artifacts/P-20261028-02/notes.md) (see `artifacts/P-20261028-01/plan.md`)
 - [P-20261027-04] Splash (P-20261027-01) not checked on a real Apple silicon Mac (docs/CONFIGURATION.md § Splash manual check); review minors: log levels, stop_grace edge cases (notes: artifacts/P-20261027-04/notes.md) (see `artifacts/P-20261027-01/plan.md`, `artifacts/P-20261027-02/plan.md`)
 - [P-20261013-09] Pre-existing: at startup a non-script `${PORT}` command gets the port flag twice because `_resolve_ports` fills the port before `rewrite_command` appends `--port` (notes: artifacts/P-20261013-09/notes.md) (see `artifacts/P-20261013-07/reviewer-fix-01-port-probe.txt`)
-- [P-20261013-02] Persist the chosen model variant across restarts (P-20261013-01 keeps it in memory and starts on `default`; user undecided): decide where to store it (state file vs. YAML) and how a removed variant falls back (see `artifacts/P-20261013-01/plan.md`)
 - [P-20261006-02] TensorFold review nits (P-20261005-04, P-20261006-01): docs/CONFIGURATION.md and DECISIONS say `exec` lets SIGTERM reach TensorFold "directly" (inaccurate; more nits: artifacts/P-20261006-02/notes.md) (see `artifacts/P-20261005-04/review.md`, `artifacts/P-20261006-01/plan.md`)
 - [P-20261005-05] TensorFold support not yet checked on real TensorFold/Apple Silicon or CUDA (docs/CONFIGURATION.md § TensorFold manual check); CUDA `tensorfold` stats keys only partly known (notes: artifacts/P-20261005-05/notes.md) (see `artifacts/P-20261005-04/plan.md`)
 - [P-20261005-03] Strata review minors (P-20261005-01): `[strata] the engine reported an error: ...` logs as info because only upper-case level words count (user decision pending) (notes: artifacts/P-20261005-03/notes.md) (see `artifacts/P-20261005-01/review.md`, `review-repair.md`)

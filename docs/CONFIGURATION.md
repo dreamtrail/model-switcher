@@ -109,14 +109,61 @@ qwen3.8-27b:
   `pending_model`, logs, and [statistics](STATISTICS.md#statistics) rows (one row per variant).
   Clients cannot use it: a request for `qwen3.8-27b@vision` gets 404.
 - A request for `qwen3.8-27b` goes to the active variant, which starts as
-  `default`. Switching the variant stops the running one (its own hook first),
+  `default` (or the [remembered variant](#remembered-variant)). Switching the variant stops the running one (its own hook first),
   starts the new one, and sends later `qwen3.8-27b` requests to it.
 - The request body is forwarded unchanged, so every variant's server must
   accept the public name (`-a`, `--served-model-name`, or the like).
 - `GET /v1/models` lists `qwen3.8-27b` once, not the variants.
-- The chosen variant is kept in memory only. A [config reload](CONTROL.md#reloading-the-config)
-  keeps it (unless that variant was removed), even if you changed `default`;
-  a restart starts each entry on its `default`.
+- A [config reload](CONTROL.md#reloading-the-config) keeps the chosen variant
+  (unless that variant was removed), even if you changed `default`. A
+  restart starts on the [remembered variant](#remembered-variant) unless the
+  YAML changed.
+
+#### Remembered variant
+
+The switcher remembers the active variant of each variant model across
+restarts. It keeps them in a JSON state file next to the config, named after
+the config file: `config.yaml` → `config.state.json`. The YAML file is never
+written.
+
+```json
+{
+  "version": 1,
+  "variants": {"qwen3.8-27b": {"active": "vision", "default": "text"}}
+}
+```
+
+- **Written** when you pick a variant on `/control` or with
+  `PUT /api/v1/control/model` (`{"model": ..., "variant": ...}`), and after a
+  config reload that changes what it holds (for example the active variant
+  was removed, so the entry fell back to `default:`). It is written only when
+  something changed, through a temp file in the same folder, so a crash never
+  leaves half a file. `default` is the YAML `default:` at the time of the pick.
+- **Read** once at start. The saved variant is used only if that variant
+  still exists and the entry's `default:` is the same as when it was saved.
+  Otherwise the YAML `default:` wins. In other words, editing `default:` in the
+  YAML overrides an older pick. The log says what happened:
+
+  ```text
+  Variant state: qwen3.8-27b restored to variant 'vision'
+  Variant state: qwen3.8-27b starts on default 'text'; saved variant 'vision' ignored because default changed from 'big'
+  Variant state: qwen3.8-27b starts on variant 'vision' (saved, and now also the default)
+  Variant state: qwen3.8-27b starts on default 'text'; saved variant 'vision' no longer exists
+  ```
+
+  The last line is a warning; the others are info lines.
+
+- **Problems never stop the switcher.** A missing file is normal (all
+  defaults, no message). An unreadable or invalid file logs a warning and
+  uses the YAML defaults. A failed write logs
+  `Could not save variant state to config.state.json: ...`; the switch still
+  happens, and the next restart uses the last saved pick or the default.
+- A variant kept by a reload keeps the `default:` it started or was picked
+  under, so a `default:` edit wins at the next restart whether or not you
+  reloaded first. This holds for a picked variant and for an old default
+  that stayed active only because of the reload.
+- To forget all picks, stop the switcher and delete the state file. It is
+  machine-local, like `config.yaml`; `.gitignore` excludes `*.state.json`.
 
 ## SGLang
 

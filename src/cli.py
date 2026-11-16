@@ -18,6 +18,7 @@ from src import __version__
 from src.color_formatter import ColorFormatter
 from src.config import load_config
 from src.swapper import Swapper
+from src.variant_state import VariantStateStore, state_path
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +258,12 @@ async def _main(argv: list[str] | None = None) -> None:
         list(config.models.keys()),
     )
 
+    # Start each variant model on its last picked variant unless the YAML
+    # changed since (src/variant_state.py).
+    config_path = Path(args.config).resolve()
+    variant_state = VariantStateStore(state_path(config_path))
+    variant_state.restore(config)
+
     # Create shared client session for upstream requests
     # Pooled connections idle for --upstream-keepalive seconds are closed
     # before the upstream closes them (vLLM/uvicorn: 5 s).
@@ -278,7 +285,8 @@ async def _main(argv: list[str] | None = None) -> None:
     )
     # Kept for control API config reload (absolute, so a later chdir
     # cannot change which file is read).
-    swapper.config_path = Path(args.config).resolve()
+    swapper.config_path = config_path
+    swapper.variant_state = variant_state
 
     # Shutdown coordination
     shutdown_event = asyncio.Event()

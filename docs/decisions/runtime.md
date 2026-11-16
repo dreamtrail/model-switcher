@@ -85,7 +85,7 @@ Return to the [decision index](../DECISIONS.md), or read the [earlier architectu
 - **State** — `models` stays the public names; `active_model`/`pending_model` are ids (they match stats rows); new key `variants`. The control page shows one button per variant with "Loaded" and "Active" badges.
 
 ### Persistence and Stats
-- **In memory only** — the chosen variant is not saved; a restart starts on `default`, matching the other process-local control settings. Persisting it is open (user undecided): TODO P-20261013-02.
+- **In memory only (superseded)** — at first the chosen variant was not saved and a restart started on `default`. Since [P-20261013-02](#p-20261013-02--remember-the-chosen-variant-across-restarts) a restart starts on the last picked variant unless the YAML changed.
 - **One stats row per variant** — user decision: rows are keyed by id (`qwen3.8-27b@vision`); no stats code changed.
 
 ### Script Temp Copies
@@ -93,6 +93,19 @@ Return to the [decision index](../DECISIONS.md), or read the [earlier architectu
 
 ### Verification Trade-off
 - **Fake and real local servers, no real backends** — routing, control API, atomicity, and stats are tested through the real Swapper with in-process upstreams and faked process start/stop (`tests/test_variants_routing.py`); one test runs real processes from a shared script with per-variant hooks through the real config, port rewrite, process, health, proxy, and control paths (`tests/test_variants_e2e.py`). Real model servers were not run.
+
+## P-20261013-02 — Remember the chosen variant across restarts
+
+### Storage
+- **JSON state file next to the config** — user decision 2026-11-16: `<config stem>.state.json` (`config.yaml` → `config.state.json`), holding per variant model the active variant and the YAML `default:` it was started or picked under. The YAML is never rewritten and there is no new CLI flag. Written atomically (temp file in the same folder, then rename) on a pick and after a reload that changes it, only when the content changes; no file is created while every model is still on the default it started under. Code: `src/variant_state.py`; user docs: [remembered variant](../CONFIGURATION.md#remembered-variant).
+- **Failures never stop the switcher** — a missing file is normal; an unreadable or invalid file is a warning and all models start on their YAML default; a failed write is a warning and the switch goes ahead.
+
+### Conflict Rule
+- **YAML edit wins** — user decision 2026-11-16: at start a saved variant applies only if it still exists and the entry's `default:` equals the saved one; otherwise the YAML default is used and the log says why. A saved variant that became the new default simply starts, without an "ignored" message.
+- **Reload does not refresh the recorded default** — a reload still keeps the in-memory active variant when `default:` changes (P-20261013-04). That variant keeps the `default:` it started or was picked under, so the edit still wins at the next restart. Recording the new default instead would let a variant nobody picked survive the edit (found in review).
+
+### Verification Trade-off
+- **Real restart, fake model servers** — `tests/test_variant_state_e2e.py` restarts the real `python -m src` process with small HTTP servers as models; rule branches and the reload interaction are tested on real files with faked processes (`tests/test_variant_state.py`). Not run on dgx1.
 
 ## P-20261013-04 — Reload config without restart
 

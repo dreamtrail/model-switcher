@@ -60,7 +60,9 @@ class VariantGroup:
 
     variants: list[str]  # variant names in config order
     default: str
-    active: str  # runtime choice; starts at default, kept in memory only
+    # Runtime choice; starts at default or the saved pick
+    # (src/variant_state.py).
+    active: str
 
 
 @dataclass

@@ -19,6 +19,8 @@ tests_temp/
 
 # Local config and secrets
 config.yaml
+*.state.json
+.*.state.json.*.tmp
 .env
 .env.*
 !.env.example

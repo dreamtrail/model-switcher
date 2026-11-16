@@ -270,7 +270,9 @@ class TestMainRuntime:
             assert port == 8080
             assert shutdown_event.is_set() is False
 
-        config = type("Config", (), {"models": {"model-a": object()}})()
+        config = type("Config", (), {
+            "models": {"model-a": object()}, "variants": {},
+        })()
 
         monkeypatch.setattr(cli_module, "load_config", lambda path: config)
         monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)
@@ -317,7 +319,9 @@ class TestMainRuntime:
         async def fake_run_server(host, port, swapper, shutdown_event):
             pass
 
-        config = type("Config", (), {"models": {"model-a": object()}})()
+        config = type("Config", (), {
+            "models": {"model-a": object()}, "variants": {},
+        })()
         monkeypatch.setattr(cli_module, "load_config", lambda path: config)
         monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)
         monkeypatch.setattr(cli_module, "Swapper", FakeSwapper)
@@ -355,7 +359,9 @@ class TestMainRuntime:
         async def fake_run_server(host, port, swapper, shutdown_event):
             pass
 
-        config = type("Config", (), {"models": {"model-a": object()}})()
+        config = type("Config", (), {
+            "models": {"model-a": object()}, "variants": {},
+        })()
         monkeypatch.setattr(cli_module, "load_config", lambda path: config)
         monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)
         monkeypatch.setattr(cli_module, "Swapper", FakeSwapper)
@@ -394,7 +400,9 @@ class TestMainRuntime:
         async def fake_run_server(host, port, swapper, shutdown_event):
             pass
 
-        config = type("Config", (), {"models": {"model-a": object()}})()
+        config = type("Config", (), {
+            "models": {"model-a": object()}, "variants": {},
+        })()
         monkeypatch.setattr(cli_module, "load_config", lambda path: config)
         monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)
         monkeypatch.setattr(cli_module, "Swapper", FakeSwapper)
@@ -436,7 +444,9 @@ class TestMainRuntime:
         async def fake_run_server(host, port, swapper, shutdown_event):
             pass
 
-        config = type("Config", (), {"models": {"model-a": object()}})()
+        config = type("Config", (), {
+            "models": {"model-a": object()}, "variants": {},
+        })()
         monkeypatch.setattr(cli_module, "load_config", lambda path: config)
         monkeypatch.setattr(cli_module.aiohttp, "TCPConnector", FakeConnector)
         monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)
@@ -483,7 +493,9 @@ class TestMainRuntime:
             registered_handlers[sig] = callback
 
         loop = asyncio.get_running_loop()
-        config = type("Config", (), {"models": {"model-a": object()}})()
+        config = type("Config", (), {
+            "models": {"model-a": object()}, "variants": {},
+        })()
 
         monkeypatch.setattr(loop, "add_signal_handler", fake_add_signal_handler)
         monkeypatch.setattr(cli_module, "load_config", lambda path: config)
@@ -526,7 +538,9 @@ class TestMainRuntime:
             registered_handlers[sig] = callback
 
         loop = asyncio.get_running_loop()
-        config = type("Config", (), {"models": {"model-a": object()}})()
+        config = type("Config", (), {
+            "models": {"model-a": object()}, "variants": {},
+        })()
 
         monkeypatch.setattr(loop, "add_signal_handler", fake_add_signal_handler)
         monkeypatch.setattr(cli_module, "load_config", lambda path: config)
@@ -577,7 +591,9 @@ class TestMainRuntime:
             registered_handlers[sig] = callback
 
         loop = asyncio.get_running_loop()
-        config = type("Config", (), {"models": {"model-a": object()}})()
+        config = type("Config", (), {
+            "models": {"model-a": object()}, "variants": {},
+        })()
         monkeypatch.setattr(loop, "add_signal_handler", fake_add_signal_handler)
         monkeypatch.setattr(cli_module, "load_config", lambda path: config)
         monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)
@@ -624,7 +640,9 @@ class TestMainRuntime:
             registered_handlers[sig] = callback
 
         loop = asyncio.get_running_loop()
-        config = type("Config", (), {"models": {"model-a": object()}})()
+        config = type("Config", (), {
+            "models": {"model-a": object()}, "variants": {},
+        })()
         monkeypatch.setattr(loop, "add_signal_handler", fake_add_signal_handler)
         monkeypatch.setattr(cli_module, "load_config", lambda path: config)
         monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)
@@ -664,7 +682,9 @@ class TestMainRuntime:
             raise NotImplementedError
 
         loop = asyncio.get_running_loop()
-        config = type("Config", (), {"models": {"model-a": object()}})()
+        config = type("Config", (), {
+            "models": {"model-a": object()}, "variants": {},
+        })()
         monkeypatch.setattr(loop, "add_signal_handler", refuse)
         monkeypatch.setattr(cli_module, "load_config", lambda path: config)
         monkeypatch.setattr(cli_module.aiohttp, "ClientSession", FakeClientSession)

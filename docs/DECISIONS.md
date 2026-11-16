@@ -32,6 +32,7 @@ Complete decision records, grouped by topic. Records remain in their original re
 - [P-20261005-01 — Strata Compatibility](decisions/runtime.md#p-20261005-01--strata-compatibility)
 - [P-20261005-04 — TensorFold Compatibility](decisions/runtime.md#p-20261005-04--tensorfold-compatibility)
 - [P-20261013-01 — Model variants](decisions/runtime.md#p-20261013-01--model-variants)
+- [P-20261013-02 — Remember the chosen variant across restarts](decisions/runtime.md#p-20261013-02--remember-the-chosen-variant-across-restarts)
 - [P-20261013-04 — Reload config without restart](decisions/runtime.md#p-20261013-04--reload-config-without-restart)
 - [P-20261013-07 — Variant and reload minors, SIGHUP reload](decisions/runtime.md#p-20261013-07--variant-and-reload-minors-sighup-reload)
 - [P-20261013-10 — Programs given by path](decisions/runtime.md#p-20261013-10--programs-given-by-path)

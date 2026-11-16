@@ -43,6 +43,7 @@ from src.swapper_lifecycle import (
     _SwapperLifecycleMixin,
     _SwapSuperseded,
 )
+from src.variant_state import VariantStateStore
 
 logger = logging.getLogger("src.swapper")
 
@@ -118,6 +119,9 @@ class Swapper(_SwapperLifecycleMixin):
         self.config_path: Path | None = None
         # Reload count; names temp script copies made by each reload.
         self._config_generation = 0
+        # Saves the active variants for the next start; the CLI sets it.
+        # None means nothing is saved.
+        self.variant_state: VariantStateStore | None = None
 
         # Create temp dir for rewritten script copies
         self._temp_dir = create_temp_dir()
@@ -696,6 +700,7 @@ class Swapper(_SwapperLifecycleMixin):
 
             def on_admit() -> None:
                 group.active = variant
+                self._save_variant_state(picked=model_name)
         # Preserve precedence while making an already-active selection a true
         # no-op that does not rearm its idle countdown.
         if self._shutting_down:
@@ -713,6 +718,15 @@ class Swapper(_SwapperLifecycleMixin):
         if outcome.kind == "success":
             self._schedule_idle_timer()
         return outcome.kind
+
+    def _save_variant_state(self, picked: str | None = None) -> None:
+        """Save the active variants; a failure never stops a switch."""
+        if self.variant_state is None:
+            return
+        try:
+            self.variant_state.save(self.config, picked=picked)
+        except Exception:
+            logger.exception("Could not save variant state")
 
     def _begin_activity(self) -> None:
         """Mark a model request active and cancel pending idle unload."""

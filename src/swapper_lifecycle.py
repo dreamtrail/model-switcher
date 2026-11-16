@@ -752,6 +752,9 @@ class _SwapperLifecycleMixin:
                 if running_changed else ""
             ),
         )
+        # Writes only if an active variant changed (a removed variant falls
+        # back to its default) or variant models were added or removed.
+        self._save_variant_state()
         return "success", {
             "added": added,
             "removed": removed,
