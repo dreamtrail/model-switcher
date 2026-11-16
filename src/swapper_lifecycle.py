@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from collections.abc import Iterable
 from contextlib import suppress
@@ -13,7 +12,9 @@ from pathlib import Path
 
 import yaml
 
-from src.config import Config, ModelConfig, find_free_port, load_config
+from src.config import (
+    Config, ModelConfig, fill_port_placeholder, find_free_port, load_config,
+)
 from src.port_rewrite import (
     cleanup_temp_dir, is_script_command, rewrite_command,
 )
@@ -636,7 +637,9 @@ class _SwapperLifecycleMixin:
         """Rewrite model commands of ``config`` to use their assigned ports.
 
         For script files, copies to temp dir and rewrites port flags.
-        For direct commands, replaces port flags in the command string.
+        For direct commands, replaces port flags in the command string;
+        a direct command whose ${PORT} the loader already filled in
+        (``port_filled``) is left as is, so the port appears once.
         ``model_ids`` limits the rewrite (default: every model);
         ``generation`` keeps reload copies apart from earlier ones.
         """
@@ -645,6 +648,8 @@ class _SwapperLifecycleMixin:
         ids = config.models if model_ids is None else model_ids
         for model_id in ids:
             mc = config.models[model_id]
+            if mc.port_filled and not is_script_command(mc.cmd):
+                continue
             rewritten_cmd, _temp_path = rewrite_command(
                 mc.cmd,
                 mc.port,
@@ -714,10 +719,10 @@ class _SwapperLifecycleMixin:
             mc.port = find_free_port(reserved)
             reserved.add(mc.port)
             mc.cmd = mc.spec[0]
-            if is_script_command(mc.cmd):
-                # Same as startup: the loader fills in ${PORT} before the
-                # script is copied (other commands keep the placeholder).
-                mc.cmd = re.sub(r"\$\{PORT\}", str(mc.port), mc.cmd)
+            # Same as startup: fill in ${PORT} with the new port before
+            # the rewrite below (which then leaves a filled direct command
+            # alone and copies a script).
+            fill_port_placeholder(mc)
 
         # The counter moves only when the reload succeeds. A failed
         # attempt may leave unused copies; the next attempt overwrites them.

@@ -2,7 +2,6 @@
 
 ## NEXT
 
-- [P-20261013-09] Startup adds `--port N` to commands whose `${PORT}` was already filled (seen on dgx1: `start.sh N --port N`); fill the port once (notes: artifacts/P-20261013-09/notes.md)
 - [P-20260612-03] Add integration test for full lifecycle (start → request → swap → shutdown)
 - [P-20260612-04] Add `--help` man-page style output and CLI examples to docs/CLI.md
 - [P-20261116-08] Variant state minors: don't log "restored" for models whose saved variant equals the default; docs/CONTROL.md:90 add the removed-variant fallback (see `artifacts/P-20261013-02/plan.md`)

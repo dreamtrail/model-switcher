@@ -31,6 +31,10 @@ class ModelConfig:
     # grace). A config reload compares it to spot changed entries; None
     # means unknown (built in code), which always counts as changed.
     spec: tuple | None = field(default=None, repr=False, compare=False)
+    # True when the loader already put the port in place of ${PORT} in
+    # ``cmd``; the startup rewrite then leaves a direct command alone, so
+    # the port is not added a second time.
+    port_filled: bool = field(default=False, repr=False, compare=False)
 
 
 VARIANT_SEPARATOR = "@"
@@ -126,20 +130,30 @@ def find_free_port(reserved: set[int] = frozenset()) -> int:
 def _resolve_ports(models: dict[str, ModelConfig]) -> None:
     """Auto-assign a free port for each model.
 
-    Port rewriting (substituting ${PORT}, replacing port flags, handling
-    script files) is deferred to the Swapper which manages temp file lifecycle.
+    Port rewriting (replacing port flags, handling script files) is
+    deferred to the Swapper which manages temp file lifecycle.
 
     For each model:
     1. Find a free port
-    2. If ${PORT} placeholder present, substitute it directly
+    2. If ${PORT} placeholder present, substitute it directly and mark the
+       command as filled (``port_filled``)
     3. Store the resolved port
     """
     for name, mc in models.items():
         port = _find_free_port()
         mc.port = port
-        # Fast path: ${PORT} placeholder — substitute directly
-        if "${PORT}" in mc.cmd:
-            mc.cmd = re.sub(r"\$\{PORT\}", str(port), mc.cmd)
+        fill_port_placeholder(mc)
+
+
+def fill_port_placeholder(mc: ModelConfig) -> None:
+    """Put ``mc.port`` in place of ${PORT} in ``mc.cmd``, if present.
+
+    Sets ``port_filled`` so the Swapper's startup rewrite does not add a
+    second port flag to a direct command.
+    """
+    mc.port_filled = "${PORT}" in mc.cmd
+    if mc.port_filled:
+        mc.cmd = re.sub(r"\$\{PORT\}", str(mc.port), mc.cmd)
 
 
 def load_config(path: str | Path) -> Config:

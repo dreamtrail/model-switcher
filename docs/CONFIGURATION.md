@@ -11,7 +11,7 @@ llama-3.1-8b: "llama-server --model /path/to/model.gguf --port ${PORT} --ctx-siz
 mistral-7b: "llama-server --model /path/to/mistral-7b.gguf --port ${PORT}"
 ```
 
-- `${PORT}` — replaced at runtime with a free port.
+- `${PORT}` — replaced at runtime with a free port. A direct command that uses `${PORT}` gets only that replacement: no `--port` flag is added or changed.
 - Commands run in the foreground; the switcher manages their lifecycle.
 - A command whose first word is a path to a **text file** is a script: the switcher runs a temp copy with the port rewritten. A path to a program (`/opt/llama/llama-server --model m.gguf`) is a direct command, the same as one found on `PATH`: its `--port` flag is replaced, or `--port <N>` is added. Text means UTF-8 without NUL bytes; anything else counts as a program.
 - Model and variant names must be strings. Quote a name that YAML reads as a number, a boolean, null, or a date, such as `"70"`, `"yes"`, `"null"`, or `"2024-01-01"`; otherwise the switcher refuses the config (at startup and on reload) and names the value, for example `Model name 70 (int) must be a string`.

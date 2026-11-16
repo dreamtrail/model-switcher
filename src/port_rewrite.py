@@ -72,13 +72,14 @@ def rewrite_command(
         )
 
     # Direct command (or script without temp_dir) — replace port flags
-    rewritten = _PORT_FLAGS_RE.sub(
+    rewritten, flags = _PORT_FLAGS_RE.subn(
         lambda m: _replace_port_in_match(m.group(0), port_str),
         cmd,
     )
 
-    # If no replacement was made, append --port
-    if rewritten == cmd:
+    # No port flag found: append --port. A flag that already holds this
+    # port counts as found, so it is not added twice.
+    if flags == 0:
         rewritten = f"{cmd} --port {port_str}"
 
     return rewritten, None
@@ -128,7 +129,7 @@ def script_fingerprint(cmd: str) -> str | None:
     Script mode is when the first token is an existing text file (see
     ``is_script_command``). The config loader fills in ``${PORT}`` before
     the startup copy step, so a placeholder in the command does not change
-    this; a reload does the same for script entries (see
+    this; a reload does the same (see
     ``control_reload_config``). A config reload compares the hash, so
     editing the script (with the same config line) counts as a change. An
     unreadable file gives a marker instead of an error, so loading still

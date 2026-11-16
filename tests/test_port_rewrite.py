@@ -93,6 +93,13 @@ class TestRewriteCommandDirect:
         assert cmd == "cmd --port 9999 --port 9999"
         assert temp is None
 
+    def test_flag_already_at_port_not_appended(self):
+        """--port N already equal to the port: kept once, not appended."""
+        for cmd in ("cmd --port 9999 --x", "cmd --port=9999"):
+            rewritten, temp = rewrite_command(cmd, 9999)
+            assert rewritten == cmd
+            assert temp is None
+
 
 class TestRewriteCommandScriptFile:
 
