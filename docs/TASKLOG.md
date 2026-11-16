@@ -81,4 +81,17 @@
 - [P-20261013-02] Remember the chosen model variant across restarts in `<config>.state.json`; a YAML `default:` edit wins — DONE 2026-11-16 19:37 +0900
 - [P-20261116-12] /stats: removed the "Models" heading above the table — DONE 2026-11-16 19:44 +0900
 - [P-20261116-09] Push and deploy f7fc22b to dgx1 (idle restart adopted the cluster), then switch to variant 1107, now remembered in config.state.json — DONE 2026-11-16 19:53 +0900
+- [P-20260926-03] Stats table overflows at 80rem when a long model name and a 7-digit request count coincide — DONE 2026-11-16 20:27 +0900: fixed by 40dd842
+- [P-20260923-06] Develop deployment-specific DGX shutdown scripts and validate remote cleanup — DONE 2026-11-16 20:27 +0900: dgx1 shutdown hook ran stop.sh with exit 0 during P-20261116-09
+- [P-20261116-02] Favicon (P-20261116-01) review minors: `urllib` import guard admits `urllib.request`; duplicated favicon tests; not checked in Firefox/Safari — ABANDONED 2026-11-16: test-only nits; no wrong import exists
+- [P-20260930-05] Stats tiles: hovering the Loads number shows the count title, not the tile explanation — ABANDONED 2026-11-16: behaves as documented for all tiles (full number on hover)
+- [P-20260926-05] Live gen t/s tile drops to `–` during prompt processing and between requests — ABANDONED 2026-11-16: owner already chose to keep this behaviour; reopen only on request
+- [P-20260923-04] Add a combined real-process shutdown-hook timeout/cancellation/unresolved-group/retry test — ABANDONED 2026-11-16: each case is covered separately; review found no defect; low value
+- [P-20261116-04] Prompt tok (P-20261116-03) review minors: STATISTICS.md "Cache hit %" vs header "Cache"; no collector→rendered Prompt tok e2e test — SUPERSEDED 2026-11-16: by P-20261006-02
+- [P-20261107-02] Stale-connection retry (P-20261107-01) review minors: `aiohttp>=3.9` floor may predate aiohttp's own idempotent retry — SUPERSEDED 2026-11-16: by P-20261006-02
+- [P-20261028-02] SSE keepalive (P-20261028-01) review minors: rare early keepalive; bare-`\r` upstreams never get keepalives — SUPERSEDED 2026-11-16: by P-20261006-02
+- [P-20261005-05] TensorFold support not yet checked on real Apple Silicon or CUDA; CUDA stats keys only partly known — SUPERSEDED 2026-11-16: by P-20260927-02
+- [P-20261005-02] Strata support not yet smoke-tested on real Strata/GPU; stop_grace 25 and engine SIGTERM unchecked — SUPERSEDED 2026-11-16: by P-20260927-02
+- [P-20261027-04] Splash (P-20261027-01) not checked on a real Apple silicon Mac; review minors: log levels, stop_grace edge cases — SUPERSEDED 2026-11-16: by P-20260927-02 (Mac check), P-20261005-03 (log-level minors)
+- [P-20261116-11] Hygiene(triage): DISCOVERED 22 → 5 (5 promoted to NEXT, 6 merged, 2 closed, 4 abandoned) — DONE 2026-11-16 20:28 +0900
 - [P-20261116-10] Hygiene(refactor): split src/swapper.py (906 → 568 lines) by moving queue/admission/owner hand-off into src/swapper_admission.py; tests unchanged — DONE 2026-11-16 20:29 +0900
