@@ -99,3 +99,4 @@
 - [P-20261116-13] Bad client request bodies (non-UTF-8, non-object JSON, non-string model, deep nesting) no longer give 500; they take the no-model path (forward or 400) — DONE 2026-11-16 21:03 +0900
 - [P-20261013-09] `${PORT}` commands get the port once at startup (no extra `--port N`); startup and reload now build the same command — DONE 2026-11-16 21:13 +0900
 - [P-20261116-15] Push and deploy c5f26b4 to dgx1; restart restored variant 1107 and adopted the cluster (no vLLM downtime) — DONE 2026-11-16 21:50 +0900
+- [P-20261119-01] Proxy drops client `Expect` before forwarding, so `Expect: 100-continue` requests (.NET HttpClient) no longer hang on Strata — DONE 2026-11-19 10:32 +0900

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import http.server
+import threading
+
 import aiohttp
 from aiohttp.test_utils import TestServer, TestClient
 import pytest
@@ -346,6 +350,100 @@ class TestForwardHeaders:
             await upstream_server.close()
 
         assert seen == [[f"127.0.0.1:{upstream_port}"]]
+
+    async def test_drops_expect_header(self):
+        """Expect is not forwarded; other headers are (P-20261119-01)."""
+        async def handler(request):
+            return aiohttp.web.json_response(_forward_headers(request))
+
+        app = aiohttp.web.Application()
+        app.router.add_post("/test", handler)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            async with TestClient(server) as client:
+                resp = await client.post(
+                    "/test",
+                    data=b"{}",
+                    headers={
+                        "Expect": "100-continue",
+                        "Authorization": "Bearer tok",
+                        "X-Keep": "1",
+                    },
+                )
+                data = await resp.json()
+                assert "expect" not in {key.lower() for key in data}
+                assert data["Authorization"] == "Bearer tok"
+                assert data["X-Keep"] == "1"
+        finally:
+            await server.close()
+
+    @pytest.mark.parametrize("stream", (False, True), ids=("json", "stream"))
+    async def test_expect_100_continue_reaches_upstream_without_100(
+        self, stream,
+    ):
+        """A client Expect: 100-continue does not hang on an upstream that
+        never sends 100 Continue (stdlib HTTP/1.0 server, like Strata)."""
+        seen_expect = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            # HTTP/1.0: BaseHTTPRequestHandler never sends 100 Continue.
+            def do_POST(self):
+                seen_expect.append(self.headers.get("Expect"))
+                length = int(self.headers.get("Content-Length", "0"))
+                self.rfile.read(length)
+                if stream:
+                    payload = b"data: {}\n\ndata: [DONE]\n\n"
+                    ctype = "text/event-stream"
+                else:
+                    payload = b'{"ok": true}'
+                    ctype = "application/json"
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                pass
+
+        upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        thread.start()
+        upstream_url = f"http://127.0.0.1:{upstream.server_port}"
+        forward = stream_proxy if stream else proxy_request
+
+        async def proxy_handler(request):
+            body = await request.read()
+            return await forward(request, upstream_url, body, timeout=10)
+
+        proxy_app = aiohttp.web.Application()
+        proxy_app.router.add_post("/v1/chat/completions", proxy_handler)
+        proxy_server = TestServer(proxy_app)
+        await proxy_server.start_server()
+        try:
+            async with TestClient(proxy_server) as client:
+                async def send():
+                    resp = await client.post(
+                        "/v1/chat/completions",
+                        json={"model": "test", "stream": stream},
+                        headers={"Expect": "100-continue"},
+                    )
+                    return resp.status, await resp.read()
+
+                status, body = await asyncio.wait_for(send(), timeout=3)
+        finally:
+            await proxy_server.close()
+            upstream.shutdown()
+            upstream.server_close()
+            thread.join(timeout=5)
+
+        assert status == 200
+        if stream:
+            assert b"data: [DONE]" in body
+        else:
+            assert body == b'{"ok": true}'
+        assert seen_expect == [None]
 
 
 class TestHandleModelsList:

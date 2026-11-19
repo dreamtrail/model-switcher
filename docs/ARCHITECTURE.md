@@ -8,7 +8,7 @@ The request flow from a client's `model` field to a running upstream, idle unloa
 2. Switcher maps the name to the model to run (the active variant for a [variant model](CONFIGURATION.md#model-variants)) and checks if it is running.
 3. If not (or a different model is active), it stops the current one and starts the requested model.
 4. It waits for the new model to report healthy (`/health` endpoint).
-5. The request is proxied to the upstream server. Request headers are forwarded except hop-by-hop headers and `Host`: the upstream gets its own address (`127.0.0.1:<port>`) as `Host`, like a default nginx proxy, so backends that reject unknown host names (such as [Strata](CONFIGURATION.md#strata)) work when clients use the switcher's network name.
+5. The request is proxied to the upstream server. Request headers are forwarded except hop-by-hop headers and `Host`: the upstream gets its own address (`127.0.0.1:<port>`) as `Host`, like a default nginx proxy, so backends that reject unknown host names (such as [Strata](CONFIGURATION.md#strata)) work when clients use the switcher's network name. `Expect` is dropped too: the switcher has already read the body, and forwarding `Expect: 100-continue` would make the request hang on backends that never send `100 Continue` (seen with Strata).
 6. Streaming responses (SSE) are passed through in real-time.
 
 Only one model runs at a time.

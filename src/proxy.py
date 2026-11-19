@@ -222,10 +222,16 @@ def _forward_headers(request: web.Request) -> dict[str, str]:
     (``127.0.0.1:<port>``) like a default nginx proxy_pass. Backends that
     guard against DNS rebinding (Strata) refuse a client Host such as
     ``myserver.lan:8080``.
+
+    expect is dropped: the switcher has already read the body, so the
+    header has no meaning upstream. Forwarding ``Expect: 100-continue``
+    makes aiohttp wait for a 100 that simple servers (Strata) never send.
+    It stays out of _HOP_BY_HOP_HEADERS, which also filters responses.
     """
     skip = set(_HOP_BY_HOP_HEADERS)
     skip.add("content-length")
     skip.add("host")
+    skip.add("expect")
     connection_hdr = request.headers.get("connection", "").lower()
     if connection_hdr:
         # Connection header may list additional hop-by-hop headers
